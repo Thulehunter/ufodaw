@@ -185,6 +185,20 @@ struct Track
     std::vector<std::unique_ptr<ParamAutomation>> autoLanes;
     std::atomic<float> effGain { 0.8f }, effPan { 0.0f }; // what the mixer last used (differs from gain/pan when automated)
     juce::String autoEditId;                              // UI only: id of the envelope the lane is editing ("" = none)
+
+    // Buses and sends. A bus track has no clips of its own: it mixes what other tracks send or route to it, runs that through its
+    // own effects, inserts, fader and pan, and plays it into the master (a group channel / effect return).
+    bool bus = false;
+    Track* output = nullptr;                              // where this track plays: nullptr = the master, else a bus
+    struct Send
+    {
+        Track* bus = nullptr;
+        float level = 0.5f;                               // 0..1.5, like a fader
+        bool preFader = false;                            // taken before the track's fader and pan (and kept when the fader is down)
+    };
+    std::vector<Send> sends;
+    std::vector<float> busInL, busInR;                    // bus tracks: what arrived during the current block
+    bool busFed = false;                                  // an audible track wrote into the bus during this block
 };
 
 // A copy of everything the user can edit, used for undo/redo. Audio sample data is shared,
@@ -212,6 +226,10 @@ struct TrackState
     bool recordArmed = false;
     int inputFirst = 0, inputCount = 2;
     std::vector<std::pair<int, int>> midiOuts;   // (index of the target track, channel) of each MIDI route
+    bool bus = false;
+    int outputIndex = -1;                        // index of the bus this track plays into (-1 = master)
+    struct SendState { int bus = -1; float level = 0.5f; bool preFader = false; };
+    std::vector<SendState> sends;
     std::vector<ExternalRoute> externalOuts;
     std::vector<std::shared_ptr<PluginSlot>> midiFx;
     std::shared_ptr<DrumKit> kit;
@@ -239,8 +257,15 @@ public:
     void getNextAudioBlock (const juce::AudioSourceChannelInfo&) override;
 
     // ---- Message thread: tracks
-    Track* addTrack (const juce::String& name, Track::Type type = Track::Type::Audio);
+    Track* addTrack (const juce::String& name, Track::Type type = Track::Type::Audio, bool asBus = false);
+    Track* addBus (const juce::String& name) { return addTrack (name, Track::Type::Audio, true); }
     void removeTrack (Track*);
+
+    // ---- Message thread: routing. A track plays into the master or into one bus, and can also send a share of its sound to buses.
+    void setTrackOutput (Track&, Track* bus);                                  // nullptr = master; ignored for buses and for non-bus targets
+    void setSend (Track&, Track& bus, float level, bool preFader);             // level <= 0 removes the send
+    bool getSend (const Track&, const Track& bus, float& level, bool& preFader) const;
+    std::vector<Track*> getBuses() const;
     void removeAllTracks();
     int getNumTracks() const;
     Track* getTrack (int index) const;

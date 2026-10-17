@@ -163,6 +163,9 @@ private:
     void addTrackDialog();
     void addTrackMenu();                       // "+ Track": an empty audio track, or audio from files
     void addEmptyAudioTrack();
+    void addBusTrack();                                      // a group / effects-return bus
+    void openRouting (Track&, juce::Component& anchor);      // output (master or a bus) and sends of a track
+    void openQuantize (Track&, int clipId);                  // quantize / swing / humanize the notes of a MIDI clip
     void armAudioTrack (Track&, bool armed);   // several audio tracks can be armed: all of them record at once
     void openInputMenu (Track&, juce::Component& anchor);   // pick the audio interface input(s) of an audio track
     void addMidiTrack (bool drums = false);

@@ -80,6 +80,11 @@ void Engine::prepareToPlay (int samplesPerBlock, double newRate)
 
     for (auto& t : tracks)
     {
+        if (t->bus && t->busInL.size() != trackL.size())
+        {
+            t->busInL.assign (trackL.size(), 0.0f);
+            t->busInR.assign (trackL.size(), 0.0f);
+        }
         if (t->voices != nullptr)
             t->voices->prepare (newRate);
         if (t->kit != nullptr)
@@ -340,11 +345,17 @@ bool Engine::anyMonitoring() const
 //==============================================================================
 // Tracks
 
-Track* Engine::addTrack (const juce::String& name, Track::Type type)
+Track* Engine::addTrack (const juce::String& name, Track::Type type, bool asBus)
 {
     auto track = std::make_unique<Track>();
     track->name = name;
     track->type = type;
+    track->bus = asBus && type == Track::Type::Audio;
+    if (track->bus)
+    {
+        track->busInL.assign (trackL.size(), 0.0f);
+        track->busInR.assign (trackL.size(), 0.0f);
+    }
     track->routedMidi.ensureSize (4096);
     sizeDelayBuffers (*track, sampleRate);
     track->fxState = std::make_unique<TrackFx>();
@@ -399,13 +410,73 @@ void Engine::resetDrumPad (Track& t, int pad)
     t.kit->resetPad (pad);
 }
 
+void Engine::setTrackOutput (Track& t, Track* bus)
+{
+    const juce::ScopedLock sl (lock);
+    if (t.bus || (bus != nullptr && (! bus->bus || bus == &t)))
+        return;
+    t.output = bus;
+}
+
+void Engine::setSend (Track& t, Track& bus, float level, bool preFader)
+{
+    const juce::ScopedLock sl (lock);
+    if (t.bus || ! bus.bus || &bus == &t)
+        return;
+
+    for (auto it = t.sends.begin(); it != t.sends.end(); ++it)
+        if (it->bus == &bus)
+        {
+            if (level <= 0.0f)
+                t.sends.erase (it);
+            else
+            {
+                it->level = level;
+                it->preFader = preFader;
+            }
+            return;
+        }
+    if (level > 0.0f)
+        t.sends.push_back ({ &bus, level, preFader });
+}
+
+bool Engine::getSend (const Track& t, const Track& bus, float& level, bool& preFader) const
+{
+    const juce::ScopedLock sl (lock);
+    for (auto& s : t.sends)
+        if (s.bus == &bus)
+        {
+            level = s.level;
+            preFader = s.preFader;
+            return true;
+        }
+    return false;
+}
+
+std::vector<Track*> Engine::getBuses() const
+{
+    const juce::ScopedLock sl (lock);
+    std::vector<Track*> out;
+    for (auto& t : tracks)
+        if (t->bus)
+            out.push_back (t.get());
+    return out;
+}
+
 void Engine::removeTrack (Track* t)
 {
     const juce::ScopedLock sl (lock);
     for (auto& other : tracks)
+    {
         other->midiOuts.erase (std::remove_if (other->midiOuts.begin(), other->midiOuts.end(),
                                                [t] (const MidiRoute& r) { return r.target == t; }),
                                other->midiOuts.end());   // nobody keeps sending to a track that is going away
+        other->sends.erase (std::remove_if (other->sends.begin(), other->sends.end(),
+                                            [t] (const Track::Send& s) { return s.bus == t; }),
+                            other->sends.end());
+        if (other->output == t)
+            other->output = nullptr;   // what played into a removed bus goes to the master again
+    }
     tracks.erase (std::remove_if (tracks.begin(), tracks.end(),
                                   [t] (auto& p) { return p.get() == t; }),
                   tracks.end());
@@ -1141,6 +1212,7 @@ TrackState Engine::captureTrack (const Track& t) const
     TrackState ts;
     ts.name = t.name;
     ts.type = t.type;
+    ts.bus = t.bus;
     ts.clips = t.clips;
     ts.midiClips = t.midiClips;
     ts.gain = t.gain;
@@ -1175,6 +1247,7 @@ TrackState Engine::captureTrack (const Track& t) const
 void Engine::applyTrackState (Track& t, const TrackState& ts)
 {
     t.name = ts.name;
+    t.bus = ts.bus;
     t.clips = ts.clips;
     t.midiClips = ts.midiClips;
     t.gain = ts.gain;
@@ -1242,6 +1315,14 @@ ProjectState Engine::captureState() const
             for (size_t k = 0; k < tracks.size(); ++k)
                 if (tracks[k].get() == route.target)
                     ts.midiOuts.push_back ({ (int) k, route.channel });
+        for (size_t k = 0; k < tracks.size(); ++k)
+        {
+            if (tracks[k].get() == t->output)
+                ts.outputIndex = (int) k;
+            for (auto& s : t->sends)
+                if (tracks[k].get() == s.bus)
+                    ts.sends.push_back ({ (int) k, s.level, s.preFader });
+        }
         s.tracks.push_back (std::move (ts));
     }
     return s;
@@ -1265,7 +1346,23 @@ void Engine::restoreState (const ProjectState& s)
         }
         t->routedMidi.ensureSize (4096);
         sizeDelayBuffers (*t, sampleRate);
+        if (t->bus)
+        {
+            t->busInL.assign (trackL.size(), 0.0f);
+            t->busInR.assign (trackL.size(), 0.0f);
+        }
         fresh.push_back (std::move (t));
+    }
+
+    for (size_t i = 0; i < s.tracks.size(); ++i)   // buses and sends point at tracks by index, too
+    {
+        const auto& ts = s.tracks[i];
+        const auto isBus = [&] (int k) { return k >= 0 && k < (int) fresh.size() && k != (int) i && fresh[(size_t) k]->bus; };
+        if (! fresh[i]->bus && isBus (ts.outputIndex))
+            fresh[i]->output = fresh[(size_t) ts.outputIndex].get();
+        for (auto& snd : ts.sends)
+            if (! fresh[i]->bus && isBus (snd.bus))
+                fresh[i]->sends.push_back ({ fresh[(size_t) snd.bus].get(), snd.level, snd.preFader });
     }
 
     for (size_t i = 0; i < s.tracks.size(); ++i)   // MIDI routes point at tracks by index
@@ -1836,7 +1933,23 @@ void Engine::mixBlock (float* outL, float* outR, int n, juce::int64 pos, bool wi
 
     int maxLatency = 0;
     for (auto& t : tracks)
-        maxLatency = juce::jmax (maxLatency, trackLatency (*t));
+        if (! t->bus)   // a bus adds its own latency to what goes through it; it is not compensated
+            maxLatency = juce::jmax (maxLatency, trackLatency (*t));
+
+    // buses start every block empty
+    {
+        const int clearN = juce::jmin (n, (int) trackL.size());
+        for (auto& t : tracks)
+            if (t->bus)
+            {
+                if ((int) t->busInL.size() >= clearN)
+                {
+                    std::fill (t->busInL.begin(), t->busInL.begin() + clearN, 0.0f);
+                    std::fill (t->busInR.begin(), t->busInR.begin() + clearN, 0.0f);
+                }
+                t->busFed = false;
+            }
+    }
 
     // MIDI routing first: sequencer tracks run and fill the routedMidi of the tracks they play,
     // so those tracks find their notes waiting when they are rendered below.
@@ -1857,8 +1970,13 @@ void Engine::mixBlock (float* outL, float* outR, int n, juce::int64 pos, bool wi
             }
         }
 
+    // Two passes: ordinary tracks first (they fill the buses), then the buses, which play into the master.
+    for (int pass = 0; pass < 2; ++pass)
     for (auto& t : tracks)
     {
+        if ((t->bus ? 1 : 0) != pass)
+            continue;
+
         if (renderOnly != nullptr && t.get() != renderOnly)   // exporting one stem: the other tracks stay out of it
         {
             t->level = 0.0f;
@@ -1866,7 +1984,8 @@ void Engine::mixBlock (float* outL, float* outR, int n, juce::int64 pos, bool wi
         }
 
         float peak = 0.0f;
-        const bool audible = renderOnly != nullptr || (! t->mute && (! anySolo || t->solo));
+        // (a bus is heard when something audible feeds it, so soloing a track also lets its bus through)
+        const bool audible = renderOnly != nullptr || (! t->mute && (! anySolo || t->solo || (t->bus && t->busFed)));
 
         // Fader and pan, possibly automated: evaluated at both ends of the block and ramped in between.
         const double t0 = (double) pos / sampleRate, t1 = (double) (pos + n) / sampleRate;
@@ -1899,6 +2018,12 @@ void Engine::mixBlock (float* outL, float* outR, int n, juce::int64 pos, bool wi
         const int nn = juce::jmin (n, (int) trackL.size());
         std::fill (bufL, bufL + nn, 0.0f);
         std::fill (bufR, bufR + nn, 0.0f);
+
+        if (t->bus && (int) t->busInL.size() >= nn)   // a bus starts from what was sent and routed to it
+        {
+            std::copy (t->busInL.begin(), t->busInL.begin() + nn, bufL);
+            std::copy (t->busInR.begin(), t->busInR.begin() + nn, bufR);
+        }
 
         const bool monitoring = t->type == Track::Type::Audio && t->recordArmed && t->monitor
                                 && ! offlineRendering && inputChannelsCopied > 0;
@@ -1938,7 +2063,7 @@ void Engine::mixBlock (float* outL, float* outR, int n, juce::int64 pos, bool wi
                 std::copy (bufL, bufL + nn, bufR);
             }
         }
-        else if (! running && ! monitoring)
+        else if (! running && ! monitoring && ! (t->bus && t->busFed))
         {
             t->level = 0.0f;
             continue;
@@ -2017,8 +2142,14 @@ void Engine::mixBlock (float* outL, float* outR, int n, juce::int64 pos, bool wi
 
         // plugin delay compensation: tracks without (or with less) plugin latency wait for the slowest one
         const int delay = maxLatency - trackLatency (*t);
-        if (delay > 0 || t->pdcDelay != 0)
+        if (! t->bus && (delay > 0 || t->pdcDelay != 0))
             applyDelay (*t, bufL, bufR, nn, delay);
+
+        // Where it goes: the master, or the bus this track plays into (stems always go straight to the master).
+        Track* const target = renderOnly == nullptr && ! t->bus && t->output != nullptr && t->output->bus
+                              && (int) t->output->busInL.size() >= nn ? t->output : nullptr;
+        float* const dstL = target != nullptr ? target->busInL.data() : outL;
+        float* const dstR = target != nullptr ? target->busInR.data() : outR;
 
         const float ramp = nn > 0 ? 1.0f / (float) nn : 0.0f;
         for (int i = 0; i < nn; ++i)
@@ -2027,10 +2158,38 @@ void Engine::mixBlock (float* outL, float* outR, int n, juce::int64 pos, bool wi
             if (audible)
             {
                 const float f = (float) i * ramp;
-                outL[i] += bufL[i] * (gl0 + (gl1 - gl0) * f);
-                if (outR) outR[i] += bufR[i] * (gr0 + (gr1 - gr0) * f);
+                dstL[i] += bufL[i] * (gl0 + (gl1 - gl0) * f);
+                if (dstR) dstR[i] += bufR[i] * (gr0 + (gr1 - gr0) * f);
             }
         }
+        if (audible && target != nullptr)
+            target->busFed = true;
+
+        // sends: a share of the sound goes to buses as well (muted tracks send nothing; stems are dry)
+        if (audible && renderOnly == nullptr && ! t->bus)
+            for (auto& send : t->sends)
+            {
+                auto* b = send.bus;
+                if (b == nullptr || ! b->bus || b == t.get() || (int) b->busInL.size() < nn)
+                    continue;
+                float* sl = b->busInL.data();
+                float* sr = b->busInR.data();
+                const float lv = send.level;
+                if (send.preFader)
+                    for (int i = 0; i < nn; ++i)
+                    {
+                        sl[i] += bufL[i] * lv;
+                        sr[i] += bufR[i] * lv;
+                    }
+                else
+                    for (int i = 0; i < nn; ++i)
+                    {
+                        const float f = (float) i * ramp;
+                        sl[i] += bufL[i] * (gl0 + (gl1 - gl0) * f) * lv;
+                        sr[i] += bufR[i] * (gr0 + (gr1 - gr0) * f) * lv;
+                    }
+                b->busFed = true;
+            }
         t->level = peak * g;
     }
 
@@ -2115,6 +2274,8 @@ void Engine::mixBlock (float* outL, float* outR, int n, juce::int64 pos, bool wi
 bool Engine::trackHasOutput (const Track& t) const
 {
     const juce::ScopedLock sl (lock);
+    if (t.bus)
+        return false;   // buses are the sum of what plays into them: no stem of their own
     if (t.type == Track::Type::Midi && t.instrument != nullptr && t.routesElsewhere())
         return false;   // a sequencer track: silent itself, its notes sound on other tracks or on hardware
     if (t.type == Track::Type::Midi && t.instrument == nullptr && ! t.externalOuts.empty())

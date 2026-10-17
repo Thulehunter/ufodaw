@@ -31,6 +31,11 @@ A small digital audio workstation for Windows, written in C++17 with [JUCE](http
 - **Mixer** - volume, pan, mute, solo and level meters per track, plus a **master channel** (the yellow strip under the tracks):
   volume with automation, the built-in effects (EQ, compressor, delay, reverb), VST3 effect plugins on the whole mix, a
   level meter, and the soft limiter after it. Stems skip the master channel.
+- **Buses and sends** - **+ Track > Bus** makes a group / effects-return channel. Put a reverb or delay on it (FX or VST), then use
+  the **Out** button on any track: play the track *into* the bus (a drum bus, say) and/or *send* part of it to buses with a level per
+  bus (post-fader, or *Pre*). Muting a track mutes its sends; soloing a track keeps its bus audible. Buses are not exported as stems.
+- **MIDI quantize, swing, humanize** - right-click a MIDI clip (or press `Q`): grid from 1/4 to 1/32 and triplets, strength, swing
+  (100% = triplet feel), random timing (ms) and velocity variation, optionally the note lengths too. Works on drum clips as well.
 - **Undo / redo**, project **save / load** (`.mdaw`) and **WAV export** (24-bit).
 - **Stem export** - every track as its own WAV file in a folder you choose (see below).
 
@@ -48,6 +53,7 @@ The interface uses a warm dark theme with red, orange and yellow accents; the co
 you can open the folder.
 
 - Each stem is the track as you hear it: after its effects and plugins, with its volume, pan and automation.
+- Stems are dry: they ignore buses and sends, so bus effects (a shared reverb) are not in them. Use **Export WAV** for the full mix.
 - Muted tracks, empty tracks and sequencer tracks (which are silent themselves; the synth that plays their notes
   gets them) are skipped; the summary says which ones.
 - Format: 24-bit, 16-bit or **32-bit float** (cannot clip, even when a stem is above 0 dBFS).
@@ -119,6 +125,8 @@ An arpeggiator or similar plugin that should change the notes of one track goes 
 | Set the loop region | right-drag on the ruler or in any track (a right-click without dragging opens the clip menu) |
 | Add an empty audio track | **+ Track** > *Empty audio track* (it starts armed for recording); drop audio files on it later, several files go one after the other |
 | Record into a specific audio track | click the red dot left of the track name to arm it, then **Record** (`R`). Arm several tracks to record them all at once. Without an armed track the recording becomes a new track from inputs 1+2 |
+| Send a track to a bus / choose its output | **Out** button (bottom right of the track header, e.g. *→ Master*): pick the output and set a send level per bus |
+| Quantize / swing / humanize a MIDI clip | select the clip and press `Q`, or right-click it |
 | Punch in/out | turn on **Punch** (`P`); the region is the selected clip, or two bars at the playhead. Change it with **Shift + right-drag** on the ruler (red). Press Record: playback starts a bar before the region, records inside it, and the recording closes itself at the punch-out |
 | Record several takes | turn on **Loop** (set the loop with right-drag on the ruler) and press Record; stop when you have enough. Pick takes with right-click > *Choose take*; `S` splits all takes of a clip at the playhead for comping |
 | Tune an instrument | **Tuner** at the bottom right; pick the input (defaults to the armed track's input) |
@@ -175,6 +183,7 @@ builds Release and writes `dist\UFODAW-<version>-win64.zip`. For a regular insta
 | `Source/MainComponent.*` | Main window: arrangement, transport, project files, undo/redo |
 | `Source/PianoRoll.*`, `Source/DrumSequencer.*` | Note editors below the arrangement |
 | `Source/Tuner.*` | Pitch detection (YIN) and the tuner window |
+| `Source/RoutingPanel.h`, `Source/MidiTools.h` | Output and sends of a track; quantize / swing / humanize |
 | `Source/FxPanel.*`, `Source/PluginPanel.*` | Per-track effect and plugin panels |
 
 The audio thread never blocks: the UI edits the project under a lock that the audio callback only *tries* to take. Undo works with cheap snapshots of the whole project (sample data is shared, not copied).

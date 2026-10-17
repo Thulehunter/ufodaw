@@ -3,6 +3,8 @@
 #include "DrumSequencer.h"
 #include "FxPanel.h"
 #include "PluginPanel.h"
+#include "RoutingPanel.h"
+#include "MidiTools.h"
 #include <algorithm>
 #include <map>
 
@@ -39,26 +41,38 @@ public:
                  std::function<void (Track&)> onOpenEditor,
                  std::function<void (Track&)> onToggleArm,
                  std::function<void (Track&, juce::Component&)> onOpenInput,
+                 std::function<void (Track&, juce::Component&)> onOpenRouting,
                  bool masterStrip = false)
         : track (t), remove (std::move (onRemove)), beginEdit (std::move (onBeginEdit)), openPlugins (std::move (onOpenPlugins)),
           openAutomation (std::move (onOpenAutomation)), position (std::move (onPosition)), openEditor (std::move (onOpenEditor)),
-          toggleArm (std::move (onToggleArm)), openInput (std::move (onOpenInput)), isMaster (masterStrip)
+          toggleArm (std::move (onToggleArm)), openInput (std::move (onOpenInput)), openRouting (std::move (onOpenRouting)),
+          isMaster (masterStrip)
     {
+        const bool audioTrack = track.type == Track::Type::Audio && ! track.bus;   // (a bus has no input to record)
+
         // record-arm: audio tracks only; the next audio recording goes into the armed track
         armButton.setTooltip ("Record arm: the next recording goes into this track (click Record at the bottom, or press R)");
         armButton.onClick = [this] { toggleArm (track); };
         addChildComponent (armButton);
-        armButton.setVisible (track.type == Track::Type::Audio);
+        armButton.setVisible (audioTrack);
 
         // fourth row: audio tracks pick their input here (and can monitor it); MIDI tracks show what plays them
-        rowButton.setTooltip (track.type == Track::Type::Audio ? "Which input of the audio interface this track records from (and monitors)"
-                                                                : "Instrument or sequencer plugin, hardware output... (opens the VST panel)");
+        rowButton.setTooltip (track.bus ? "A bus: it plays what other tracks send or route to it (the Out button on those tracks)"
+                                        : track.type == Track::Type::Audio ? "Which input of the audio interface this track records from (and monitors)"
+                                                                            : "Instrument or sequencer plugin, hardware output... (opens the VST panel)");
         rowButton.onClick = [this]
         {
+            if (track.bus)                            return;
             if (track.type == Track::Type::Audio) openInput (track, rowButton);
             else                                  openPlugins (track, rowButton);
         };
+        rowButton.setEnabled (! track.bus);
         addAndMakeVisible (rowButton);
+
+        routeButton.setTooltip ("Output and sends: play into the master or a bus, and send some of this track to buses (reverb, delay...)");
+        routeButton.onClick = [this] { openRouting (track, routeButton); };
+        addChildComponent (routeButton);
+        routeButton.setVisible (! track.bus);
 
         monitorButton.setClickingTogglesState (true);
         monitorButton.setColour (juce::TextButton::buttonOnColourId, Theme::yellow);
@@ -66,7 +80,7 @@ public:
                                   "Use headphones: a microphone in front of speakers will feed back.");
         monitorButton.onClick = [this] { track.monitor = monitorButton.getToggleState(); };
         addChildComponent (monitorButton);
-        monitorButton.setVisible (track.type == Track::Type::Audio);
+        monitorButton.setVisible (audioTrack);
 
         nameLabel.setInterceptsMouseClicks (false, false);   // so double-clicking the name reaches the header
         nameLabel.setText (track.name, juce::dontSendNotification);
@@ -133,7 +147,7 @@ public:
         if (isMaster)   // the master channel: no pan, mute, solo, arming or deleting; it is the final stage of the mix
         {
             for (juce::Component* c : std::initializer_list<juce::Component*> { &pan, &muteButton, &soloButton, &deleteButton, &armButton,
-                                                                               &rowButton, &monitorButton })
+                                                                               &rowButton, &monitorButton, &routeButton })
                 c->setVisible (false);
             nameLabel.setText ("MASTER", juce::dontSendNotification);
             nameLabel.setColour (juce::Label::textColourId, Theme::yellow);
@@ -166,7 +180,8 @@ public:
         g.fillAll (Theme::panel);
 
         // colour stripe by track type: orange = audio, red = MIDI synth, yellow = drums
-        g.setColour (isMaster ? Theme::yellow : Theme::trackColour (track.type == Track::Type::Midi, track.kit != nullptr));
+        g.setColour (isMaster ? Theme::yellow : track.bus ? Theme::yellowDim
+                                                          : Theme::trackColour (track.type == Track::Type::Midi, track.kit != nullptr));
         g.fillRect (0, 0, isMaster ? 8 : 5, getHeight() - 1);
 
         auto m = juce::Rectangle<int> (getWidth() - 8, 6, 4, getHeight() - 12);
@@ -214,11 +229,16 @@ public:
         nameLabel.setBounds (top);
         c.removeFromTop (4);
 
-        auto bottom = c.removeFromBottom (22);   // input / instrument row
+        auto bottom = c.removeFromBottom (22);   // input / instrument row, with the output on the right
         c.removeFromBottom (4);
+        if (routeButton.isVisible())
+        {
+            routeButton.setBounds (bottom.removeFromRight (74));
+            bottom.removeFromRight (4);
+        }
         if (monitorButton.isVisible())
         {
-            monitorButton.setBounds (bottom.removeFromRight (46));
+            monitorButton.setBounds (bottom.removeFromRight (40));
             bottom.removeFromRight (4);
         }
         rowButton.setBounds (bottom);
@@ -270,7 +290,11 @@ public:
         // the fourth row: the audio input of an audio track, what plays a MIDI track
         {
             juce::String text;
-            if (track.type == Track::Type::Audio)
+            if (track.bus)
+            {
+                text = "Bus: effects return / group";
+            }
+            else if (track.type == Track::Type::Audio)
             {
                 text = "In: " + (track.inputCount > 1 ? juce::String (track.inputFirst + 1) + "+" + juce::String (track.inputFirst + 2)
                                                       : juce::String (track.inputFirst + 1));
@@ -295,6 +319,20 @@ public:
             {
                 monitorShown = track.monitor;
                 monitorButton.setToggleState (monitorShown, juce::dontSendNotification);
+            }
+
+            if (! track.bus && ! isMaster)   // where this track plays, and how many sends it has
+            {
+                auto route = juce::String::fromUTF8 ("\xe2\x86\x92 ") + (track.output != nullptr ? track.output->name : juce::String ("Master"));
+                if (! track.sends.empty())
+                    route += " +" + juce::String ((int) track.sends.size());
+                if (route != routeShown)
+                {
+                    routeShown = route;
+                    routeButton.setButtonText (route);
+                    routeButton.setColour (juce::TextButton::buttonColourId,
+                                           track.output != nullptr || ! track.sends.empty() ? Theme::orangeDim : Theme::buttonOff);
+                }
             }
         }
 
@@ -329,8 +367,9 @@ private:
     std::function<void (Track&)> openEditor;
     std::function<void (Track&)> toggleArm;
     std::function<void (Track&, juce::Component&)> openInput;
-    juce::TextButton rowButton, monitorButton { "Mon" };
-    juce::String rowShown;
+    std::function<void (Track&, juce::Component&)> openRouting;
+    juce::TextButton rowButton, monitorButton { "Mon" }, routeButton;
+    juce::String rowShown, routeShown;
     bool monitorShown = false;
     bool isMaster = false;
     bool armShown = false;
@@ -576,8 +615,16 @@ public:
                         14, 0, juce::jmax (200, getWidth() - 20), getHeight(), juce::Justification::centredLeft);
         }
 
+        if (track.bus && track.autoEditId.isEmpty())
+        {
+            g.setColour (Theme::textFaint);
+            g.setFont (juce::FontOptions (13.0f));
+            g.drawText ("Bus: plays what other tracks send or route here (the \"Out\" button on a track). Put effects on it with FX or VST.",
+                        14, 0, juce::jmax (200, getWidth() - 20), getHeight(), juce::Justification::centredLeft);
+        }
+
         // an audio track without clips says what can be done with it
-        if (track.type == Track::Type::Audio && clips.empty() && track.autoEditId.isEmpty() && ! main.getEngine().isMaster (track))
+        if (track.type == Track::Type::Audio && ! track.bus && clips.empty() && track.autoEditId.isEmpty() && ! main.getEngine().isMaster (track))
         {
             g.setColour (track.recordArmed ? Theme::redBright : Theme::textFaint);
             g.setFont (juce::FontOptions (13.0f));
@@ -763,7 +810,7 @@ public:
             Component::mouseWheelMove (e, w);
     }
 
-    bool isInterestedInFileDrag (const juce::StringArray&) override { return ! main.getEngine().isMaster (track); }
+    bool isInterestedInFileDrag (const juce::StringArray&) override { return ! main.getEngine().isMaster (track) && ! track.bus; }
     void filesDropped (const juce::StringArray& files, int x, int) override
     {
         main.importFiles (files, &track, juce::jmax (0.0, main.snapTime (x / main.getPixelsPerSecond())));
@@ -2021,6 +2068,7 @@ std::unique_ptr<TrackHeader> MainComponent::makeHeader (Track& t, bool master)
        [this] (Track& tr) { openInstrumentEditor (tr); },
        [this] (Track& tr) { armAudioTrack (tr, ! tr.recordArmed); },
        [this] (Track& tr, juce::Component& anchor) { openInputMenu (tr, anchor); },
+       [this] (Track& tr, juce::Component& anchor) { openRouting (tr, anchor); },
        master);
 }
 
@@ -2432,6 +2480,11 @@ void MainComponent::showClipMenu (Track& track, int clipId, double at, juce::Com
     m.addItem (4, "Split here\tS", onClip);
     m.addItem (5, "Duplicate\tCtrl+D", onClip);
     m.addItem (6, "Delete\tDel", onClip);
+    if (onClip && track.type == Track::Type::Midi)
+    {
+        m.addSeparator();
+        m.addItem (9, "Quantize / swing / humanize...\tQ");
+    }
 
     // takes of a loop recording (or of a clip that was split from one): pick which plays
     std::vector<Clip> takes;
@@ -2498,6 +2551,7 @@ void MainComponent::showClipMenu (Track& track, int clipId, double at, juce::Com
             }
             case 5: self.duplicateSelected(); break;
             case 6: self.deleteSelected(); break;
+            case 9: self.openQuantize (*tr, clipId); break;
             default: break;
         }
     });
@@ -2584,6 +2638,12 @@ bool MainComponent::keyPressed (const juce::KeyPress& k)
     if (k == juce::KeyPress::spaceKey)  { if (engine.isPlaying()) pausePlayback(); else startPlayback(); return true; }
     if (k == juce::KeyPress::returnKey) { rewindButton.triggerClick(); return true; }
     if (k.getKeyCode() == 'R' && ! mods.isAnyModifierKeyDown()) { toggleRecording(); return true; }
+    if (k.getKeyCode() == 'Q' && ! mods.isAnyModifierKeyDown())
+    {
+        if (selTrack != nullptr && selClip >= 0 && engine.isMidiClip (*selTrack, selClip))
+            openQuantize (*selTrack, selClip);
+        return true;
+    }
     if (k.getKeyCode() == 'P' && ! mods.isAnyModifierKeyDown())
     {
         punchButton.setToggleState (! punchButton.getToggleState(), juce::dontSendNotification);
@@ -2881,18 +2941,76 @@ void MainComponent::addTrackMenu()
     juce::PopupMenu menu;
     menu.addItem (1, "Empty audio track");
     menu.addItem (2, "Audio track from file(s)...");
+    menu.addSeparator();
+    menu.addItem (3, "Bus (group / effects return)");
     menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&addButton), [this] (int result)
     {
         if (result == 1) addEmptyAudioTrack();
         if (result == 2) addTrackDialog();
+        if (result == 3) addBusTrack();
     });
+}
+
+void MainComponent::addBusTrack()
+{
+    int count = 1;
+    for (int i = 0; i < engine.getNumTracks(); ++i)
+        if (engine.getTrack (i)->bus)
+            ++count;
+
+    beginEdit();
+    auto* t = engine.addBus ("Bus " + juce::String (count));
+    addTrackUI (*t);
+    clipsChanged();
+}
+
+void MainComponent::openRouting (Track& t, juce::Component& anchor)
+{
+    juce::CallOutBox::launchAsynchronously (std::make_unique<RoutingPanel> (engine, t, [this] { beginEdit(); }),
+                                            anchor.getScreenBounds(), nullptr);
+}
+
+// Quantize / swing / humanize: every Apply works from the notes the clip had when the panel opened.
+void MainComponent::openQuantize (Track& t, int clipId)
+{
+    MidiClip clip;
+    if (! engine.getMidiClip (t, clipId, clip))
+        return;
+
+    auto original = std::make_shared<const std::vector<Note>> (clip.notes);
+    auto edited = std::make_shared<bool> (false);
+    juce::Component::SafePointer<MainComponent> safe (this);
+    Track* tr = &t;
+    const double clipStart = clip.start, clipLength = clip.length;
+
+    auto panel = std::make_unique<QuantizePanel> (beatSeconds(), [safe, tr, clipId, original, edited, clipStart, clipLength]
+                                                                  (const QuantizeSettings& s)
+    {
+        if (safe == nullptr || safe->engine.indexOfTrack (tr) < 0)
+            return;
+        if (! *edited)
+        {
+            safe->beginEdit();
+            *edited = true;
+        }
+        auto notes = *original;
+        juce::Random rng;
+        quantizeNotes (notes, clipStart, clipLength, s, rng);
+        safe->engine.setMidiNotes (*tr, clipId, std::move (notes));
+        safe->clipsChanged();
+        if (safe->rollVisible)
+            safe->roll->showClip (safe->roll->getTrack(), safe->roll->getClipId());   // the piano roll shows the new notes
+    });
+
+    const auto mouse = juce::Desktop::getMousePosition();
+    juce::CallOutBox::launchAsynchronously (std::move (panel), juce::Rectangle<int> (1, 1).withCentre (mouse), nullptr);
 }
 
 void MainComponent::addEmptyAudioTrack()
 {
     int count = 1;
     for (int i = 0; i < engine.getNumTracks(); ++i)
-        if (engine.getTrack (i)->type == Track::Type::Audio)
+        if (engine.getTrack (i)->type == Track::Type::Audio && ! engine.getTrack (i)->bus)
             ++count;
 
     beginEdit();
@@ -3101,6 +3219,23 @@ void MainComponent::saveProject (const juce::File& file)
         o->setProperty ("sequencer", t->sequencer);
         o->setProperty ("inputFirst", t->inputFirst);   // audio tracks: the interface input(s) it records from
         o->setProperty ("inputCount", t->inputCount);
+        if (t->bus)
+            o->setProperty ("bus", true);
+        if (t->output != nullptr)
+            o->setProperty ("output", engine.indexOfTrack (t->output));   // buses and sends point at tracks by index
+        if (! t->sends.empty())
+        {
+            juce::Array<juce::var> sendList;
+            for (auto& s : t->sends)
+            {
+                auto* so = new juce::DynamicObject();
+                so->setProperty ("bus", engine.indexOfTrack (s.bus));
+                so->setProperty ("level", (double) s.level);
+                so->setProperty ("pre", s.preFader);
+                sendList.add (juce::var (so));
+            }
+            o->setProperty ("sends", sendList);
+        }
         juce::Array<juce::var> outs;
         for (auto& route : t->midiOuts)
         {
@@ -3237,7 +3372,8 @@ void MainComponent::loadProject (const juce::File& file)
         const bool isDrums = isMidi && item.hasProperty ("drumPads");
         const auto trackName = item.getProperty ("name", "Track").toString();
         auto* t = isDrums ? engine.addDrumTrack (trackName)
-                          : engine.addTrack (trackName, isMidi ? Track::Type::Midi : Track::Type::Audio);
+                          : engine.addTrack (trackName, isMidi ? Track::Type::Midi : Track::Type::Audio,
+                                             ! isMidi && (bool) item.getProperty ("bus", false));
 
         if (isDrums)
             if (auto* padFiles = item["drumPads"].getArray())
@@ -3363,6 +3499,15 @@ void MainComponent::loadProject (const juce::File& file)
                 from->sequencer = (bool) item.getProperty ("sequencer", ! routes.empty());
                 if (! routes.empty())
                     engine.setMidiOuts (*from, routes);
+
+                // output bus and sends
+                if (item.hasProperty ("output"))
+                    if (auto* bus = engine.getTrack ((int) item["output"]))
+                        engine.setTrackOutput (*from, bus);
+                if (auto* sendArray = item["sends"].getArray())
+                    for (auto& sv : *sendArray)
+                        if (auto* bus = engine.getTrack ((int) sv["bus"]))
+                            engine.setSend (*from, *bus, (float) (double) sv.getProperty ("level", 0.5), (bool) sv.getProperty ("pre", false));
             }
             ++index;
         }
