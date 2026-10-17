@@ -5,6 +5,9 @@ A small digital audio workstation for Windows, written in C++17 with [JUCE](http
 ## Features
 
 - **Audio tracks** - import wav / aiff / flac / mp3 / ogg (drag files into the window), record from your audio input.
+  Every audio track has its own **input** (the button under the track name: one mono input or a stereo pair of your interface),
+  several armed tracks record at once, each from its own input, and **Mon** lets you hear the input live through the track's
+  effects, volume and pan.
 - **Arrangement** - clips can be moved (also between tracks), split, duplicated and deleted; zoom, snap to the grid, loop region.
 - **MIDI tracks** with a built-in polyphonic synth (sine / saw / square / triangle, ADSR, low-pass) and a **piano roll**
   that names every key and note, lights up the keys that sound (live or during playback) and scrolls to the clip's notes
@@ -50,7 +53,8 @@ you can open the folder.
 
 Click **Audio...** (bottom right) to choose the driver type, the device, the sample rate, the buffer size and which
 channels are on. The choice is remembered. The status line at the bottom shows what is in use. MiniDAW plays through the
-first two enabled output channels and records from the first two enabled input channels, so enable the pair you want.
+first two enabled output channels. Which input an audio track records from is chosen per track (see below); only inputs
+that are switched on in this window can be picked.
 
 Without extra steps you get *Windows Audio* (WASAPI), *Windows Audio (Exclusive Mode)* / *(Low Latency Mode)* and
 *DirectSound*. For **ASIO** drivers (PreSonus Quantum / Studio 192, Roland Rubix, AudioBox, ...) MiniDAW has to be built with
@@ -108,7 +112,9 @@ An arpeggiator or similar plugin that should change the notes of one track goes 
 | Loop on / off | `L` (`Shift+L` loops the selected clip) |
 | Set the loop region | right-drag on the ruler |
 | Add an empty audio track | **+ Track** > *Empty audio track* (it starts armed for recording); drop audio files on it later, several files go one after the other |
-| Record into a specific audio track | click the red dot left of the track name to arm it, then **Record** (`R`). Without an armed track the recording becomes a new track |
+| Record into a specific audio track | click the red dot left of the track name to arm it, then **Record** (`R`). Arm several tracks to record them all at once. Without an armed track the recording becomes a new track from inputs 1+2 |
+| Choose a track's input | click the input button on the audio track (e.g. *In: 1+2*): mono inputs, stereo pairs, or *Audio settings...* |
+| Hear the input while playing | arm the track and turn on **Mon**; it goes through the track's effects, volume and pan (not in exports). Use headphones, or direct monitoring on your interface, to avoid feedback and double latency |
 | Move the playhead | click or drag on the ruler / empty lane |
 | Split clip(s) at the playhead | `S` |
 | Delete clip / note | `Delete` |

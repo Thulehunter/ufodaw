@@ -28,6 +28,8 @@ Engine::Engine()
     synthScratch.assign (16384, 0.0f);
     trackL.assign (16384, 0.0f);
     trackR.assign (16384, 0.0f);
+    inputBuf.setSize (64, 16384);   // room for the input channels of the biggest interfaces
+    inputBuf.clear();
 
     master = std::make_unique<Track>();
     master->name = "Master";
@@ -61,6 +63,11 @@ void Engine::prepareToPlay (int samplesPerBlock, double newRate)
     const juce::ScopedLock sl (lock);
     sampleRate = newRate;
     maxBlock = juce::jmax (4096, samplesPerBlock * 2);
+    if (inputBuf.getNumSamples() < samplesPerBlock * 2)
+    {
+        inputBuf.setSize (64, samplesPerBlock * 2);
+        inputBuf.clear();
+    }
     if ((int) synthScratch.size() < samplesPerBlock * 2)
     {
         synthScratch.assign ((size_t) samplesPerBlock * 2, 0.0f);
@@ -263,38 +270,59 @@ void Engine::removeInsert (Track& t, int index)
 //==============================================================================
 // Recording
 
-bool Engine::startRecording (const juce::File& file, int numChannels)
+bool Engine::startRecording (const std::vector<RecordTarget>& targets)
 {
     stopRecording();
-    file.getParentDirectory().createDirectory();
-    file.deleteFile();
 
-    std::unique_ptr<juce::FileOutputStream> stream (file.createOutputStream());
-    if (stream == nullptr)
-        return false;
+    std::vector<Recorder> fresh;
+    for (auto& target : targets)
+    {
+        target.file.getParentDirectory().createDirectory();
+        target.file.deleteFile();
 
-    juce::WavAudioFormat wav;
-    std::unique_ptr<juce::AudioFormatWriter> writer (wav.createWriterFor (stream.get(), sampleRate,
-                                                                         (unsigned int) juce::jlimit (1, 2, numChannels), 24, {}, 0));
-    if (writer == nullptr)
-        return false;
-    stream.release(); // the writer owns the stream now
+        std::unique_ptr<juce::FileOutputStream> stream (target.file.createOutputStream());
+        if (stream == nullptr)
+            return false;   // (the recorders made so far are closed again when `fresh` goes out of scope)
 
-    threadedWriter = std::make_unique<juce::AudioFormatWriter::ThreadedWriter> (writer.release(), writerThread, 32768);
+        juce::WavAudioFormat wav;
+        std::unique_ptr<juce::AudioFormatWriter> writer (wav.createWriterFor (stream.get(), sampleRate,
+                                                                             (unsigned int) juce::jlimit (1, 2, target.numChannels), 24, {}, 0));
+        if (writer == nullptr)
+            return false;
+        stream.release(); // the writer owns the stream now
+
+        Recorder r;
+        r.writer = std::make_unique<juce::AudioFormatWriter::ThreadedWriter> (writer.release(), writerThread, 32768);
+        r.first = juce::jmax (0, target.firstChannel);
+        r.count = juce::jlimit (1, 2, target.numChannels);
+        fresh.push_back (std::move (r));
+    }
+
     {
         const juce::SpinLock::ScopedLockType sl (recLock);
-        activeWriter = threadedWriter.get();
+        recorders.swap (fresh);
     }
-    return true;
+    recordingActive = ! targets.empty();
+    return ! targets.empty();
 }
 
 void Engine::stopRecording()
 {
+    recordingActive = false;
+    std::vector<Recorder> old;
     {
         const juce::SpinLock::ScopedLockType sl (recLock);
-        activeWriter = nullptr;
+        old.swap (recorders);
     }
-    threadedWriter.reset();   // flushes what is left and closes the file
+    old.clear();   // flushes what is left and closes the files
+}
+
+bool Engine::anyMonitoring() const
+{
+    for (auto& t : tracks)
+        if (t->type == Track::Type::Audio && t->recordArmed && t->monitor)
+            return true;
+    return false;
 }
 
 //==============================================================================
@@ -960,6 +988,8 @@ TrackState Engine::captureTrack (const Track& t) const
     ts.sequencer = t.sequencer;
     ts.recordArmed = t.recordArmed;
     ts.externalOuts = t.externalOuts;
+    ts.inputFirst = t.inputFirst;
+    ts.inputCount = t.inputCount;
     ts.autoLanes.push_back ({ "volume", t.autoVolume.points, t.autoVolume.active.load() });
     ts.autoLanes.push_back ({ "pan", t.autoPan.points, t.autoPan.active.load() });
     for (auto& lane : t.autoLanes)
@@ -998,6 +1028,8 @@ void Engine::applyTrackState (Track& t, const TrackState& ts)
     t.sequencer = ts.sequencer;
     t.recordArmed = ts.recordArmed;
     t.externalOuts = ts.externalOuts;
+    t.inputFirst = ts.inputFirst;
+    t.inputCount = ts.inputCount;
 
     // lanes last: they bind to the effect/synth parameters and plugins assigned above
     t.autoLanes.clear();
@@ -1206,19 +1238,29 @@ void Engine::releaseAllNotes (Track& t)
 
 void Engine::getNextAudioBlock (const juce::AudioSourceChannelInfo& info)
 {
-    // The buffer still holds the device input here, so take it before clearing it for output.
-    if (playing)
+    // The buffer still holds the device input here, so take it before clearing it for output: record it, and keep
+    // a copy of every input channel for tracks that monitor.
+    const int bufferChannels = info.buffer->getNumChannels();
+    if (playing && recordingActive)
     {
         const juce::SpinLock::ScopedTryLockType rl (recLock);
         if (rl.isLocked())
-            if (auto* w = activeWriter.load())
+            for (auto& r : recorders)
             {
                 const float* in[2];
-                in[0] = info.buffer->getReadPointer (0, info.startSample);
-                in[1] = info.buffer->getNumChannels() > 1 ? info.buffer->getReadPointer (1, info.startSample) : in[0];
-                w->write (in, info.numSamples);
+                in[0] = info.buffer->getReadPointer (juce::jmin (r.first, bufferChannels - 1), info.startSample);
+                in[1] = r.count > 1 ? info.buffer->getReadPointer (juce::jmin (r.first + 1, bufferChannels - 1), info.startSample) : in[0];
+                r.writer->write (in, info.numSamples);
             }
     }
+
+    inputChannelsCopied = juce::jmin (bufferChannels, inputBuf.getNumChannels());
+    if (info.numSamples <= inputBuf.getNumSamples())
+        for (int c = 0; c < inputChannelsCopied; ++c)
+            juce::FloatVectorOperations::copy (inputBuf.getWritePointer (c), info.buffer->getReadPointer (c, info.startSample), info.numSamples);
+    else
+        inputChannelsCopied = 0;
+    inputOffset = 0;
 
     info.clearActiveBufferRegion();
 
@@ -1251,7 +1293,7 @@ void Engine::getNextAudioBlock (const juce::AudioSourceChannelInfo& info)
                 releaseAllNotes (*t);
             wasRunning = false;
         }
-        if (! anySynthActive())
+        if (! anySynthActive() && ! anyMonitoring())   // (monitoring keeps the mixer running while stopped)
         {
             for (auto& t : tracks) t->level = 0.0f;
             setMasterLevel (0.0f);
@@ -1304,6 +1346,7 @@ void Engine::getNextAudioBlock (const juce::AudioSourceChannelInfo& info)
             if (len > 0)
             {
                 blockStartMs = callbackMs + 1000.0 * (double) done / sampleRate;
+                inputOffset = done;
                 mixBlock (outL + done, outR != nullptr ? outR + done : nullptr, len, p, withClick, true);
             }
             done += len;
@@ -1658,6 +1701,9 @@ void Engine::mixBlock (float* outL, float* outR, int n, juce::int64 pos, bool wi
         std::fill (bufL, bufL + nn, 0.0f);
         std::fill (bufR, bufR + nn, 0.0f);
 
+        const bool monitoring = t->type == Track::Type::Audio && t->recordArmed && t->monitor
+                                && ! offlineRendering && inputChannelsCopied > 0;
+
         if (t->type == Track::Type::Midi)
         {
             if (t->instrument != nullptr && t->routesElsewhere())
@@ -1693,7 +1739,7 @@ void Engine::mixBlock (float* outL, float* outR, int n, juce::int64 pos, bool wi
                 std::copy (bufL, bufL + nn, bufR);
             }
         }
-        else if (! running)
+        else if (! running && ! monitoring)
         {
             t->level = 0.0f;
             continue;
@@ -1701,6 +1747,8 @@ void Engine::mixBlock (float* outL, float* outR, int n, juce::int64 pos, bool wi
 
         for (auto& c : t->clips)
         {
+            if (! running)
+                break;   // stopped: only a monitored input is heard
             const double clipStart = c.start * sampleRate;
             const double clipEnd = c.end() * sampleRate;
             if ((double) (pos + n) <= clipStart || (double) pos >= clipEnd || c.audio == nullptr)
@@ -1730,6 +1778,20 @@ void Engine::mixBlock (float* outL, float* outR, int n, juce::int64 pos, bool wi
                 const float r = (srcR[i0] + frac * (srcR[i0 + 1] - srcR[i0])) * edge;
                 bufL[i] += l;
                 bufR[i] += r;
+            }
+        }
+
+        // Input monitoring: the armed track's input channels play live, through its effects, fader and pan.
+        if (monitoring)
+        {
+            const int c0 = juce::jmin (t->inputFirst, inputChannelsCopied - 1);
+            const int c1 = t->inputCount > 1 ? juce::jmin (t->inputFirst + 1, inputChannelsCopied - 1) : c0;   // mono: left = right
+            const float* inL = inputBuf.getReadPointer (c0) + inputOffset;
+            const float* inR = inputBuf.getReadPointer (c1) + inputOffset;
+            for (int i = 0; i < nn; ++i)
+            {
+                bufL[i] += inL[i];
+                bufR[i] += inR[i];
             }
         }
 

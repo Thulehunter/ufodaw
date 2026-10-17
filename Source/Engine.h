@@ -152,6 +152,9 @@ struct Track
     // MIDI routing: the notes a plugin instrument (a sequencer such as Stochas) sends out go to another
     // MIDI track instead of being heard from this one.
     bool recordArmed = false;                               // audio tracks: the next audio recording goes into this track
+    int inputFirst = 0;                                     // audio tracks: first of the device's enabled input channels this track listens to...
+    int inputCount = 2;                                     // ...and how many (1 = mono, 2 = a stereo pair)
+    bool monitor = false;                                   // armed audio tracks: also play the input through the track (not saved: off after loading)
     bool sequencer = false;                                 // UI role: this track's plugin is a note source (Stochas...), not a sound
     std::vector<MidiRoute> midiOuts;                        // tracks that play the notes this track's plugin sends
     std::vector<ExternalRoute> externalOuts;                // hardware that plays them (or the track's own notes: it then makes no sound itself)
@@ -200,6 +203,7 @@ struct TrackState
     std::vector<LaneState> autoLanes;   // includes "volume" and "pan"
     bool sequencer = false;
     bool recordArmed = false;
+    int inputFirst = 0, inputCount = 2;
     std::vector<std::pair<int, int>> midiOuts;   // (index of the target track, channel) of each MIDI route
     std::vector<ExternalRoute> externalOuts;
     std::vector<std::shared_ptr<PluginSlot>> midiFx;
@@ -313,9 +317,17 @@ public:
     bool trackHasOutput (const Track&) const;           // whether the track would give a non-empty stem
 
     // Records the audio input (while the transport plays) straight to a 24-bit WAV on a background thread.
-    bool startRecording (const juce::File&, int numChannels);
+    // Several files can record at the same time, each from its own input channels (numbered among the device's
+    // enabled input channels: 0 is the first enabled one).
+    struct RecordTarget
+    {
+        int firstChannel = 0;
+        int numChannels = 2;   // 1 or 2
+        juce::File file;
+    };
+    bool startRecording (const std::vector<RecordTarget>&);   // false (nothing recording) if any file cannot be created
     void stopRecording();
-    bool isRecording() const { return activeWriter.load() != nullptr; }
+    bool isRecording() const { return recordingActive.load(); }
 
     void play()  { playing = true; }
     void stop()  { playing = false; }
@@ -407,8 +419,20 @@ private:
     int nextClipId = 1;
 
     juce::TimeSliceThread writerThread { "MiniDAW audio writer" };
-    std::unique_ptr<juce::AudioFormatWriter::ThreadedWriter> threadedWriter;
-    std::atomic<juce::AudioFormatWriter::ThreadedWriter*> activeWriter { nullptr };
+    struct Recorder
+    {
+        std::unique_ptr<juce::AudioFormatWriter::ThreadedWriter> writer;
+        int first = 0, count = 2;
+    };
+    std::vector<Recorder> recorders;                // guarded by recLock; the audio thread only try-locks it
+    std::atomic<bool> recordingActive { false };
+
+    // The device input of the block being mixed, copied before the output buffer is cleared (all channels): what
+    // armed tracks with Monitor on play back through their effects and fader.
+    juce::AudioBuffer<float> inputBuf;
+    int inputChannelsCopied = 0;
+    int inputOffset = 0;                            // where the sub-block being mixed starts inside the callback's block
+    bool anyMonitoring() const;
     juce::SpinLock recLock;
 
     // UI -> audio thread queue for note previews

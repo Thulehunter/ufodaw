@@ -110,7 +110,7 @@ public:
     void filesDropped (const juce::StringArray& files, int, int) override { importFiles (files, nullptr, 0.0); }
 
     static constexpr int controlsWidth = 270;
-    static constexpr int stripHeight = 84;
+    static constexpr int stripHeight = 106;
     static constexpr int topBarHeight = 56;
     static constexpr int rulerHeight = 26;
     static constexpr int bottomBarHeight = 60;
@@ -159,7 +159,8 @@ private:
     void addTrackDialog();
     void addTrackMenu();                       // "+ Track": an empty audio track, or audio from files
     void addEmptyAudioTrack();
-    void armAudioTrack (Track&, bool armed);   // only one audio track is armed at a time
+    void armAudioTrack (Track&, bool armed);   // several audio tracks can be armed: all of them record at once
+    void openInputMenu (Track&, juce::Component& anchor);   // pick the audio interface input(s) of an audio track
     void addMidiTrack (bool drums = false);
     void undo();
     void redo();
@@ -250,7 +251,12 @@ private:
     std::vector<HeldNote> heldNotes;
     std::vector<Note> recordedNotes;   // start = absolute timeline seconds until the clip is created
     Track* recMidiTrack = nullptr;
-    Track* recAudioTrack = nullptr;   // the armed audio track an audio recording goes into (null: a new track)
+    struct PendingRecording   // one audio file being recorded: into an armed track, or into a new one (track == nullptr)
+    {
+        Track* track = nullptr;
+        juce::File file;
+    };
+    std::vector<PendingRecording> recordings;
     std::vector<ProjectState> undoStack, redoStack;
     TransportButton rewindButton { TransportButton::Rewind, "Rewind (Enter)" },
                     playButton   { TransportButton::Play,   "Play (Space)" },
@@ -261,7 +267,6 @@ private:
     juce::TooltipWindow tooltipWindow { this };
     double playStartSeconds = 0.0;
     double recStartSeconds = 0.0;
-    juce::File recordingFile;
     juce::TextButton openButton { "Open" }, saveButton { "Save" }, saveAsButton { "Save As" }, exportButton { "Export WAV" },
                      exportStemsButton { "Export stems" };
     juce::TextButton zoomOutButton { "-" }, zoomInButton { "+" };

@@ -38,16 +38,35 @@ public:
                  std::function<double()> onPosition,
                  std::function<void (Track&)> onOpenEditor,
                  std::function<void (Track&)> onToggleArm,
+                 std::function<void (Track&, juce::Component&)> onOpenInput,
                  bool masterStrip = false)
         : track (t), remove (std::move (onRemove)), beginEdit (std::move (onBeginEdit)), openPlugins (std::move (onOpenPlugins)),
           openAutomation (std::move (onOpenAutomation)), position (std::move (onPosition)), openEditor (std::move (onOpenEditor)),
-          toggleArm (std::move (onToggleArm)), isMaster (masterStrip)
+          toggleArm (std::move (onToggleArm)), openInput (std::move (onOpenInput)), isMaster (masterStrip)
     {
         // record-arm: audio tracks only; the next audio recording goes into the armed track
         armButton.setTooltip ("Record arm: the next recording goes into this track (click Record at the bottom, or press R)");
         armButton.onClick = [this] { toggleArm (track); };
         addChildComponent (armButton);
         armButton.setVisible (track.type == Track::Type::Audio);
+
+        // fourth row: audio tracks pick their input here (and can monitor it); MIDI tracks show what plays them
+        rowButton.setTooltip (track.type == Track::Type::Audio ? "Which input of the audio interface this track records from (and monitors)"
+                                                                : "Instrument or sequencer plugin, hardware output... (opens the VST panel)");
+        rowButton.onClick = [this]
+        {
+            if (track.type == Track::Type::Audio) openInput (track, rowButton);
+            else                                  openPlugins (track, rowButton);
+        };
+        addAndMakeVisible (rowButton);
+
+        monitorButton.setClickingTogglesState (true);
+        monitorButton.setColour (juce::TextButton::buttonOnColourId, Theme::yellow);
+        monitorButton.setTooltip ("Monitor: hear this track's input live through its effects and volume while it is armed. "
+                                  "Use headphones: a microphone in front of speakers will feed back.");
+        monitorButton.onClick = [this] { track.monitor = monitorButton.getToggleState(); };
+        addChildComponent (monitorButton);
+        monitorButton.setVisible (track.type == Track::Type::Audio);
 
         nameLabel.setInterceptsMouseClicks (false, false);   // so double-clicking the name reaches the header
         nameLabel.setText (track.name, juce::dontSendNotification);
@@ -113,7 +132,8 @@ public:
 
         if (isMaster)   // the master channel: no pan, mute, solo, arming or deleting; it is the final stage of the mix
         {
-            for (juce::Component* c : std::initializer_list<juce::Component*> { &pan, &muteButton, &soloButton, &deleteButton, &armButton })
+            for (juce::Component* c : std::initializer_list<juce::Component*> { &pan, &muteButton, &soloButton, &deleteButton, &armButton,
+                                                                               &rowButton, &monitorButton })
                 c->setVisible (false);
             nameLabel.setText ("MASTER", juce::dontSendNotification);
             nameLabel.setColour (juce::Label::textColourId, Theme::yellow);
@@ -177,7 +197,7 @@ public:
             return;
         }
 
-        auto c = getLocalBounds().withTrimmedRight (14).reduced (8, 6);
+        auto c = getLocalBounds().withTrimmedRight (14).reduced (8, 4);
         auto top = c.removeFromTop (20);
         deleteButton.setBounds (top.removeFromRight (22));
         top.removeFromRight (4);
@@ -193,6 +213,16 @@ public:
         }
         nameLabel.setBounds (top);
         c.removeFromTop (4);
+
+        auto bottom = c.removeFromBottom (22);   // input / instrument row
+        c.removeFromBottom (4);
+        if (monitorButton.isVisible())
+        {
+            monitorButton.setBounds (bottom.removeFromRight (46));
+            bottom.removeFromRight (4);
+        }
+        rowButton.setBounds (bottom);
+
         auto buttons = c.removeFromRight (56);
         muteButton.setBounds (buttons.removeFromTop (22));
         buttons.removeFromTop (4);
@@ -237,6 +267,37 @@ public:
             autoButton.repaint();
         }
 
+        // the fourth row: the audio input of an audio track, what plays a MIDI track
+        {
+            juce::String text;
+            if (track.type == Track::Type::Audio)
+            {
+                text = "In: " + (track.inputCount > 1 ? juce::String (track.inputFirst + 1) + "+" + juce::String (track.inputFirst + 2)
+                                                      : juce::String (track.inputFirst + 1));
+            }
+            else
+            {
+                text = track.instrument != nullptr ? track.instrument->description.name
+                                                    : track.kit != nullptr ? juce::String ("Drum kit") : juce::String ("Built-in synth");
+                if (track.sequencer)
+                    text = "Sequencer: " + text;
+                if (! track.externalOuts.empty())
+                    text += "  >  " + track.externalOuts.front().deviceName;
+                else if (! track.midiOuts.empty())
+                    text += "  >  " + juce::String ((int) track.midiOuts.size()) + " track" + (track.midiOuts.size() > 1 ? "s" : "");
+            }
+            if (text != rowShown)
+            {
+                rowShown = text;
+                rowButton.setButtonText (text);
+            }
+            if (track.monitor != monitorShown)
+            {
+                monitorShown = track.monitor;
+                monitorButton.setToggleState (monitorShown, juce::dontSendNotification);
+            }
+        }
+
         if (track.recordArmed != armShown)
         {
             armShown = track.recordArmed;
@@ -267,6 +328,10 @@ private:
     std::function<double()> position;
     std::function<void (Track&)> openEditor;
     std::function<void (Track&)> toggleArm;
+    std::function<void (Track&, juce::Component&)> openInput;
+    juce::TextButton rowButton, monitorButton { "Mon" };
+    juce::String rowShown;
+    bool monitorShown = false;
     bool isMaster = false;
     bool armShown = false;
     float shown = 0.0f;
@@ -1795,6 +1860,7 @@ std::unique_ptr<TrackHeader> MainComponent::makeHeader (Track& t, bool master)
        [this] { return engine.getPositionSeconds(); },
        [this] (Track& tr) { openInstrumentEditor (tr); },
        [this] (Track& tr) { armAudioTrack (tr, ! tr.recordArmed); },
+       [this] (Track& tr, juce::Component& anchor) { openInputMenu (tr, anchor); },
        master);
 }
 
@@ -2284,18 +2350,40 @@ void MainComponent::toggleRecording()
         return;
     }
 
-    recordingFile = juce::File::getSpecialLocation (juce::File::userDocumentsDirectory)
-                        .getChildFile ("MiniDAW Recordings")
-                        .getChildFile ("Recording " + juce::Time::getCurrentTime().formatted ("%Y-%m-%d %H-%M-%S") + ".wav");
+    // Every armed audio track records its own file from its own input; with none armed, inputs 1+2 go to a new track.
+    const auto folder = juce::File::getSpecialLocation (juce::File::userDocumentsDirectory).getChildFile ("MiniDAW Recordings");
+    const auto stamp = juce::Time::getCurrentTime().formatted ("%Y-%m-%d %H-%M-%S");
 
-    if (! engine.startRecording (recordingFile, juce::jmin (inputs, 2)))
+    std::vector<Engine::RecordTarget> targets;
+    recordings.clear();
+    for (int i = 0; i < engine.getNumTracks(); ++i)
+        if (auto* t = engine.getTrack (i); t->type == Track::Type::Audio && t->recordArmed)
+        {
+            Engine::RecordTarget target;
+            target.firstChannel = juce::jlimit (0, inputs - 1, t->inputFirst);               // clamp to the inputs that are switched on
+            target.numChannels = juce::jlimit (1, juce::jmin (2, inputs - target.firstChannel), t->inputCount);
+            target.file = folder.getChildFile ("Recording " + stamp + " - " + juce::File::createLegalFileName (t->name) + ".wav");
+            targets.push_back (target);
+            recordings.push_back ({ t, target.file });
+        }
+
+    if (targets.empty())
     {
+        Engine::RecordTarget target;
+        target.numChannels = juce::jmin (inputs, 2);
+        target.file = folder.getChildFile ("Recording " + stamp + ".wav");
+        targets.push_back (target);
+        recordings.push_back ({ nullptr, target.file });
+    }
+
+    if (! engine.startRecording (targets))
+    {
+        recordings.clear();
         juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Cannot record",
-                                                "Could not create " + recordingFile.getFullPathName());
+                                                "Could not create the recording files in " + folder.getFullPathName());
         return;
     }
 
-    recAudioTrack = audioArmed;
     recStartSeconds = engine.getPositionSeconds();
     startPlayback();   // recording only captures while the transport runs
 }
@@ -2359,26 +2447,34 @@ void MainComponent::finishRecording()
 
     engine.stopRecording();
 
+    // each recorded file becomes a clip where recording began: on its armed track, or on a new track
     beginEdit();
-    Track* t = recAudioTrack;
-    recAudioTrack = nullptr;
-    const bool intoArmedTrack = t != nullptr && engine.indexOfTrack (t) >= 0 && t->type == Track::Type::Audio;
-    if (! intoArmedTrack)
-        t = engine.addTrack (recordingFile.getFileNameWithoutExtension());
-
-    const int id = engine.addClipFromFile (*t, recordingFile, recStartSeconds);
-    if (id < 0)
+    bool anyClip = false;
+    for (auto& rec : recordings)
     {
+        Track* t = rec.track;
+        const bool intoArmedTrack = t != nullptr && engine.indexOfTrack (t) >= 0 && t->type == Track::Type::Audio;
         if (! intoArmedTrack)
-            engine.removeTrack (t);
-        recordingFile.deleteFile();
-        cancelEdit();
-        return;
-    }
+            t = engine.addTrack (rec.file.getFileNameWithoutExtension());
 
-    if (! intoArmedTrack)
-        addTrackUI (*t);
-    selectClip (t, id);
+        const int id = engine.addClipFromFile (*t, rec.file, recStartSeconds);
+        if (id < 0)
+        {
+            if (! intoArmedTrack)
+                engine.removeTrack (t);
+            rec.file.deleteFile();
+            continue;
+        }
+
+        if (! intoArmedTrack)
+            addTrackUI (*t);
+        selectClip (t, id);
+        anyClip = true;
+    }
+    recordings.clear();
+
+    if (! anyClip)
+        cancelEdit();
     clipsChanged();
 }
 
@@ -2412,9 +2508,55 @@ void MainComponent::addEmptyAudioTrack()
 
 void MainComponent::armAudioTrack (Track& t, bool armed)
 {
-    for (int i = 0; i < engine.getNumTracks(); ++i)
-        engine.getTrack (i)->recordArmed = false;
     t.recordArmed = armed && t.type == Track::Type::Audio;
+}
+
+// The inputs of the audio interface that are switched on (Audio... window), as names: choose one for this track, or a pair.
+void MainComponent::openInputMenu (Track& t, juce::Component& anchor)
+{
+    juce::StringArray names;
+    if (auto* device = deviceManager.getCurrentAudioDevice())
+    {
+        const auto all = device->getInputChannelNames();
+        const auto active = device->getActiveInputChannels();
+        for (int c = active.findNextSetBit (0); c >= 0; c = active.findNextSetBit (c + 1))
+            names.add (juce::isPositiveAndBelow (c, all.size()) ? all[c] : "Input " + juce::String (c + 1));
+    }
+
+    juce::PopupMenu menu;
+    if (names.isEmpty())
+    {
+        menu.addItem (-1, "No input channels are switched on", false);
+    }
+    else
+    {
+        for (int i = 0; i < names.size(); ++i)   // mono
+            menu.addItem (100 + i, "Input " + juce::String (i + 1) + ":  " + names[i], true, t.inputCount == 1 && t.inputFirst == i);
+        if (names.size() > 1)
+        {
+            menu.addSeparator();
+            for (int i = 0; i + 1 < names.size(); i += 2)   // stereo pairs: 1+2, 3+4, ...
+                menu.addItem (200 + i, "Inputs " + juce::String (i + 1) + "+" + juce::String (i + 2) + ":  " + names[i] + " / " + names[i + 1],
+                              true, t.inputCount == 2 && t.inputFirst == i);
+        }
+    }
+    menu.addSeparator();
+    menu.addItem (900, "Switch on more inputs (Audio settings)...");
+
+    auto* track = &t;
+    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&anchor), [this, track] (int result)
+    {
+        if (result <= 0 || engine.indexOfTrack (track) < 0)
+            return;
+        if (result == 900)
+        {
+            openAudioSettings();
+            return;
+        }
+        beginEdit();
+        if (result >= 200) { track->inputFirst = result - 200; track->inputCount = 2; }
+        else               { track->inputFirst = result - 100; track->inputCount = 1; }
+    });
 }
 
 void MainComponent::addTrackDialog()
@@ -2555,6 +2697,8 @@ void MainComponent::saveProject (const juce::File& file)
         }
         writeEffectsAndAutomation (*o, *t);   // effects, plugins, automation
         o->setProperty ("sequencer", t->sequencer);
+        o->setProperty ("inputFirst", t->inputFirst);   // audio tracks: the interface input(s) it records from
+        o->setProperty ("inputCount", t->inputCount);
         juce::Array<juce::var> outs;
         for (auto& route : t->midiOuts)
         {
@@ -2759,6 +2903,8 @@ void MainComponent::loadProject (const juce::File& file)
         }
 
         readEffectsAndAutomation (*t, item, pluginProblems);
+        t->inputFirst = juce::jmax (0, (int) item.getProperty ("inputFirst", 0));
+        t->inputCount = juce::jlimit (1, 2, (int) item.getProperty ("inputCount", 2));
 
         if (auto* hardware = item["externalOuts"].getArray())   // hardware MIDI outputs (opened here)
         {
