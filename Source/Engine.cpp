@@ -123,15 +123,24 @@ void Engine::getNextAudioBlock (const juce::AudioSourceChannelInfo& info)
         }
     }
 
+    // Soft limiter: transparent below 0.8, rounds peaks off instead of hard-clipping.
+    auto softClip = [] (float x)
+    {
+        constexpr float knee = 0.8f;
+        const float a = std::abs (x);
+        if (a <= knee) return x;
+        return std::copysign (knee + (1.0f - knee) * std::tanh ((a - knee) / (1.0f - knee)), x);
+    };
+
     const float mg = masterGain;
     float mp = 0.0f;
     for (int i = 0; i < n; ++i)
     {
-        outL[i] *= mg;
+        outL[i] = softClip (outL[i] * mg);
         mp = juce::jmax (mp, std::abs (outL[i]));
         if (outR)
         {
-            outR[i] *= mg;
+            outR[i] = softClip (outR[i] * mg);
             mp = juce::jmax (mp, std::abs (outR[i]));
         }
     }
