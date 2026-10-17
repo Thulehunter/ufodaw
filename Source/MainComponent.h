@@ -9,6 +9,8 @@ class TrackHeader;
 class TrackLane;
 class TimeRuler;
 class PianoRoll;
+class DrumSequencer;
+class RollPanel;
 
 // A viewport that tells us when it scrolls, so the track headers and the ruler can follow.
 class SyncViewport : public juce::Viewport
@@ -135,7 +137,7 @@ private:
     void clearTracksUI();
     void layoutContent();
     void addTrackDialog();
-    void addMidiTrack();
+    void addMidiTrack (bool drums = false);
     void undo();
     void redo();
     void restoreSnapshot (const ProjectState&);
@@ -186,8 +188,10 @@ private:
     MidiForwarder midiForwarder { *this };
     juce::MidiDeviceListConnection midiListConnection;
 
-    juce::TextButton addButton { "+ Track" }, addMidiButton { "+ MIDI Track" };
-    std::unique_ptr<PianoRoll> roll;
+    juce::TextButton addButton { "+ Track" }, addMidiButton { "+ MIDI" }, addDrumButton { "+ Drums" };
+    std::unique_ptr<PianoRoll> pianoRoll;
+    std::unique_ptr<DrumSequencer> drumRoll;
+    RollPanel* roll = nullptr;   // whichever of the two editors is in use for the selected clip
     bool rollVisible = false;
     juce::TextButton undoButton { "Undo" }, redoButton { "Redo" };
 

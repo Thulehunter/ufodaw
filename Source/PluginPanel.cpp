@@ -16,7 +16,7 @@ PluginPanel::PluginPanel (Track& t, Engine& e, PluginHost& h, std::function<void
     {
         addAndMakeVisible (instrumentLabel);
 
-        instrumentBox.addItem ("Built-in synth", 1);
+        instrumentBox.addItem (track.kit != nullptr ? "Built-in drum kit" : "Built-in synth", 1);
         for (auto& d : host.getList().getTypes())
             if (d.isInstrument)
             {

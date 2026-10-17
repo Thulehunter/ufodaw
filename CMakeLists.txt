@@ -19,6 +19,8 @@ target_sources(MiniDAW PRIVATE
     Source/Synth.cpp
     Source/Fx.cpp
     Source/FxPanel.cpp
+    Source/DrumKit.cpp
+    Source/DrumSequencer.cpp
     Source/PluginHost.cpp
     Source/PluginPanel.cpp
     Source/PianoRoll.cpp

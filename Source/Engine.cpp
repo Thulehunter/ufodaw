@@ -35,6 +35,8 @@ void Engine::prepareToPlay (int samplesPerBlock, double newRate)
     {
         if (t->voices != nullptr)
             t->voices->prepare (newRate);
+        if (t->kit != nullptr)
+            t->kit->prepare (newRate);
         t->fxState->prepare (newRate);
         if (t->instrument != nullptr)
             preparePlugin (*t->instrument);
@@ -149,6 +151,44 @@ Track* Engine::addTrack (const juce::String& name, Track::Type type)
     const juce::ScopedLock sl (lock);
     tracks.push_back (std::move (track));
     return raw;
+}
+
+Track* Engine::addDrumTrack (const juce::String& name)
+{
+    auto* t = addTrack (name, Track::Type::Midi);
+    auto kit = std::make_shared<DrumKit>();
+    kit->prepare (sampleRate);
+
+    const juce::ScopedLock sl (lock);
+    t->kit = std::move (kit);
+    return t;
+}
+
+bool Engine::loadDrumSample (Track& t, int pad, const juce::File& file)
+{
+    if (t.kit == nullptr || ! juce::isPositiveAndBelow (pad, DrumKit::numPads))
+        return false;
+
+    std::unique_ptr<juce::AudioFormatReader> reader (formats.createReaderFor (file));
+    if (reader == nullptr || reader->lengthInSamples <= 0)
+        return false;
+
+    const int numChannels = (int) juce::jmin<juce::uint32> (reader->numChannels, 2);
+    const int length = (int) juce::jmin<juce::int64> (reader->lengthInSamples, (juce::int64) (reader->sampleRate * 30.0));   // one-shots: 30 s is plenty
+    auto buffer = std::make_shared<juce::AudioBuffer<float>> (numChannels, length);
+    reader->read (buffer.get(), 0, length, 0, true, true);
+
+    const juce::ScopedLock sl (lock);
+    t.kit->setSample (pad, std::move (buffer), reader->sampleRate, file);
+    return true;
+}
+
+void Engine::resetDrumPad (Track& t, int pad)
+{
+    if (t.kit == nullptr || ! juce::isPositiveAndBelow (pad, DrumKit::numPads))
+        return;
+    const juce::ScopedLock sl (lock);
+    t.kit->resetPad (pad);
 }
 
 void Engine::removeTrack (Track* t)
@@ -551,6 +591,7 @@ ProjectState Engine::captureState() const
         ts.inserts = t->inserts;
         ts.autoVolume = t->autoVolume.points;
         ts.autoPan = t->autoPan.points;
+        ts.kit = t->kit;
         ts.autoVolumeActive = t->autoVolume.active;
         ts.autoPanActive = t->autoPan.active;
         t->fx.forEachFloat ([&ts] (const char*, std::atomic<float>& v) { ts.fxFloats.push_back (v.load()); });
@@ -587,6 +628,7 @@ void Engine::restoreState (const ProjectState& s)
 
         t->instrument = ts.instrument;
         t->inserts = ts.inserts;
+        t->kit = ts.kit;
         t->autoVolume.points = ts.autoVolume;
         t->autoPan.points = ts.autoPan;
         t->autoVolume.active = ts.autoVolumeActive;
@@ -642,6 +684,10 @@ void Engine::drainPreviewEvents()
                                                : juce::MidiMessage::noteOff (1, e.pitch), 0);
                     t->pluginTailSamples = 3.0 * sampleRate;
                 }
+                else if (t->kit != nullptr)
+                {
+                    if (e.on) t->kit->noteOn (e.pitch, e.velocity);   // one-shots: note-offs don't matter
+                }
                 else if (t->voices != nullptr)
                 {
                     if (e.on) t->voices->noteOn (e.pitch, e.velocity); else t->voices->noteOff (e.pitch);
@@ -659,6 +705,7 @@ bool Engine::anySynthActive() const
 {
     for (auto& t : tracks)
         if ((t->voices != nullptr && t->voices->isActive())
+            || (t->kit != nullptr && t->kit->isActive())
             || (t->instrument != nullptr && t->pluginTailSamples > 0.0))
             return true;
     return false;
@@ -670,6 +717,8 @@ void Engine::silenceSynths()
     {
         if (t->voices != nullptr)
             t->voices->reset();
+        if (t->kit != nullptr)
+            t->kit->reset();
         t->fxState->reset();
         if (t->instrument != nullptr)
             t->instrument->instance->reset();
@@ -694,6 +743,8 @@ void Engine::releaseAllNotes (Track& t)
 {
     if (t.voices != nullptr)
         t.voices->allNotesOff();
+    if (t.kit != nullptr)
+        t.kit->stopAll();
     if (t.instrument != nullptr)
     {
         t.liveMidi.addEvent (juce::MidiMessage::allNotesOff (1), 0);
@@ -884,6 +935,27 @@ void Engine::processInsert (PluginSlot& slot, float* l, float* r, int n)
     std::copy (buf.getReadPointer (1), buf.getReadPointer (1) + n, r);
 }
 
+void Engine::renderDrumTrack (Track& t, int n, juce::int64 pos, bool running, float* scratch)
+{
+    std::fill (scratch, scratch + n, 0.0f);
+    collectNoteEvents (t, n, pos, running);
+
+    int done = 0;
+    for (auto& e : noteEvents)
+    {
+        if (! e.on)
+            continue;   // drum hits are one-shots
+        if (e.offset > done)
+        {
+            t.kit->render (scratch + done, e.offset - done);
+            done = e.offset;
+        }
+        t.kit->noteOn (e.pitch, e.velocity);
+    }
+    if (done < n)
+        t.kit->render (scratch + done, n - done);
+}
+
 void Engine::renderMidiTrack (Track& t, int n, juce::int64 pos, bool running, float* scratch)
 {
     std::fill (scratch, scratch + n, 0.0f);
@@ -960,6 +1032,11 @@ void Engine::mixBlock (float* outL, float* outR, int n, juce::int64 pos, bool wi
                     if (! running)
                         t->pluginTailSamples -= nn;
                 }
+            }
+            else if (t->kit != nullptr)
+            {
+                renderDrumTrack (*t, nn, pos, running, bufL);
+                std::copy (bufL, bufL + nn, bufR);
             }
             else if (t->voices != nullptr)
             {

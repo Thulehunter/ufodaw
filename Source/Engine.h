@@ -8,6 +8,7 @@
 #include "Synth.h"
 #include "Fx.h"
 #include "Plugin.h"
+#include "DrumKit.h"
 
 // A piece of audio placed on the timeline. The sample data is immutable and shared, so
 // splitting and duplicating clips is free; only start/offset/length differ.
@@ -90,6 +91,7 @@ struct Track
 
     SynthParams synth;                  // MIDI tracks
     std::unique_ptr<Synth> voices;      // audio-thread state, created for MIDI tracks
+    std::shared_ptr<DrumKit> kit;       // set on drum tracks: a MIDI track that plays the drum kit instead of the synth
 
     FxParams fx;                        // effect chain settings
     std::unique_ptr<TrackFx> fxState;   // audio-thread state of the chain
@@ -127,6 +129,7 @@ struct TrackState
     std::vector<char> fxBools;          // FxParams::forEachBool order
     std::vector<AutoPoint> autoVolume, autoPan;
     bool autoVolumeActive = true, autoPanActive = true;
+    std::shared_ptr<DrumKit> kit;
     std::shared_ptr<PluginSlot> instrument;                 // plugins are shared with the live project,
     std::vector<std::shared_ptr<PluginSlot>> inserts;       // so undo restores which ones are present, not their settings
 };
@@ -156,6 +159,11 @@ public:
     int getNumTracks() const;
     Track* getTrack (int index) const;
     int indexOfTrack (const Track*) const;
+
+    // ---- Message thread: drum tracks (MIDI tracks with a drum kit; their clips are MIDI clips)
+    Track* addDrumTrack (const juce::String& name);
+    bool loadDrumSample (Track&, int pad, const juce::File&);
+    void resetDrumPad (Track&, int pad);
 
     // ---- Message thread: audio clips (all return -1 / false when nothing was done)
     int addClipFromFile (Track&, const juce::File&, double startSeconds);   // new clip id
@@ -253,6 +261,7 @@ private:
     void silenceSynths();
     void releaseAllNotes (Track&);                              // soft all-notes-off for the synth or plugin instrument
     void collectNoteEvents (Track&, int numSamples, juce::int64 pos, bool running);
+    void renderDrumTrack (Track&, int numSamples, juce::int64 pos, bool running, float* scratch);
     void renderPluginInstrument (Track&, int numSamples, float* outL, float* outR);
     void processInsert (PluginSlot&, float* l, float* r, int numSamples);
 

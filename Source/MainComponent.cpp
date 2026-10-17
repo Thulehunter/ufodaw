@@ -1,5 +1,6 @@
 #include "MainComponent.h"
 #include "PianoRoll.h"
+#include "DrumSequencer.h"
 #include "FxPanel.h"
 #include "PluginPanel.h"
 #include <algorithm>
@@ -741,9 +742,13 @@ MainComponent::MainComponent()
 {
     // These must exist before setSize() triggers resized()
     ruler = std::make_unique<TimeRuler> (*this);
-    roll = std::make_unique<PianoRoll> (*this);
-    roll->onClose = [this] { hideRoll(); };
-    addChildComponent (*roll);
+    pianoRoll = std::make_unique<PianoRoll> (*this);
+    drumRoll = std::make_unique<DrumSequencer> (*this);
+    roll = pianoRoll.get();
+    pianoRoll->onClose = [this] { hideRoll(); };
+    drumRoll->onClose = [this] { hideRoll(); };
+    addChildComponent (*pianoRoll);
+    addChildComponent (*drumRoll);
 
     setWantsKeyboardFocus (true);
 
@@ -795,7 +800,9 @@ MainComponent::MainComponent()
     stopButton.onClick   = [this] { stopPlayback(); };
     recordButton.onClick = [this] { toggleRecording(); };
     addButton.onClick = [this] { addTrackDialog(); };
-    addMidiButton.onClick = [this] { addMidiTrack(); };
+    addMidiButton.onClick = [this] { addMidiTrack (false); };
+    addDrumButton.onClick = [this] { addMidiTrack (true); };
+    addAndMakeVisible (addDrumButton);
     metroButton.onClick = [this] { engine.metronome = metroButton.getToggleState(); };
     snapButton.setToggleState (true, juce::dontSendNotification);
     openButton.onClick   = [this] { openProjectDialog(); };
@@ -834,7 +841,7 @@ MainComponent::MainComponent()
     addAndMakeVisible (headerViewport);
     addAndMakeVisible (*ruler);
 
-    setSize (1250, 620);   // last: resized() touches all the children above
+    setSize (1400, 640);   // last: resized() touches all the children above
     startTimerHz (30);
 }
 
@@ -946,10 +953,15 @@ void MainComponent::liveNote (int pitch, bool on, float velocity)
 
 void MainComponent::showRoll (Track* t, int clipId)
 {
+    // drum tracks get the step sequencer, every other MIDI track the piano roll
+    RollPanel* wanted = (t != nullptr && t->kit != nullptr) ? static_cast<RollPanel*> (drumRoll.get())
+                                                           : static_cast<RollPanel*> (pianoRoll.get());
     const bool wasVisible = rollVisible;
+    const bool panelChanged = wanted != roll;
+    roll = wanted;
     rollVisible = true;
     roll->showClip (t, clipId);
-    if (! wasVisible)
+    if (! wasVisible || panelChanged)
         layoutContent();
 }
 
@@ -962,15 +974,16 @@ void MainComponent::hideRoll()
     updateArmedTrack();
 }
 
-void MainComponent::addMidiTrack()
+void MainComponent::addMidiTrack (bool drums)
 {
     int count = 1;
     for (int i = 0; i < engine.getNumTracks(); ++i)
-        if (engine.getTrack (i)->type == Track::Type::Midi)
+        if (auto* other = engine.getTrack (i); other->type == Track::Type::Midi && (other->kit != nullptr) == drums)
             ++count;
 
     beginEdit();
-    auto* t = engine.addTrack ("Synth " + juce::String (count), Track::Type::Midi);
+    auto* t = drums ? engine.addDrumTrack ("Drums " + juce::String (count))
+                    : engine.addTrack ("Synth " + juce::String (count), Track::Type::Midi);
     const double bar = barSeconds();
     const double start = std::floor (engine.getPositionSeconds() / bar) * bar;
     const int id = engine.addMidiClip (*t, start, bar * 2.0);
@@ -1277,8 +1290,11 @@ void MainComponent::layoutContent()
     const int laneW = getWidth() - controlsWidth;
     const int rollH = rollVisible ? juce::jmin (rollHeight, getHeight() / 2) : 0;
     laneViewport.setBounds (controlsWidth, y0, laneW, getHeight() - y0 - bottomBarHeight - rollH);
-    roll->setBounds (0, getHeight() - bottomBarHeight - rollH, getWidth(), rollH);
-    roll->setVisible (rollVisible);
+    for (juce::Component* panel : std::initializer_list<juce::Component*> { pianoRoll.get(), drumRoll.get() })
+    {
+        panel->setBounds (0, getHeight() - bottomBarHeight - rollH, getWidth(), rollH);
+        panel->setVisible (rollVisible && panel == roll);
+    }
     ruler->setBounds (controlsWidth, topBarHeight, laneW, rulerHeight);
 
     const int visibleW = laneViewport.getMaximumVisibleWidth();
@@ -1303,9 +1319,11 @@ void MainComponent::resized()
     auto top = getLocalBounds().removeFromTop (topBarHeight).reduced (8, 10);
     addButton.setBounds (top.removeFromLeft (80));
     top.removeFromLeft (6);
-    addMidiButton.setBounds (top.removeFromLeft (104));
-    top.removeFromLeft (16);
-    timeLabel.setBounds (top.removeFromLeft (170));
+    addMidiButton.setBounds (top.removeFromLeft (70));
+    top.removeFromLeft (6);
+    addDrumButton.setBounds (top.removeFromLeft (76));
+    top.removeFromLeft (12);
+    timeLabel.setBounds (top.removeFromLeft (160));
     top.removeFromLeft (16);
     bpmLabel.setBounds (top.removeFromLeft (36));
     bpmSlider.setBounds (top.removeFromLeft (70));
@@ -1824,6 +1842,17 @@ void MainComponent::saveProject (const juce::File& file)
                 midiList.add (juce::var (mo));
             }
             o->setProperty ("midiClips", midiList);
+
+            if (t->kit != nullptr)   // only the pads with a user sample need saving; the others are generated
+            {
+                juce::Array<juce::var> padFiles;
+                for (int pad = 0; pad < DrumKit::numPads; ++pad)
+                {
+                    const auto f = t->kit->getPad (pad).file;
+                    padFiles.add (f == juce::File() ? juce::String() : f.getRelativePathFrom (baseDir));
+                }
+                o->setProperty ("drumPads", padFiles);
+            }
         }
         auto* fo = new juce::DynamicObject();
         t->fx.forEachFloat ([fo] (const char* name, std::atomic<float>& v) { fo->setProperty (name, (double) v.load()); });
@@ -1937,8 +1966,22 @@ void MainComponent::loadProject (const juce::File& file)
     for (auto& item : *root["tracks"].getArray())
     {
         const bool isMidi = item.getProperty ("type", "audio").toString() == "midi";
-        auto* t = engine.addTrack (item.getProperty ("name", "Track").toString(),
-                                   isMidi ? Track::Type::Midi : Track::Type::Audio);
+        const bool isDrums = isMidi && item.hasProperty ("drumPads");
+        const auto trackName = item.getProperty ("name", "Track").toString();
+        auto* t = isDrums ? engine.addDrumTrack (trackName)
+                          : engine.addTrack (trackName, isMidi ? Track::Type::Midi : Track::Type::Audio);
+
+        if (isDrums)
+            if (auto* padFiles = item["drumPads"].getArray())
+                for (int pad = 0; pad < padFiles->size() && pad < DrumKit::numPads; ++pad)
+                {
+                    const auto rel = (*padFiles)[pad].toString();
+                    if (rel.isEmpty())
+                        continue;
+                    const auto sample = baseDir.getChildFile (rel);
+                    if (! engine.loadDrumSample (*t, pad, sample))
+                        missing.add (sample.getFullPathName());
+                }
         t->gain = (float) (double) item.getProperty ("gain", 0.8);
         t->pan = (float) (double) item.getProperty ("pan", 0.0);
         t->mute = (bool) item.getProperty ("mute", false);
