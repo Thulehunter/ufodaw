@@ -744,7 +744,7 @@ void PianoRoll::showClip (Track* t, int id)
     grid->setClip (t, id);
     velocity->setClip (t, id);
     refreshLaneChoices();
-    toolbarShowsPlugin = ! (t != nullptr && t->instrument != nullptr);   // force updateToolbar() to apply
+    toolbarShowsPlugin = ! (t != nullptr && (t->instrument != nullptr || t->sampler != nullptr));   // force updateToolbar() to apply
     updateToolbar();
 
     if (t != nullptr)
@@ -819,7 +819,8 @@ bool PianoRoll::deleteSelectedNote() { return grid->deleteSelected(); }
 
 void PianoRoll::updateToolbar()
 {
-    const bool plugin = track != nullptr && track->instrument != nullptr;
+    const bool plugin = track != nullptr && (track->instrument != nullptr || track->sampler != nullptr);   // (the sampler has a window of its own, too)
+    pluginButton.setButtonText (track != nullptr && track->sampler != nullptr ? "Sampler window" : "Plugin window");
     if (plugin == toolbarShowsPlugin)
         return;
     toolbarShowsPlugin = plugin;

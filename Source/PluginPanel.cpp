@@ -26,7 +26,7 @@ PluginPanel::PluginPanel (Track& t, Engine& e, PluginHost& h, std::function<void
         instrumentLabel.setText (track.sequencer ? "Plugin" : "Instrument", juce::dontSendNotification);
         addAndMakeVisible (instrumentLabel);
 
-        instrumentBox.addItem (track.kit != nullptr ? "Built-in drum kit" : "Built-in synth", 1);
+        instrumentBox.addItem (track.kit != nullptr ? "Built-in drum kit" : track.sampler != nullptr ? "Built-in sampler" : "Built-in synth", 1);
         for (int pass = 0; pass < 2; ++pass)   // instruments first, then everything else
         {
             bool headingAdded = false;

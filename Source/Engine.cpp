@@ -91,6 +91,8 @@ void Engine::prepareToPlay (int samplesPerBlock, double newRate)
             t->voices->prepare (newRate);
         if (t->kit != nullptr)
             t->kit->prepare (newRate);
+        if (t->sampler != nullptr)
+            t->sampler->prepare (newRate);
         sizeDelayBuffers (*t, newRate);
         t->fxState->prepare (newRate);
         if (t->instrument != nullptr)
@@ -418,6 +420,45 @@ Track* Engine::addDrumTrack (const juce::String& name)
     const juce::ScopedLock sl (lock);
     t->kit = std::move (kit);
     return t;
+}
+
+Track* Engine::addSamplerTrack (const juce::String& name)
+{
+    auto* t = addTrack (name, Track::Type::Midi);
+    auto sampler = std::make_shared<Sampler>();
+    sampler->prepare (sampleRate);
+
+    const juce::ScopedLock sl (lock);
+    t->sampler = std::move (sampler);
+    return t;
+}
+
+bool Engine::loadSamplerSample (Track& t, const juce::File& file)
+{
+    if (t.sampler == nullptr)
+        return false;
+
+    std::unique_ptr<juce::AudioFormatReader> reader (formats.createReaderFor (file));
+    if (reader == nullptr || reader->lengthInSamples <= 1)
+        return false;
+
+    const int numChannels = (int) juce::jmin<juce::uint32> (reader->numChannels, 2);
+    const int length = (int) juce::jmin<juce::int64> (reader->lengthInSamples, (juce::int64) (reader->sampleRate * 600.0));   // ten minutes at most
+    auto buffer = std::make_shared<juce::AudioBuffer<float>> (numChannels, length);
+    reader->read (buffer.get(), 0, length, 0, true, true);
+
+    const juce::ScopedLock sl (lock);
+    t.sampler->setSample (std::move (buffer), reader->sampleRate, file, file.getFileNameWithoutExtension());
+    return true;
+}
+
+bool Engine::setSamplerSample (Track& t, std::shared_ptr<const juce::AudioBuffer<float>> buffer, double rate, const juce::String& name, const juce::File& file)
+{
+    if (t.sampler == nullptr || buffer == nullptr || buffer->getNumSamples() < 2)
+        return false;
+    const juce::ScopedLock sl (lock);
+    t.sampler->setSample (std::move (buffer), rate, file, name);
+    return true;
 }
 
 bool Engine::loadDrumSample (Track& t, int pad, const juce::File& file)
@@ -1486,7 +1527,7 @@ std::vector<AutoTarget> Engine::listAutomationTargets (const Track& t) const
     for (auto& spec : fxParamSpecs())
         out.push_back ({ juce::String ("fx.") + spec.id, spec.label, "Effects" });
 
-    if (t.type == Track::Type::Midi && t.instrument == nullptr && t.kit == nullptr)
+    if (t.type == Track::Type::Midi && t.instrument == nullptr && t.kit == nullptr && t.sampler == nullptr)
         for (auto* name : { "cutoff", "attack", "release" })
             out.push_back ({ juce::String ("synth.") + name, "Synth " + juce::String (name), "Synth" });
 
@@ -1653,6 +1694,7 @@ TrackState Engine::captureTrack (const Track& t) const
     for (auto& lane : t.autoLanes)
         ts.autoLanes.push_back ({ lane->id, lane->points, lane->active.load() });
     ts.kit = t.kit;
+    ts.sampler = t.sampler;
     const_cast<Track&> (t).fx.forEachFloat ([&ts] (const char*, std::atomic<float>& v) { ts.fxFloats.push_back (v.load()); });
     const_cast<Track&> (t).fx.forEachBool ([&ts] (const char*, std::atomic<bool>& v) { ts.fxBools.push_back (v.load() ? 1 : 0); });
     return ts;
@@ -1684,6 +1726,7 @@ void Engine::applyTrackState (Track& t, const TrackState& ts)
     t.inserts = ts.inserts;
     t.midiFx = ts.midiFx;
     t.kit = ts.kit;
+    t.sampler = ts.sampler;
     t.sequencer = ts.sequencer;
     t.recordArmed = ts.recordArmed;
     t.midiInputId = ts.midiInputId;
@@ -1880,6 +1923,10 @@ void Engine::drainPreviewEvents()
                 {
                     if (e.on) t->kit->noteOn (e.pitch, e.velocity);   // one-shots: note-offs don't matter
                 }
+                else if (t->sampler != nullptr)
+                {
+                    if (e.on) t->sampler->noteOn (e.pitch, e.velocity); else t->sampler->noteOff (e.pitch);
+                }
                 else if (t->voices != nullptr)
                 {
                     if (e.on) t->voices->noteOn (e.pitch, e.velocity); else t->voices->noteOff (e.pitch);
@@ -1898,6 +1945,7 @@ bool Engine::anySynthActive() const
     for (auto& t : tracks)
         if ((t->voices != nullptr && t->voices->isActive())
             || (t->kit != nullptr && t->kit->isActive())
+            || (t->sampler != nullptr && t->sampler->isActive())
             || (t->instrument != nullptr && t->pluginTailSamples > 0.0))
             return true;
     return false;
@@ -1915,6 +1963,8 @@ void Engine::silenceSynths()
             t->voices->reset();
         if (t->kit != nullptr)
             t->kit->reset();
+        if (t->sampler != nullptr)
+            t->sampler->reset();
         t->fxState->reset();
         if (t->instrument != nullptr)
             t->instrument->instance->reset();
@@ -1949,6 +1999,8 @@ void Engine::releaseAllNotes (Track& t)
         t.voices->allNotesOff();
     if (t.kit != nullptr)
         t.kit->stopAll();
+    if (t.sampler != nullptr)
+        t.sampler->allNotesOff();
     if (t.instrument != nullptr)
     {
         t.liveMidi.addEvent (juce::MidiMessage::allNotesOff (1), 0);
@@ -2596,6 +2648,26 @@ void Engine::renderDrumTrack (Track& t, int n, juce::int64 pos, bool running, fl
         t.kit->render (scratch + done, n - done);
 }
 
+void Engine::renderSamplerTrack (Track& t, int n, juce::int64 pos, bool running, float* outL, float* outR)
+{
+    std::fill (outL, outL + n, 0.0f);
+    std::fill (outR, outR + n, 0.0f);
+    collectNoteEvents (t, n, pos, running);
+
+    int done = 0;
+    for (auto& e : noteEvents)
+    {
+        if (e.offset > done)
+        {
+            t.sampler->render (outL + done, outR + done, e.offset - done);
+            done = e.offset;
+        }
+        if (e.on) t.sampler->noteOn (e.pitch, e.velocity); else t.sampler->noteOff (e.pitch);
+    }
+    if (done < n)
+        t.sampler->render (outL + done, outR + done, n - done);
+}
+
 void Engine::renderMidiTrack (Track& t, int n, juce::int64 pos, bool running, float* scratch)
 {
     std::fill (scratch, scratch + n, 0.0f);
@@ -2749,6 +2821,10 @@ void Engine::mixBlock (float* outL, float* outR, int n, juce::int64 pos, bool wi
             {
                 // plays hardware instead of the built-in sound: just send this block's notes out
                 collectNoteEvents (*t, nn, pos, running);
+            }
+            else if (t->sampler != nullptr)
+            {
+                renderSamplerTrack (*t, nn, pos, running, bufL, bufR);   // (stereo: a stereo sample keeps its image)
             }
             else if (t->kit != nullptr)
             {

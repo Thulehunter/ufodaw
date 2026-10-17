@@ -41,6 +41,7 @@ target_sources(UFODAW PRIVATE
     Source/PluginPanel.cpp
     Source/PianoRoll.cpp
     Source/Stretch.cpp
+    Source/Sampler.cpp
     Source/MainComponent.cpp
     "${rubberband_SOURCE_DIR}/single/RubberBandSingle.cpp")
 target_include_directories(UFODAW PRIVATE "${rubberband_SOURCE_DIR}")

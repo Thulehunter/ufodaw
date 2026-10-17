@@ -8,6 +8,8 @@
 #include "Tuner.h"
 #include <map>
 
+class SamplerWindow;   // (SamplerPanel.h)
+
 // Settings shared by the track headers and the lanes
 namespace UiSettings
 {
@@ -233,6 +235,10 @@ private:
     void addTrackMenu();                       // "+ Track": an empty audio track, or audio from files
     void addEmptyAudioTrack();
     void addBusTrack();                                      // a group / effects-return bus
+    void addSamplerTrack();                                  // a MIDI track that plays one sample (Simpler-style)
+    void openSampler (Track&);                               // the sampler's window: sample, markers, mode, envelope, filter
+    void sampleClip (Track&, int clipId);                    // an audio clip's audio becomes the sample of a new sampler track
+    std::unique_ptr<SamplerWindow> samplerWindow;
     void openRouting (Track&, juce::Component& anchor);      // output (master or a bus) and sends of a track
     void openQuantize (Track&, int clipId);                  // quantize / swing / humanize the notes of a MIDI clip
     void armAudioTrack (Track&, bool armed);   // several audio tracks can be armed: all of them record at once

@@ -1,0 +1,203 @@
+#include "Sampler.h"
+#include <cmath>
+
+void Sampler::setSample (std::shared_ptr<const juce::AudioBuffer<float>> buffer, double rate, const juce::File& newFile, const juce::String& newName)
+{
+    reset();
+    sample = std::move (buffer);
+    sampleRate = rate > 0.0 ? rate : 44100.0;
+    file = newFile;
+    name = newName;
+}
+
+void Sampler::reset()
+{
+    for (auto& v : voices)
+        v.active = false;
+}
+
+bool Sampler::isActive() const
+{
+    for (auto& v : voices)
+        if (v.active)
+            return true;
+    return false;
+}
+
+void Sampler::allNotesOff()
+{
+    for (auto& v : voices)
+        if (v.active)
+        {
+            v.released = true;
+            v.stage = Voice::Release;
+        }
+}
+
+void Sampler::noteOn (int note, float velocity)
+{
+    if (sample == nullptr || sample->getNumSamples() < 2)
+        return;
+    start (note, velocity);
+}
+
+void Sampler::noteOff (int note)
+{
+    for (auto& v : voices)
+        if (v.active && v.note == note && ! v.released && ! v.oneShotLike)
+        {
+            v.released = true;
+            v.stage = Voice::Release;
+        }
+}
+
+void Sampler::start (int note, float velocity)
+{
+    const int total = sample->getNumSamples();
+    const int mode = params.mode.load();
+    const double s = juce::jlimit (0.0f, 1.0f, params.start.load()), e = juce::jlimit (0.0f, 1.0f, params.end.load());
+    const double from = juce::jmin (s, e) * (double) total, to = juce::jmax (s, e) * (double) total;
+    if (to - from < 2.0)
+        return;
+
+    Voice v;
+    v.active = true;
+    v.note = note;
+    v.velocity = juce::jlimit (0.0f, 1.0f, velocity);
+    v.age = ++counter;
+    v.oneShotLike = mode != Classic;
+    v.level = 0.0f;
+    v.stage = Voice::Attack;
+
+    double ratio = sampleRate / outRate;   // source frames per output frame at the original pitch
+    double regionStart = from, regionEnd = to;
+
+    if (mode == Slice)
+    {
+        const int count = juce::jlimit (1, 64, params.slices.load());
+        const int index = note - params.sliceNote.load();
+        if (index < 0 || index >= count)
+            return;
+        const double length = (to - from) / (double) count;
+        regionStart = from + length * (double) index;
+        regionEnd = regionStart + length;
+    }
+    else
+    {
+        const double semitones = (double) (note - params.rootNote.load()) + (double) params.tuneCents.load() / 100.0;
+        ratio *= std::pow (2.0, semitones / 12.0);
+    }
+
+    v.regionStart = regionStart;
+    v.regionEnd = regionEnd;
+    const bool reverse = params.reverse.load();
+    v.step = reverse ? -ratio : ratio;
+    v.position = reverse ? regionEnd - 1.001 : regionStart;   // (just inside the last frame: interpolating needs the one after it)
+
+    if (mode == Classic && params.loop.load())
+    {
+        const double ls = juce::jlimit (0.0f, 1.0f, params.loopStart.load()), le = juce::jlimit (0.0f, 1.0f, params.loopEnd.load());
+        v.loopStart = juce::jmax (regionStart, juce::jmin (ls, le) * (double) total);
+        v.loopEnd = juce::jmin (regionEnd, juce::jmax (ls, le) * (double) total);
+        v.looping = v.loopEnd - v.loopStart > 16.0;
+    }
+
+    // a free voice, or the oldest one
+    Voice* target = nullptr;
+    for (auto& slot : voices)
+        if (! slot.active)
+        {
+            target = &slot;
+            break;
+        }
+    if (target == nullptr)
+    {
+        target = &voices[0];
+        for (auto& slot : voices)
+            if (slot.age < target->age)
+                target = &slot;
+    }
+    *target = v;
+}
+
+void Sampler::render (float* outL, float* outR, int n)
+{
+    if (sample == nullptr)
+        return;
+
+    const auto& buf = *sample;
+    const int total = buf.getNumSamples();
+    const float* left = buf.getReadPointer (0);
+    const float* right = buf.getNumChannels() > 1 ? buf.getReadPointer (1) : left;
+
+    const float attack = juce::jmax (0.0005f, params.attack.load()), decay = juce::jmax (0.001f, params.decay.load());
+    const float sustain = juce::jlimit (0.0f, 1.0f, params.sustain.load()), release = juce::jmax (0.002f, params.release.load());
+    const float attackInc = 1.0f / (attack * (float) outRate);
+    const float decayDec = (1.0f - sustain) / (decay * (float) outRate);
+    const float releaseDec = 1.0f / (release * (float) outRate);
+    const float volume = params.volume.load(), sens = juce::jlimit (0.0f, 1.0f, params.velocitySens.load());
+
+    const float cutoff = juce::jlimit (40.0f, 20000.0f, params.cutoff.load());
+    const bool filtering = cutoff < 19000.0f;
+    const float a = 1.0f - std::exp (-2.0f * juce::MathConstants<float>::pi * cutoff / (float) outRate);
+
+    for (auto& v : voices)
+    {
+        if (! v.active)
+            continue;
+
+        const float gain = volume * (1.0f - sens + sens * v.velocity * v.velocity);
+
+        for (int i = 0; i < n; ++i)
+        {
+            // end of the region (or the loop)
+            if (v.looping && ! v.released)
+            {
+                if (v.step > 0.0 && v.position >= v.loopEnd)
+                    v.position -= (v.loopEnd - v.loopStart);
+                else if (v.step < 0.0 && v.position <= v.loopStart)
+                    v.position += (v.loopEnd - v.loopStart);
+            }
+            if ((v.step > 0.0 && v.position >= v.regionEnd - 1.0) || (v.step < 0.0 && v.position <= v.regionStart) || v.position < 0.0
+                || v.position >= (double) (total - 1))
+            {
+                v.active = false;
+                break;
+            }
+
+            // envelope
+            switch (v.stage)
+            {
+                case Voice::Attack:  v.level += attackInc;  if (v.level >= 1.0f) { v.level = 1.0f; v.stage = Voice::Decay; } break;
+                case Voice::Decay:   v.level -= decayDec;   if (v.level <= sustain) { v.level = sustain; v.stage = Voice::Sustain; } break;
+                case Voice::Sustain: v.level = sustain; break;
+                case Voice::Release: v.level -= releaseDec; if (v.level <= 0.0f) { v.level = 0.0f; v.active = false; } break;
+            }
+            if (! v.active)
+                break;
+
+            // the sample, interpolated
+            const int i0 = (int) v.position;
+            const float frac = (float) (v.position - (double) i0);
+            float l = left[i0] + frac * (left[i0 + 1] - left[i0]);
+            float r = right[i0] + frac * (right[i0 + 1] - right[i0]);
+
+            // a short fade at the very end of the region keeps a cut sample from clicking
+            const double remaining = v.step > 0.0 ? v.regionEnd - v.position : v.position - v.regionStart;
+            float edge = 1.0f;
+            if (! v.looping && remaining < 64.0 * std::abs (v.step))
+                edge = (float) (remaining / (64.0 * std::abs (v.step)));
+
+            if (filtering)
+            {
+                v.lowL += a * (l - v.lowL);   v.low2L += a * (v.lowL - v.low2L);   l = v.low2L;
+                v.lowR += a * (r - v.lowR);   v.low2R += a * (v.lowR - v.low2R);   r = v.low2R;
+            }
+
+            const float g = gain * v.level * edge;
+            outL[i] += l * g;
+            outR[i] += r * g;
+            v.position += v.step;
+        }
+    }
+}

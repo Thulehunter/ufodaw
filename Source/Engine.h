@@ -11,6 +11,7 @@
 #include "DrumKit.h"
 #include "ExternalMidi.h"
 #include "TempoMap.h"
+#include "Sampler.h"
 
 // A breakpoint envelope: linear between points, flat before the first and after the last.
 // (Automation lanes use seconds on the timeline; a clip's volume curve uses seconds from the start of the clip.)
@@ -178,6 +179,7 @@ struct Track
     SynthParams synth;                  // MIDI tracks
     std::unique_ptr<Synth> voices;      // audio-thread state, created for MIDI tracks
     std::shared_ptr<DrumKit> kit;       // set on drum tracks: a MIDI track that plays the drum kit instead of the synth
+    std::shared_ptr<Sampler> sampler;   // set on sampler tracks: a MIDI track that plays a sample (Simpler-style) instead of the synth
 
     FxParams fx;                        // effect chain settings
     std::unique_ptr<TrackFx> fxState;   // audio-thread state of the chain
@@ -274,6 +276,7 @@ struct TrackState
     std::vector<ExternalRoute> externalOuts;
     std::vector<std::shared_ptr<PluginSlot>> midiFx;
     std::shared_ptr<DrumKit> kit;
+    std::shared_ptr<Sampler> sampler;
     std::shared_ptr<PluginSlot> instrument;                 // plugins are shared with the live project,
     std::vector<std::shared_ptr<PluginSlot>> inserts;       // so undo restores which ones are present, not their settings
 };
@@ -314,6 +317,11 @@ public:
 
     // ---- Message thread: drum tracks (MIDI tracks with a drum kit; their clips are MIDI clips)
     Track* addDrumTrack (const juce::String& name);
+
+    // ---- Message thread: sampler tracks (MIDI tracks that play one sample, Simpler-style; their clips are ordinary MIDI clips)
+    Track* addSamplerTrack (const juce::String& name);
+    bool loadSamplerSample (Track&, const juce::File&);                      // reads an audio file into the track's sampler
+    bool setSamplerSample (Track&, std::shared_ptr<const juce::AudioBuffer<float>>, double rate, const juce::String& name, const juce::File& file);   // e.g. from a clip
     bool loadDrumSample (Track&, int pad, const juce::File&);
     void resetDrumPad (Track&, int pad);
 
@@ -567,6 +575,7 @@ private:
     static int trackLatency (const Track&);                     // samples of delay its plugins add
     void applyDelay (Track&, float* l, float* r, int numSamples, int delaySamples);
     void renderDrumTrack (Track&, int numSamples, juce::int64 pos, bool running, float* scratch);
+    void renderSamplerTrack (Track&, int numSamples, juce::int64 pos, bool running, float* outL, float* outR);
     void renderPluginInstrument (Track&, int numSamples, float* outL, float* outR);
     void processInsert (PluginSlot&, float* l, float* r, int numSamples);
 

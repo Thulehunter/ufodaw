@@ -8,6 +8,7 @@
 #include "TempoPanel.h"
 #include "SyncPanels.h"
 #include "ClipPanel.h"
+#include "SamplerPanel.h"
 #include <algorithm>
 #include <map>
 
@@ -367,6 +368,7 @@ public:
             else
             {
                 text = track.instrument != nullptr ? track.instrument->description.name
+                                                    : track.sampler != nullptr ? "Sampler: " + (track.sampler->getSample() != nullptr ? track.sampler->getName() : juce::String ("no sample"))
                                                     : track.kit != nullptr ? juce::String ("Drum kit") : juce::String ("Built-in synth");
                 if (track.sequencer)
                     text = "Sequencer: " + text;
@@ -1074,7 +1076,10 @@ public:
             Component::mouseWheelMove (e, w);
     }
 
-    bool isInterestedInFileDrag (const juce::StringArray&) override { return ! main.getEngine().isMaster (track) && ! track.bus; }
+    bool isInterestedInFileDrag (const juce::StringArray&) override
+    {
+        return ! main.getEngine().isMaster (track) && ! track.bus;   // (a file dropped on a sampler track becomes its sample)
+    }
     void filesDropped (const juce::StringArray& files, int x, int) override
     {
         main.importFiles (files, &track, juce::jmax (0.0, main.snapTime (x / main.getPixelsPerSecond())));
@@ -1720,6 +1725,7 @@ MainComponent::MainComponent()
 MainComponent::~MainComponent()
 {
     stopTimer();
+    samplerWindow.reset();   // (it points into the engine's tracks)
     if (! isDirty())
         clearAutosave();   // a normal exit with everything saved leaves no recovery file
     else
@@ -2165,9 +2171,100 @@ void MainComponent::setLoopRegion (double a, double b)
     repaint();
 }
 
+// A new sampler track (Simpler-style): an empty sample to load, with a two-bar MIDI clip to play it from.
+void MainComponent::addSamplerTrack()
+{
+    int count = 1;
+    for (int i = 0; i < engine.getNumTracks(); ++i)
+        if (engine.getTrack (i)->sampler != nullptr)
+            ++count;
+
+    beginEdit();
+    auto* t = engine.addSamplerTrack ("Sampler " + juce::String (count));
+    const int barIndex = tempoMap.barAtSeconds (engine.getPositionSeconds());
+    const double start = tempoMap.barStartSeconds (barIndex);
+    const int id = engine.addMidiClip (*t, start, tempoMap.barStartSeconds (barIndex + 2) - start);
+    addTrackUI (*t);
+    selectClip (t, id);
+    clipsChanged();
+    openSampler (*t);   // to load a sample
+}
+
+void MainComponent::openSampler (Track& t)
+{
+    if (t.sampler == nullptr)
+        return;
+    samplerWindow.reset();   // one at a time
+    auto* tr = &t;
+    juce::Component::SafePointer<MainComponent> safe (this);
+    samplerWindow = std::make_unique<SamplerWindow> (engine, t,
+        [safe] { if (safe != nullptr) ++safe->editCounter; },   // a change counts as an edit of the project (autosave, unsaved changes)
+        [safe, tr] (bool down)                                   // the Play button: the root note, held
+        {
+            if (safe != nullptr && safe->engine.indexOfTrack (tr) >= 0 && tr->sampler != nullptr)
+                safe->engine.previewNote (*tr, tr->sampler->params.rootNote.load(), down, 0.9f);
+        },
+        [safe] { juce::MessageManager::callAsync ([safe] { if (safe != nullptr) safe->samplerWindow.reset(); }); });
+}
+
+// "Sample this clip": the part of an audio clip that plays becomes the sample of a new sampler track, with one note that plays it.
+void MainComponent::sampleClip (Track& t, int clipId)
+{
+    Clip c;
+    if (! engine.getClip (t, clipId, c) || c.audio == nullptr)
+        return;
+
+    const int from = juce::jlimit (0, c.audio->getNumSamples(), (int) std::llround (c.offset * c.fileRate));
+    const int to = juce::jlimit (from, c.audio->getNumSamples(), (int) std::llround ((c.offset + c.length) * c.fileRate));
+    if (to - from < 2)
+        return;
+
+    auto buffer = std::make_shared<juce::AudioBuffer<float>> (c.audio->getNumChannels(), to - from);
+    for (int ch = 0; ch < buffer->getNumChannels(); ++ch)
+        buffer->copyFrom (ch, 0, *c.audio, ch, from, to - from);
+    if (c.reverse)
+        buffer->reverse (0, buffer->getNumSamples());
+
+    // the sample is kept as a file (so it is saved with the project and found again): in the recordings folder
+    const auto sampleName = c.sourceFile != juce::File() ? c.sourceFile.getFileNameWithoutExtension() : juce::String ("Sampled clip");
+    const auto folder = juce::File::getSpecialLocation (juce::File::userDocumentsDirectory).getChildFile ("UFODAW Recordings").getChildFile ("Samples");
+    folder.createDirectory();
+    const auto sampleFile = folder.getChildFile (juce::File::createLegalFileName (sampleName) + " " + juce::Time::getCurrentTime().formatted ("%Y-%m-%d %H-%M-%S") + ".wav");
+    if (auto stream = sampleFile.createOutputStream())
+    {
+        juce::WavAudioFormat wav;
+        if (std::unique_ptr<juce::AudioFormatWriter> writer (wav.createWriterFor (stream.get(), c.fileRate, (unsigned int) buffer->getNumChannels(), 24, {}, 0)); writer != nullptr)
+        {
+            stream.release();
+            writer->writeFromAudioSampleBuffer (*buffer, 0, buffer->getNumSamples());
+        }
+    }
+
+    beginEdit();
+    auto* s = engine.addSamplerTrack (sampleName);
+    engine.setSamplerSample (*s, buffer, c.fileRate, sampleName, sampleFile);
+    s->sampler->params.mode = Sampler::OneShot;   // it plays out whole, like the clip
+    addTrackUI (*s);
+
+    const int barIndex = tempoMap.barAtSeconds (c.start);
+    const double clipStart = tempoMap.barStartSeconds (barIndex);
+    const double clipLength = juce::jmax (tempoMap.barStartSeconds (barIndex + 1) - clipStart, c.start - clipStart + c.length);
+    const int id = engine.addMidiClip (*s, clipStart, clipLength);
+    Note n;
+    n.pitch = s->sampler->params.rootNote.load();
+    n.start = c.start - clipStart;
+    n.length = c.length;
+    n.velocity = 1.0f;
+    engine.setMidiNotes (*s, id, { n });
+    selectClip (s, id);
+    clipsChanged();
+}
+
 void MainComponent::openInstrumentEditor (Track& t)
 {
-    if (t.instrument != nullptr)
+    if (t.sampler != nullptr)
+        openSampler (t);
+    else if (t.instrument != nullptr)
         pluginHost.showEditor (*t.instrument);
     else if (! t.inserts.empty())
         pluginHost.showEditor (*t.inserts.front());
@@ -3033,6 +3130,7 @@ void MainComponent::showClipMenu (Track& track, int clipId, double at, juce::Com
         m.addItem (11, "Crossfade with overlapping clip(s)");
         m.addItem (12, "Remove fades", audioClip.fadeIn > 0.0 || audioClip.fadeOut > 0.0);
         m.addSeparator();
+        m.addItem (16, "Sample this clip (new sampler track)");
         m.addItem (13, "Gain, stretch and pitch...");
         m.addItem (14, "Edit volume curve", true, envelopeClipId == clipId && envelopeTrack == &track);
         m.addItem (15, "Remove volume curve", ! audioClip.envelope.empty());
@@ -3136,6 +3234,7 @@ void MainComponent::showClipMenu (Track& track, int clipId, double at, juce::Com
                 break;
             }
             case 13: self.openClipPanel (*tr, clipId); break;
+            case 16: self.sampleClip (*tr, clipId); break;
             case 14:
             {
                 const bool already = self.envelopeClipId == clipId && self.envelopeTrack == tr;
@@ -3641,11 +3740,13 @@ void MainComponent::addTrackMenu()
     menu.addItem (2, "Audio track from file(s)...");
     menu.addSeparator();
     menu.addItem (3, "Bus (group / effects return)");
+    menu.addItem (4, "Sampler (MIDI track that plays a sample)");
     menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&addButton), [this] (int result)
     {
         if (result == 1) addEmptyAudioTrack();
         if (result == 2) addTrackDialog();
         if (result == 3) addBusTrack();
+        if (result == 4) addSamplerTrack();
     });
 }
 
@@ -3871,6 +3972,25 @@ void MainComponent::addTrackDialog()
 void MainComponent::importFiles (const juce::StringArray& paths, Track* target, double time)
 {
     juce::StringArray failed;
+
+    if (target != nullptr && target->sampler != nullptr && paths.size() > 0)   // dropped on a sampler track: it becomes the sample
+    {
+        beginEdit();
+        if (engine.loadSamplerSample (*target, juce::File (paths[0])))
+        {
+            target->sampler->params.start = 0.0f;
+            target->sampler->params.end = 1.0f;
+            openSampler (*target);
+            clipsChanged();
+        }
+        else
+        {
+            cancelEdit();
+            juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Cannot load the sample", paths[0]);
+        }
+        return;
+    }
+
     const bool intoTrack = target != nullptr && target->type == Track::Type::Audio;
     double nextStart = time;
     beginEdit();
@@ -4024,6 +4144,32 @@ void MainComponent::saveProject (const juce::File& file, SaveKind kind)
                     padFiles.add (f == juce::File() ? juce::String() : (projectFilePath ? projectFilePath (f) : f.getRelativePathFrom (baseDir)));
                 }
                 o->setProperty ("drumPads", padFiles);
+            }
+
+            if (t->sampler != nullptr)   // the sampler: which sample (a file) and how it plays
+            {
+                auto& sp = t->sampler->params;
+                auto* so = new juce::DynamicObject();
+                if (t->sampler->getFile() != juce::File())
+                    so->setProperty ("file", projectFilePath ? projectFilePath (t->sampler->getFile()) : t->sampler->getFile().getRelativePathFrom (baseDir));
+                so->setProperty ("mode", sp.mode.load());
+                so->setProperty ("root", sp.rootNote.load());
+                so->setProperty ("tune", (double) sp.tuneCents.load());
+                so->setProperty ("start", (double) sp.start.load());
+                so->setProperty ("end", (double) sp.end.load());
+                so->setProperty ("loop", sp.loop.load());
+                so->setProperty ("loopStart", (double) sp.loopStart.load());
+                so->setProperty ("loopEnd", (double) sp.loopEnd.load());
+                so->setProperty ("reverse", sp.reverse.load());
+                so->setProperty ("attack", (double) sp.attack.load());
+                so->setProperty ("decay", (double) sp.decay.load());
+                so->setProperty ("sustain", (double) sp.sustain.load());
+                so->setProperty ("release", (double) sp.release.load());
+                so->setProperty ("cutoff", (double) sp.cutoff.load());
+                so->setProperty ("volume", (double) sp.volume.load());
+                so->setProperty ("velocity", (double) sp.velocitySens.load());
+                so->setProperty ("slices", sp.slices.load());
+                o->setProperty ("sampler", juce::var (so));
             }
         }
         writeEffectsAndAutomation (*o, *t);   // effects, plugins, automation
@@ -4264,6 +4410,8 @@ void MainComponent::collectProject()
             if (t->kit != nullptr)
                 for (int pad = 0; pad < DrumKit::numPads; ++pad)
                     add (t->kit->getPad (pad).file);
+            if (t->sampler != nullptr)
+                add (t->sampler->getFile());
         }
 
     chooser = std::make_unique<juce::FileChooser> ("Choose where the project folder goes", currentProject.getParentDirectory(), "");
@@ -4497,9 +4645,40 @@ void MainComponent::loadProject (const juce::File& file)
         const bool isMidi = item.getProperty ("type", "audio").toString() == "midi";
         const bool isDrums = isMidi && item.hasProperty ("drumPads");
         const auto trackName = item.getProperty ("name", "Track").toString();
+        const bool isSampler = isMidi && item.hasProperty ("sampler");
         auto* t = isDrums ? engine.addDrumTrack (trackName)
-                          : engine.addTrack (trackName, isMidi ? Track::Type::Midi : Track::Type::Audio,
-                                             ! isMidi && (bool) item.getProperty ("bus", false));
+                : isSampler ? engine.addSamplerTrack (trackName)
+                            : engine.addTrack (trackName, isMidi ? Track::Type::Midi : Track::Type::Audio,
+                                               ! isMidi && (bool) item.getProperty ("bus", false));
+
+        if (isSampler)   // the sample and how it plays
+        {
+            const auto sv = item["sampler"];
+            auto& sp = t->sampler->params;
+            sp.mode = juce::jlimit (0, 2, (int) sv.getProperty ("mode", 0));
+            sp.rootNote = (int) sv.getProperty ("root", 60);
+            sp.tuneCents = (float) (double) sv.getProperty ("tune", 0.0);
+            sp.start = (float) (double) sv.getProperty ("start", 0.0);
+            sp.end = (float) (double) sv.getProperty ("end", 1.0);
+            sp.loop = (bool) sv.getProperty ("loop", false);
+            sp.loopStart = (float) (double) sv.getProperty ("loopStart", 0.0);
+            sp.loopEnd = (float) (double) sv.getProperty ("loopEnd", 1.0);
+            sp.reverse = (bool) sv.getProperty ("reverse", false);
+            sp.attack = (float) (double) sv.getProperty ("attack", 0.002);
+            sp.decay = (float) (double) sv.getProperty ("decay", 0.3);
+            sp.sustain = (float) (double) sv.getProperty ("sustain", 1.0);
+            sp.release = (float) (double) sv.getProperty ("release", 0.15);
+            sp.cutoff = (float) (double) sv.getProperty ("cutoff", 20000.0);
+            sp.volume = (float) (double) sv.getProperty ("volume", 0.8);
+            sp.velocitySens = (float) (double) sv.getProperty ("velocity", 0.7);
+            sp.slices = (int) sv.getProperty ("slices", 8);
+            if (sv.hasProperty ("file"))
+            {
+                const auto sampleFile = baseDir.getChildFile (sv["file"].toString());
+                if (! engine.loadSamplerSample (*t, sampleFile))
+                    missing.add (sampleFile.getFullPathName());
+            }
+        }
 
         if (isDrums)
             if (auto* padFiles = item["drumPads"].getArray())

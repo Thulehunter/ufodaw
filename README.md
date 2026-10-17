@@ -27,6 +27,11 @@ A small digital audio workstation for Windows, written in C++17 with [JUCE](http
 - **MIDI tracks** with a built-in polyphonic synth (sine / saw / square / triangle, ADSR, low-pass) and a **piano roll**
   that names every key and note, lights up the keys that sound (live or during playback) and scrolls to the clip's notes
   ("Show notes" brings them back).
+- **Sampler** (Simpler-style) - **+ Track > Sampler** makes a MIDI track that plays one sample: load a file (or drop one on the track), drag the
+  yellow start/end markers in its window, and pick the mode: *Classic* (pitched by the key from the root note, with loop, ADSR and a low-pass
+  filter), *One-shot* (plays out whatever the key does) or *Slice* (the region cut into equal slices, one key each). *Detect pitch* sets the root
+  note and tuning from the sample itself. Right-click an audio clip > *Sample this clip* turns it into a sampler track with one note.
+  Double-click the track name (or *Sampler window* in the piano roll) to open it again.
 - **Drum tracks** - 8-pad drum kit with generated sounds, a **step sequencer**, and your own samples per pad (right-click a pad).
 - **MIDI input per track** - a MIDI track listens to every MIDI input, or to one device and channel (VST panel > *MIDI input*), so a
   keyboard can play the synth and an e-drum the drum track at the same time. Arm several MIDI tracks with their red dot and they
@@ -178,6 +183,7 @@ An arpeggiator or similar plugin that should change the notes of one track goes 
 | Clip gain / stretch / pitch | right-click an audio clip > *Gain, stretch and pitch...* |
 | Volume curve of a clip | right-click the clip > *Edit volume curve* (click = add, drag = move, right-click = remove, `Esc` = done) |
 | New version / collect audio / backups | **Save As** button: its menu |
+| Sampler | **+ Track > Sampler**, then Load... (or drop an audio file on the track); right-click an audio clip > *Sample this clip* |
 | Fade in / out of an audio clip | drag the squares in the top corners of the clip; right-click > *Remove fades* |
 | Crossfade two clips | let the clips overlap a little, right-click one > *Crossfade with overlapping clip(s)* |
 | Reverse a clip | right-click > *Reverse* |
@@ -246,6 +252,7 @@ builds Release and writes `dist\UFODAW-<version>-win64.zip`. For a regular insta
 | `Source/PluginHost.*`, `Source/Plugin.h` | VST3 scanning, loading, editor windows |
 | `Source/MainComponent.*` | Main window: arrangement, transport, project files, undo/redo |
 | `Source/PianoRoll.*`, `Source/DrumSequencer.*` | Note editors below the arrangement |
+| `Source/Sampler.*`, `Source/SamplerPanel.h` | The sampler instrument and its window |
 | `Source/Stretch.*`, `Source/ClipPanel.h` | Time-stretch and pitch-shift (Rubber Band), and the clip gain / stretch / pitch panel |
 | `Source/Tuner.*` | Pitch detection (YIN) and the tuner window |
 | `Source/TempoMap.h`, `Source/TempoPanel.h` | Tempo and time signature sections: seconds / beats / bars, and the list to edit them |
