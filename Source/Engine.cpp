@@ -3216,3 +3216,20 @@ bool Engine::setSamplerStretch (Sampler& s, double timeRatio)
     s.setStretched (std::move (result), timeRatio);
     return true;
 }
+
+// STOP ALL: the transport stops and everything that still sounds is cut off at once: synths, drum pads, samplers, plugin
+// instruments (all notes off, all sound off, pedal up) and the notes sent to external MIDI hardware.
+void Engine::silenceEverything()
+{
+    stop();
+    const juce::ScopedLock sl (lock);
+    for (auto& t : tracks)
+    {
+        releaseAllNotes (*t);
+        if (t->voices != nullptr)  t->voices->reset();
+        if (t->kit != nullptr)     t->kit->reset();
+        if (t->sampler != nullptr) t->sampler->reset();
+        if (t->instrument != nullptr)
+            t->liveMidi.addEvent (juce::MidiMessage::allSoundOff (1), 0);
+    }
+}

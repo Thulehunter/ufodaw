@@ -32,6 +32,7 @@ A small digital audio workstation for Windows, written in C++17 with [JUCE](http
   filter), *One-shot* (plays out whatever the key does) or *Slice* (the region cut into equal slices, one key each). *Detect pitch* sets the root
   note and tuning from the sample itself. Right-click an audio clip > *Sample this clip* turns it into a sampler track with one note.
   Double-click the track name (or *Sampler window* in the piano roll) to open it again.
+- **File menu and STOP ALL** - the *File* button has New project (Ctrl+N), Open, Open recent, Save, Save as / new version / collect, and the exports. The red *STOP ALL* button at the top right (Ctrl+Shift+Space) stops playback and recording and cuts off every sound at once, plugins and MIDI hardware included.
   The **Stretch** slider time-stretches the sample (0.25x-4x) without changing its pitch (Rubber Band); it works on drum pads too.
 - **Drum Rack** - 16 pads, each a small Simpler (start / end, pitch, envelope, filter, reverse) with its own level, pan, mute, solo and choke group (closed / open hat). Click the track's "Drum kit" button or double-click a pad name in the step sequencer to open the 4x4 pad window; drop an audio file on a pad to load it. The first 8 pads come with generated sounds; a **step sequencer** plays all 16.
 - **MIDI input per track** - a MIDI track listens to every MIDI input, or to one device and channel (VST panel > *MIDI input*), so a

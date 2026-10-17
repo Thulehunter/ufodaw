@@ -332,6 +332,12 @@ private:
     void clearAutosave();
     void loadProject (const juce::File&);
     void openProjectDialog();
+    void newProject();                                // an empty project (asks first when there are unsaved changes)
+    void fileMenu();                                  // the "File" button: new, open, recent, save, export
+    void resetToEmptyProject();
+    static juce::File recentListFile();
+    juce::StringArray loadRecentProjects() const;
+    void addRecentProject (const juce::File&);
     void exportDialog();
     void exportStemsDialog();
 
@@ -421,6 +427,7 @@ private:
     juce::TooltipWindow tooltipWindow { this };
     double playStartSeconds = 0.0;
     double recStartSeconds = 0.0;
+    juce::TextButton fileButton { "File" }, stopAllButton { "STOP ALL" };
     juce::TextButton openButton { "Open" }, saveButton { "Save" }, saveAsButton { "Save As" }, exportButton { "Export WAV" },
                      exportStemsButton { "Export stems" };
     juce::TextButton zoomOutButton { "-" }, zoomInButton { "+" };

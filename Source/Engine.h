@@ -481,6 +481,7 @@ public:
 
     void play()  { playing = true; }
     void stop()  { playing = false; countInRemaining = 0; }
+    void silenceEverything();   // transport stops, every note of every instrument is cut at once (the "STOP ALL" button)
     bool isPlaying() const { return playing; }
 
     // Count-in: call before play(). The transport then waits at the playhead while the metronome clicks `bars` bars (in the

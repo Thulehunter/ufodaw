@@ -1681,7 +1681,18 @@ MainComponent::MainComponent()
     exportButton.onClick = [this] { exportDialog(); };
     exportStemsButton.onClick = [this] { exportStemsDialog(); };
     exportStemsButton.setTooltip ("Export every track as its own WAV file (a stem) into a folder you choose");
-    addAndMakeVisible (exportStemsButton);
+    addChildComponent (exportStemsButton);   // (reached through the File menu)
+    for (auto* hidden : { &openButton, &saveButton, &saveAsButton, &exportButton })
+        hidden->setVisible (false);
+
+    fileButton.setTooltip ("New project, open, recent projects, save, export");
+    fileButton.onClick = [this] { fileMenu(); };
+    addAndMakeVisible (fileButton);
+    stopAllButton.setTooltip ("Stops playback and recording and cuts off every sound at once, including plugins and MIDI hardware (Ctrl+Shift+Space)");
+    stopAllButton.setColour (juce::TextButton::buttonColourId, juce::Colour (0xffc8281e));
+    stopAllButton.setColour (juce::TextButton::textColourOffId, juce::Colours::white);
+    stopAllButton.onClick = [this] { finishRecording(); engine.silenceEverything(); engine.setPositionSeconds (playStartSeconds); };
+    addAndMakeVisible (stopAllButton);
     zoomOutButton.onClick = [this] { zoomBy (1.0 / 1.4, laneViewport.getMaximumVisibleWidth() / 2); };
     zoomInButton.onClick  = [this] { zoomBy (1.4, laneViewport.getMaximumVisibleWidth() / 2); };
 
@@ -2957,21 +2968,14 @@ void MainComponent::resized()
     top.removeFromLeft (10);
     countInButton.setBounds (top.removeFromLeft (124));
     separator();
-    openButton.setBounds (top.removeFromLeft (56));
-    top.removeFromLeft (4);
-    saveButton.setBounds (top.removeFromLeft (56));
-    top.removeFromLeft (4);
-    saveAsButton.setBounds (top.removeFromLeft (64));
-    top.removeFromLeft (4);
-    exportButton.setBounds (top.removeFromLeft (90));
-    top.removeFromLeft (4);
-    exportStemsButton.setBounds (top.removeFromLeft (100));
+    fileButton.setBounds (top.removeFromLeft (64));
     separator();
     undoButton.setBounds (top.removeFromLeft (50));
     top.removeFromLeft (4);
     redoButton.setBounds (top.removeFromLeft (50));
     separator();
     clipLamp.setBounds (top.removeFromLeft (64));
+    stopAllButton.setBounds (top.removeFromRight (104));   // (far right, away from the transport)
 
     // bottom bar: MIDI/armed status on the left, computer-keys toggle on the right
     statusLabel.setBounds (10, getHeight() - bottomBarHeight + 8, juce::jmax (100, getWidth() / 2 - 150), bottomBarHeight - 16);
@@ -3459,6 +3463,8 @@ bool MainComponent::keyPressed (const juce::KeyPress& k)
     {
         if (ch == 's' || k.getKeyCode() == 'S') { saveButton.triggerClick(); return true; }
         if (ch == 'o' || k.getKeyCode() == 'O') { openButton.triggerClick(); return true; }
+        if (k.getKeyCode() == 'N')              { newProject(); return true; }
+        if (k.getKeyCode() == juce::KeyPress::spaceKey && mods.isShiftDown()) { stopAllButton.triggerClick(); return true; }
         if (k.getKeyCode() == 'D')              { duplicateSelected(); return true; }
         if (k.getKeyCode() == 'X')              { copySelected (true); return true; }
         if (k.getKeyCode() == 'C')              { copySelected (false); return true; }
@@ -4455,6 +4461,7 @@ void MainComponent::saveProject (const juce::File& file, SaveKind kind)
         if (auto* w = getTopLevelComponent())
             w->setName ("UFODAW - " + file.getFileNameWithoutExtension());
         writeBackup (file);
+        addRecentProject (file);
     }
     else
     {
@@ -4728,6 +4735,134 @@ void MainComponent::saveProjectAs()
                               if (f != juce::File())
                                   saveProject (f.withFileExtension ("mdaw"));
                           });
+}
+
+//==============================================================================
+// File menu, new project, recent projects
+
+juce::File MainComponent::recentListFile()
+{
+    return juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory).getChildFile ("UFODAW").getChildFile ("recent.txt");
+}
+
+juce::StringArray MainComponent::loadRecentProjects() const
+{
+    juce::StringArray all, existing;
+    all.addLines (recentListFile().loadFileAsString());
+    for (auto& path : all)
+        if (path.isNotEmpty() && juce::File (path).existsAsFile())
+            existing.add (path);
+    return existing;
+}
+
+void MainComponent::addRecentProject (const juce::File& f)
+{
+    auto list = loadRecentProjects();
+    list.removeString (f.getFullPathName());
+    list.insert (0, f.getFullPathName());
+    while (list.size() > 8)
+        list.remove (list.size() - 1);
+    recentListFile().getParentDirectory().createDirectory();
+    recentListFile().replaceWithText (list.joinIntoString ("\n"));
+}
+
+void MainComponent::fileMenu()
+{
+    const auto recent = loadRecentProjects();
+    juce::PopupMenu recentMenu;
+    for (int i = 0; i < recent.size(); ++i)
+        recentMenu.addItem (100 + i, juce::File (recent[i]).getFileNameWithoutExtension() + "   (" + juce::File (recent[i]).getParentDirectory().getFileName() + ")");
+
+    juce::PopupMenu menu;
+    menu.addItem (1, "New project   Ctrl+N");
+    menu.addItem (2, "Open...   Ctrl+O");
+    menu.addSubMenu ("Open recent", recentMenu, ! recent.isEmpty());
+    menu.addSeparator();
+    menu.addItem (3, "Save   Ctrl+S");
+    menu.addItem (4, "Save as...");
+    menu.addItem (5, "Save a new version (adds v2, v3...)");
+    menu.addItem (6, "Save with all audio in one folder...");
+    menu.addItem (7, "Show the backups folder", currentProject != juce::File() && backupFolder (currentProject).isDirectory());
+    menu.addSeparator();
+    menu.addItem (8, "Export WAV...");
+    menu.addItem (9, "Export stems...");
+    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&fileButton), [this, recent] (int result)
+    {
+        if (result == 1) newProject();
+        else if (result == 2) openProjectDialog();
+        else if (result == 3) saveButton.triggerClick();
+        else if (result == 4) saveProjectAs();
+        else if (result == 5) saveNewVersion();
+        else if (result == 6) collectProject();
+        else if (result == 7) backupFolder (currentProject).revealToUser();
+        else if (result == 8) exportDialog();
+        else if (result == 9) exportStemsDialog();
+        else if (result >= 100 && result - 100 < recent.size())
+            loadProject (juce::File (recent[result - 100]));
+    });
+}
+
+void MainComponent::newProject()
+{
+    if (! isDirty())
+    {
+        resetToEmptyProject();
+        return;
+    }
+
+    const auto name = currentProject == juce::File() ? juce::String ("the untitled project") : currentProject.getFileNameWithoutExtension();
+    juce::Component::SafePointer<MainComponent> safe (this);
+    juce::AlertWindow::showYesNoCancelBox (juce::MessageBoxIconType::QuestionIcon, "Start a new project",
+                                           "Save the changes to " + name + " first?", "Save", "Don't save", "Cancel", this,
+                                           juce::ModalCallbackFunction::create ([safe] (int choice)
+    {
+        if (safe == nullptr || choice == 0)   // cancel
+            return;
+        if (choice == 1)                      // save
+        {
+            if (safe->currentProject == juce::File())
+            {
+                safe->saveProjectAs();        // (asks for a name; press New again afterwards)
+                return;
+            }
+            safe->saveProject (safe->currentProject);
+        }
+        safe->resetToEmptyProject();
+    }));
+}
+
+void MainComponent::resetToEmptyProject()
+{
+    finishRecording();
+    engine.silenceEverything();
+    engine.setPositionSeconds (0.0);
+    playStartSeconds = 0.0;
+    clearTracksUI();
+    undoStack.clear();
+    redoStack.clear();
+    updateUndoButtons();
+
+    tempoMap.setSections ({ TempoSection() });
+    engine.setTempoMap (tempoMap, false);
+    engine.metronome = false;
+    metroButton.setToggleState (false, juce::dontSendNotification);
+    bpmSlider.setValue (120.0, juce::dontSendNotification);
+    engine.loopStart = engine.loopEnd = engine.punchIn = engine.punchOut = 0.0;
+    engine.punchEnabled = false;
+    engine.loopEnabled = false;
+    punchButton.setToggleState (false, juce::dontSendNotification);
+    loopButton.setToggleState (false, juce::dontSendNotification);
+    engine.resetMaster();
+    masterHeader->syncControls();
+
+    currentProject = juce::File();
+    savedEdit = editCounter;
+    clearAutosave();
+    if (auto* w = getTopLevelComponent())
+        w->setName ("UFODAW");
+    clipsChanged();
+    resized();
+    repaint();
 }
 
 void MainComponent::openProjectDialog()
@@ -5030,6 +5165,7 @@ void MainComponent::loadProject (const juce::File& file)
 
     currentProject = file;
     savedEdit = editCounter;   // freshly opened: nothing unsaved
+    addRecentProject (file);
     if (auto* w = getTopLevelComponent())
         w->setName ("UFODAW - " + file.getFileNameWithoutExtension());
     clipsChanged();
