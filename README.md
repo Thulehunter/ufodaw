@@ -119,6 +119,7 @@ An arpeggiator or similar plugin that should change the notes of one track goes 
 | Split clip(s) at the playhead | `S` |
 | Delete clip / note | `Delete` |
 | Duplicate clip | `Ctrl+D` |
+| Cut / copy / paste clips | right-click a clip (or an empty spot in a lane) for *Cut, Copy, Paste here, Split here, Duplicate, Delete*; or `Ctrl+X` / `Ctrl+C` / `Ctrl+V` (paste goes to the playhead, on the selected track of the same kind). Works for audio and MIDI clips, also between tracks |
 | Undo / redo | `Ctrl+Z` / `Ctrl+Y` |
 | Save / open | `Ctrl+S` / `Ctrl+O` |
 | Zoom | `Ctrl` + mouse wheel, or the `-` / `+` buttons |

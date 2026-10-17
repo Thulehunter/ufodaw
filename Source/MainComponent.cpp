@@ -587,6 +587,13 @@ public:
             if (! r.contains (e.getPosition()))
                 continue;
 
+            if (e.mods.isPopupMenu())
+            {
+                main.selectClip (&track, h.id);
+                main.showClipMenu (track, h.id, t, *this);
+                return;
+            }
+
             dragId = h.id;
             dragTrack = &track;
             dragStart = h.start;
@@ -595,6 +602,13 @@ public:
             grabOffset = t - h.start;
             resizing = h.midi && r.getWidth() > 16 && e.x >= r.getRight() - 6;   // right edge of a MIDI clip
             main.selectClip (&track, dragId);
+            return;
+        }
+
+        if (e.mods.isPopupMenu())
+        {
+            main.selectClip (nullptr, -1);
+            main.showClipMenu (track, -1, t, *this);
             return;
         }
 
@@ -2168,6 +2182,119 @@ void MainComponent::duplicateSelected()
     }
 }
 
+void MainComponent::copySelected (bool cut)
+{
+    if (selTrack == nullptr || selClip < 0)
+        return;
+
+    ClipboardItem item;
+    if (engine.isMidiClip (*selTrack, selClip))
+        item.valid = engine.getMidiClip (*selTrack, selClip, item.midi), item.isMidi = true;
+    else
+        item.valid = engine.getClip (*selTrack, selClip, item.audio);
+
+    if (! item.valid)
+        return;
+    clipboard = std::move (item);
+
+    if (cut)
+    {
+        beginEdit();
+        engine.deleteClip (*selTrack, selClip);
+        selectClip (nullptr, -1);
+        clipsChanged();
+    }
+}
+
+Track* MainComponent::pasteTargetTrack() const
+{
+    const auto type = clipboard.isMidi ? Track::Type::Midi : Track::Type::Audio;
+    if (selTrack != nullptr && selTrack->type == type && ! engine.isMaster (*selTrack))
+        return selTrack;
+    for (int i = 0; i < engine.getNumTracks(); ++i)
+        if (auto* t = engine.getTrack (i); t != nullptr && t->type == type)
+            return t;
+    return nullptr;
+}
+
+void MainComponent::pasteClip (Track* target, double at)
+{
+    if (! clipboard.valid || target == nullptr || engine.isMaster (*target))
+        return;
+    if (target->type != (clipboard.isMidi ? Track::Type::Midi : Track::Type::Audio))
+        return;
+
+    beginEdit();
+    int id = -1;
+    if (clipboard.isMidi)
+    {
+        id = engine.addMidiClip (*target, at, clipboard.midi.length);
+        if (id >= 0)
+            engine.setMidiNotes (*target, id, clipboard.midi.notes);
+    }
+    else
+    {
+        Clip c = clipboard.audio;
+        c.start = juce::jmax (0.0, at);
+        id = engine.addClip (*target, std::move (c));
+    }
+
+    if (id < 0)
+    {
+        cancelEdit();
+        return;
+    }
+    selectClip (target, id);
+    clipsChanged();
+}
+
+void MainComponent::showClipMenu (Track& track, int clipId, double at, juce::Component& source)
+{
+    if (engine.isMaster (track))
+        return;
+
+    const bool onClip = clipId >= 0;
+    const bool canPaste = clipboard.valid && track.type == (clipboard.isMidi ? Track::Type::Midi : Track::Type::Audio);
+    const double when = snapTime (at);
+
+    juce::PopupMenu m;
+    m.addItem (1, "Cut\tCtrl+X", onClip);
+    m.addItem (2, "Copy\tCtrl+C", onClip);
+    m.addItem (3, "Paste here\tCtrl+V", canPaste);
+    m.addSeparator();
+    m.addItem (4, "Split here\tS", onClip);
+    m.addItem (5, "Duplicate\tCtrl+D", onClip);
+    m.addItem (6, "Delete\tDel", onClip);
+
+    juce::Component::SafePointer<MainComponent> safe (this);
+    Track* tr = &track;
+    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&source).withTargetScreenArea (
+                         juce::Rectangle<int> (juce::Desktop::getMousePosition(), juce::Point<int>()).expanded (1)),
+                     [safe, tr, clipId, when] (int r)
+    {
+        if (safe == nullptr || r == 0)
+            return;
+        auto& self = *safe;
+        switch (r)
+        {
+            case 1: self.copySelected (true); break;
+            case 2: self.copySelected (false); break;
+            case 3: self.pasteClip (tr, when); break;
+            case 4:
+            {
+                self.beginEdit();
+                if (self.engine.splitClip (*tr, clipId, when) < 0)
+                    self.cancelEdit();
+                self.clipsChanged();
+                break;
+            }
+            case 5: self.duplicateSelected(); break;
+            case 6: self.deleteSelected(); break;
+            default: break;
+        }
+    });
+}
+
 namespace
 {
     // Computer keyboard as a piano: index in this string == semitones above the base C
@@ -2233,6 +2360,9 @@ bool MainComponent::keyPressed (const juce::KeyPress& k)
         if (ch == 's' || k.getKeyCode() == 'S') { saveButton.triggerClick(); return true; }
         if (ch == 'o' || k.getKeyCode() == 'O') { openButton.triggerClick(); return true; }
         if (k.getKeyCode() == 'D')              { duplicateSelected(); return true; }
+        if (k.getKeyCode() == 'X')              { copySelected (true); return true; }
+        if (k.getKeyCode() == 'C')              { copySelected (false); return true; }
+        if (k.getKeyCode() == 'V')              { pasteClip (pasteTargetTrack(), engine.getPositionSeconds()); return true; }
         if (k.getKeyCode() == 'Z')              { if (mods.isShiftDown()) redo(); else undo(); return true; }
         if (k.getKeyCode() == 'Y')              { redo(); return true; }
         return false;

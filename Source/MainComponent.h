@@ -138,6 +138,8 @@ public:
     }
 
     void selectClip (Track*, int clipId);
+    // right-click menu on a clip (clipId >= 0) or on an empty spot of a lane (clipId < 0)
+    void showClipMenu (Track&, int clipId, double atSeconds, juce::Component& source);
     bool isSelected (const Track* t, int clipId) const { return t == selTrack && clipId == selClip && clipId >= 0; }
     void setPlayhead (double seconds);
     void zoomBy (double factor, int anchorX);
@@ -204,6 +206,18 @@ private:
     void splitAtPlayhead();
     void deleteSelected();
     void duplicateSelected();
+
+    // clip clipboard: cut / copy / paste of audio and MIDI clips
+    struct ClipboardItem
+    {
+        bool valid = false, isMidi = false;
+        Clip audio;
+        MidiClip midi;
+    };
+    ClipboardItem clipboard;
+    void copySelected (bool cut);
+    void pasteClip (Track*, double atSeconds);
+    Track* pasteTargetTrack() const;
 
     void saveProject (const juce::File&);
     void saveProjectAs();
