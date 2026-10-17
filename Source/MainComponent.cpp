@@ -1966,9 +1966,15 @@ void MainComponent::saveProject (const juce::File& file)
         t->fx.forEachBool ([fo] (const char* name, std::atomic<bool>& v) { fo->setProperty (name, v.load()); });
         o->setProperty ("fx", juce::var (fo));
         o->setProperty ("plugins", pluginsToVar (*t));
+        o->setProperty ("sequencer", t->sequencer);
         juce::Array<juce::var> outs;
-        for (auto* target : t->midiOuts)
-            outs.add (engine.indexOfTrack (target));
+        for (auto& route : t->midiOuts)
+        {
+            auto* ro = new juce::DynamicObject();
+            ro->setProperty ("track", engine.indexOfTrack (route.target));
+            ro->setProperty ("channel", route.channel);
+            outs.add (juce::var (ro));
+        }
         o->setProperty ("midiOuts", outs);
 
         // automation, keyed by envelope id ("volume", "pan", "fx.reverbMix", "plugin:3:12", ...)
@@ -2188,18 +2194,27 @@ void MainComponent::loadProject (const juce::File& file)
         int index = 0;
         for (auto& item : *root["tracks"].getArray())
         {
-            std::vector<Track*> targets;
+            std::vector<MidiRoute> routes;
             if (auto* outs = item["midiOuts"].getArray())
                 for (auto& v : *outs)
-                    if (auto* to = engine.getTrack ((int) v))
-                        targets.push_back (to);
+                {
+                    // newer projects: { track, channel }; earlier ones: just the track index
+                    const bool isObject = v.isObject();
+                    const int trackIndex = isObject ? (int) v["track"] : (int) v;
+                    const int channel = isObject ? (int) v["channel"] : 0;
+                    if (auto* to = engine.getTrack (trackIndex))
+                        routes.push_back ({ to, channel });
+                }
             if (item.hasProperty ("midiOut") && (int) item["midiOut"] >= 0)   // projects saved with a single route
                 if (auto* to = engine.getTrack ((int) item["midiOut"]))
-                    targets.push_back (to);
+                    routes.push_back ({ to, 0 });
 
-            if (! targets.empty())
-                if (auto* from = engine.getTrack (index))
-                    engine.setMidiOuts (*from, targets);
+            if (auto* from = engine.getTrack (index))
+            {
+                from->sequencer = (bool) item.getProperty ("sequencer", ! routes.empty());
+                if (! routes.empty())
+                    engine.setMidiOuts (*from, routes);
+            }
             ++index;
         }
     }

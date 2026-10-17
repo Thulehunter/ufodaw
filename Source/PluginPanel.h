@@ -39,8 +39,10 @@ private:
     void rebuild (PluginList&);
     void addPluginMenu (PluginList&);
     void chooseInstrument();
-    void showMidiOutMenu();
-    void updateMidiOutText();
+    void roleChanged();
+    void rebuildRoutes();
+    void routesChanged();
+    void refreshLayout();
     int layoutAll (bool apply);
     void alert (const juce::String& title, const juce::String& message);
 
@@ -50,14 +52,24 @@ private:
     std::function<void()> beginEdit;
     bool isMidi = false;
 
+    // Does this track make the sound itself (instrument) or only send notes to other tracks (sequencer: Stochas, ...)?
+    juce::Label roleLabel { {}, "Use as" };
+    juce::ComboBox roleBox;
+
     juce::Label instrumentLabel { {}, "Instrument" };
     juce::ComboBox instrumentBox;
     juce::TextButton instrumentEdit { "Edit" };
     juce::Array<juce::PluginDescription> instruments;
 
-    // Where the notes of a plugin sequencer (Stochas, ...) go: other MIDI tracks play them.
-    juce::Label midiOutLabel { {}, "MIDI out" };
-    juce::TextButton midiOutButton;
+    // Sequencer role: which tracks play the notes, and which MIDI channel each one listens to.
+    struct RouteRow
+    {
+        Track* target = nullptr;
+        juce::ToggleButton use;
+        juce::ComboBox channel;
+    };
+    juce::Label routeHeading, routeHint;
+    std::vector<std::unique_ptr<RouteRow>> routeRows;
 
     PluginList midiFxList, insertList;
     juce::TextButton manageButton { "Manage plugins..." };

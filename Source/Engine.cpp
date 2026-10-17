@@ -88,19 +88,20 @@ juce::Optional<juce::AudioPlayHead::PositionInfo> Engine::PlayHead::getPosition(
     return info;
 }
 
-void Engine::setMidiOuts (Track& source, std::vector<Track*> targets)
+void Engine::setMidiOuts (Track& source, std::vector<MidiRoute> routes)
 {
     const juce::ScopedLock sl (lock);
 
-    std::vector<Track*> valid;
-    for (auto* t : targets)
-        if (t != nullptr && t != &source && t->type == Track::Type::Midi
-            && std::find (valid.begin(), valid.end(), t) == valid.end())
-            valid.push_back (t);
+    // one route per target track, only to other MIDI tracks
+    std::vector<MidiRoute> valid;
+    for (auto& r : routes)
+        if (r.target != nullptr && r.target != &source && r.target->type == Track::Type::Midi
+            && std::none_of (valid.begin(), valid.end(), [&] (const MidiRoute& v) { return v.target == r.target; }))
+            valid.push_back ({ r.target, juce::jlimit (0, 16, r.channel) });
 
     // whatever was playing over the old routes fades out
-    for (auto* old : source.midiOuts)
-        releaseAllNotes (*old);
+    for (auto& old : source.midiOuts)
+        releaseAllNotes (*old.target);
     releaseAllNotes (source);
     source.midiOuts = std::move (valid);
     source.routedMidi.clear();
@@ -285,7 +286,8 @@ void Engine::removeTrack (Track* t)
 {
     const juce::ScopedLock sl (lock);
     for (auto& other : tracks)
-        other->midiOuts.erase (std::remove (other->midiOuts.begin(), other->midiOuts.end(), t),
+        other->midiOuts.erase (std::remove_if (other->midiOuts.begin(), other->midiOuts.end(),
+                                               [t] (const MidiRoute& r) { return r.target == t; }),
                                other->midiOuts.end());   // nobody keeps sending to a track that is going away
     tracks.erase (std::remove_if (tracks.begin(), tracks.end(),
                                   [t] (auto& p) { return p.get() == t; }),
@@ -884,9 +886,11 @@ ProjectState Engine::captureState() const
         ts.instrument = t->instrument;
         ts.inserts = t->inserts;
         ts.midiFx = t->midiFx;
-        for (size_t k = 0; k < tracks.size(); ++k)
-            if (std::find (t->midiOuts.begin(), t->midiOuts.end(), tracks[k].get()) != t->midiOuts.end())
-                ts.midiOutIndices.push_back ((int) k);
+        ts.sequencer = t->sequencer;
+        for (auto& route : t->midiOuts)
+            for (size_t k = 0; k < tracks.size(); ++k)
+                if (tracks[k].get() == route.target)
+                    ts.midiOuts.push_back ({ (int) k, route.channel });
         ts.autoLanes.push_back ({ "volume", t->autoVolume.points, t->autoVolume.active.load() });
         ts.autoLanes.push_back ({ "pan", t->autoPan.points, t->autoPan.active.load() });
         for (auto& lane : t->autoLanes)
@@ -962,9 +966,10 @@ void Engine::restoreState (const ProjectState& s)
 
     for (size_t i = 0; i < s.tracks.size(); ++i)   // MIDI routes point at tracks by index
     {
-        for (int to : s.tracks[i].midiOutIndices)
+        fresh[i]->sequencer = s.tracks[i].sequencer;
+        for (auto& [to, channel] : s.tracks[i].midiOuts)
             if (to >= 0 && to < (int) fresh.size() && to != (int) i)
-                fresh[i]->midiOuts.push_back (fresh[(size_t) to].get());
+                fresh[i]->midiOuts.push_back ({ fresh[(size_t) to].get(), channel });
     }
 
     bpm = s.bpm;
@@ -1225,8 +1230,8 @@ void Engine::collectNoteEvents (Track& t, int n, juce::int64 pos, bool running)
     {
         const auto m = meta.getMessage();
         const int offset = juce::jlimit (0, juce::jmax (0, n - 1), meta.samplePosition);
-        if (m.isNoteOn())       noteEvents.push_back ({ offset, true, m.getNoteNumber(), m.getFloatVelocity() });
-        else if (m.isNoteOff()) noteEvents.push_back ({ offset, false, m.getNoteNumber(), 0.0f });
+        if (m.isNoteOn())       noteEvents.push_back ({ offset, true, m.getNoteNumber(), m.getFloatVelocity(), m.getChannel() });
+        else if (m.isNoteOff()) noteEvents.push_back ({ offset, false, m.getNoteNumber(), 0.0f, m.getChannel() });
     }
 
     // note-offs go first at the same sample so a repeated pitch retriggers cleanly
@@ -1285,8 +1290,8 @@ void Engine::applyMidiFx (Track& t, int n)
 {
     midiScratch.clear();
     for (auto& e : noteEvents)
-        midiScratch.addEvent (e.on ? juce::MidiMessage::noteOn (1, e.pitch, e.velocity)
-                                   : juce::MidiMessage::noteOff (1, e.pitch), e.offset);
+        midiScratch.addEvent (e.on ? juce::MidiMessage::noteOn (e.channel, e.pitch, e.velocity)
+                                   : juce::MidiMessage::noteOff (e.channel, e.pitch), e.offset);
 
     for (auto& slot : t.midiFx)
     {
@@ -1305,8 +1310,8 @@ void Engine::applyMidiFx (Track& t, int n)
     {
         const auto m = meta.getMessage();
         const int offset = juce::jlimit (0, juce::jmax (0, n - 1), meta.samplePosition);
-        if (m.isNoteOn())       noteEvents.push_back ({ offset, true, m.getNoteNumber(), m.getFloatVelocity() });
-        else if (m.isNoteOff()) noteEvents.push_back ({ offset, false, m.getNoteNumber(), 0.0f });
+        if (m.isNoteOn())       noteEvents.push_back ({ offset, true, m.getNoteNumber(), m.getFloatVelocity(), m.getChannel() });
+        else if (m.isNoteOff()) noteEvents.push_back ({ offset, false, m.getNoteNumber(), 0.0f, m.getChannel() });
     }
     std::sort (noteEvents.begin(), noteEvents.end(), [] (const NoteEvent& a, const NoteEvent& b)
                { return a.offset != b.offset ? a.offset < b.offset : (! a.on && b.on); });
@@ -1325,8 +1330,8 @@ void Engine::renderPluginInstrument (Track& t, int n, float* outL, float* outR)
     midiScratch.addEvents (t.liveMidi, 0, n, 0);
     t.liveMidi.clear();
     for (auto& e : noteEvents)
-        midiScratch.addEvent (e.on ? juce::MidiMessage::noteOn (1, e.pitch, e.velocity)
-                                   : juce::MidiMessage::noteOff (1, e.pitch), e.offset);
+        midiScratch.addEvent (e.on ? juce::MidiMessage::noteOn (e.channel, e.pitch, e.velocity)
+                                   : juce::MidiMessage::noteOff (e.channel, e.pitch), e.offset);
 
     buf.clear (0, n);
     juce::AudioBuffer<float> view (buf.getArrayOfWritePointers(), channels, n);   // wraps, no allocation
@@ -1350,8 +1355,8 @@ void Engine::runMidiSource (Track& t, int n)
     midiScratch.addEvents (t.liveMidi, 0, n, 0);
     t.liveMidi.clear();
     for (auto& e : noteEvents)
-        midiScratch.addEvent (e.on ? juce::MidiMessage::noteOn (1, e.pitch, e.velocity)
-                                   : juce::MidiMessage::noteOff (1, e.pitch), e.offset);
+        midiScratch.addEvent (e.on ? juce::MidiMessage::noteOn (e.channel, e.pitch, e.velocity)
+                                   : juce::MidiMessage::noteOff (e.channel, e.pitch), e.offset);
 
     buf.clear (0, n);
     juce::AudioBuffer<float> view (buf.getArrayOfWritePointers(), channels, n);
@@ -1360,9 +1365,23 @@ void Engine::runMidiSource (Track& t, int n)
     for (const auto meta : midiScratch)
     {
         const auto m = meta.getMessage();
-        if (m.isNoteOnOrOff())
-            for (auto* target : t.midiOuts)
-                target->routedMidi.addEvent (m, juce::jlimit (0, juce::jmax (0, n - 1), meta.samplePosition));
+        if (! m.isNoteOnOrOff())
+            continue;
+
+        const int position = juce::jlimit (0, juce::jmax (0, n - 1), meta.samplePosition);
+        for (auto& route : t.midiOuts)
+        {
+            if (route.channel == 0)                    // everything, channels untouched
+            {
+                route.target->routedMidi.addEvent (m, position);
+            }
+            else if (m.getChannel() == route.channel)  // one channel (e.g. one Stochas track), played as channel 1
+            {
+                auto copy = m;
+                copy.setChannel (1);
+                route.target->routedMidi.addEvent (copy, position);
+            }
+        }
     }
 }
 

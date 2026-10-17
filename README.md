@@ -27,9 +27,11 @@ Download `MiniDAW-<version>-win64.zip` (see *Packaging*), unzip it and start `Mi
 
 1. Add two MIDI tracks (**+ MIDI**): one for the sequencer, one for the synth.
 2. On the synth track, open **VST** and pick your synthesizer as its instrument.
-3. On the sequencer track, open **VST** and pick the sequencer plugin as its instrument (plugins that are not flagged as instruments are listed under *Sequencers / MIDI effects / other*).
-4. Still in the sequencer track's VST panel, set **MIDI out** to the synth track (you can tick several tracks, one pick per opening of the menu).
-5. Press play. The plugin gets the DAW's tempo and play position, and the notes it makes are played by the synth track. The sequencer track itself is silent.
+3. On the sequencer track, open **VST**, set **Use as** to *Sequencer*, and pick the sequencer plugin (e.g. Stochas) in the list below it.
+4. Still in that panel, tick the track(s) that should play its notes. Each ticked track has a **channel** setting:
+   - *All channels* passes the notes on unchanged;
+   - *Channel N* sends only the notes the plugin plays on MIDI channel N, delivered to the synth as channel 1. This is how one multi-track sequencer (such as Stochas, whose tracks each have their own channel) drives several different synths: tick one synth per channel.
+5. Press play. The plugin gets the DAW's tempo and play position, and the notes it makes are played by the target tracks. The sequencer track itself is silent.
 
 An arpeggiator or similar plugin that should change the notes of one track goes under **MIDI effects** in that track's VST panel instead.
 

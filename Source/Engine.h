@@ -45,6 +45,16 @@ struct MidiClip
     double end() const { return start + length; }
 };
 
+struct Track;
+
+// Notes from a sequencer plugin go to `target`. channel 0 passes every MIDI channel through unchanged;
+// 1..16 passes only that channel and delivers it to the target as channel 1 (what single-voice synths listen to).
+struct MidiRoute
+{
+    Track* target = nullptr;
+    int channel = 0;
+};
+
 // A breakpoint envelope: linear between points, flat before the first and after the last.
 struct AutoPoint
 {
@@ -129,7 +139,8 @@ struct Track
 
     // MIDI routing: the notes a plugin instrument (a sequencer such as Stochas) sends out go to another
     // MIDI track instead of being heard from this one.
-    std::vector<Track*> midiOuts;                           // tracks that play the notes this track's plugin sends
+    bool sequencer = false;                                 // UI role: this track's plugin is a note source (Stochas...), not a sound
+    std::vector<MidiRoute> midiOuts;                        // tracks that play the notes this track's plugin sends
     juce::MidiBuffer routedMidi;                            // notes other tracks sent here during the current block
 
     // MIDI plugins (arpeggiators, chord tools...) that rework the notes before they reach the instrument
@@ -172,7 +183,8 @@ struct TrackState
         bool active = true;
     };
     std::vector<LaneState> autoLanes;   // includes "volume" and "pan"
-    std::vector<int> midiOutIndices;    // indices of the tracks this one sends MIDI to
+    bool sequencer = false;
+    std::vector<std::pair<int, int>> midiOuts;   // (index of the target track, channel) of each MIDI route
     std::vector<std::shared_ptr<PluginSlot>> midiFx;
     std::shared_ptr<DrumKit> kit;
     std::shared_ptr<PluginSlot> instrument;                 // plugins are shared with the live project,
@@ -242,7 +254,7 @@ public:
     std::vector<juce::String> getAutomationIds (const Track&) const;         // lanes that have points
 
     // ---- Message thread: hosted plugins
-    void setMidiOuts (Track& source, std::vector<Track*> targets);   // empty = this track plays its own sound; only other MIDI tracks count
+    void setMidiOuts (Track& source, std::vector<MidiRoute> routes);   // empty = this track plays its own sound; only other MIDI tracks count
     void addMidiFx (Track&, std::shared_ptr<PluginSlot>);
     void removeMidiFx (Track&, int index);
     void preparePlugin (PluginSlot&);                           // layout + prepareToPlay for the current audio setup
@@ -294,6 +306,7 @@ private:
         bool on;
         int pitch;
         float velocity;
+        int channel = 1;   // MIDI channel 1..16; clip notes use 1, notes from sequencer plugins keep theirs
     };
 
     struct PreviewEvent

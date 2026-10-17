@@ -2,7 +2,7 @@
 
 namespace
 {
-    constexpr int panelWidth = 480;
+    constexpr int panelWidth = 500;
     constexpr int rowH = 30;
     constexpr int sectionGap = 12;
 }
@@ -14,10 +14,19 @@ PluginPanel::PluginPanel (Track& t, Engine& e, PluginHost& h, std::function<void
 
     if (isMidi)
     {
+        // role: instrument or sequencer
+        roleBox.addItem ("Instrument - makes the sound", 1);
+        roleBox.addItem ("Sequencer - sends notes to other tracks", 2);
+        roleBox.setSelectedId (track.sequencer ? 2 : 1, juce::dontSendNotification);
+        roleBox.onChange = [this] { roleChanged(); };
+        addAndMakeVisible (roleLabel);
+        addAndMakeVisible (roleBox);
+
+        instrumentLabel.setText (track.sequencer ? "Plugin" : "Instrument", juce::dontSendNotification);
         addAndMakeVisible (instrumentLabel);
 
         instrumentBox.addItem (track.kit != nullptr ? "Built-in drum kit" : "Built-in synth", 1);
-        for (int pass = 0; pass < 2; ++pass)   // instruments first, then everything else (MIDI sequencers like Stochas)
+        for (int pass = 0; pass < 2; ++pass)   // instruments first, then everything else
         {
             bool headingAdded = false;
             for (auto& d : host.getList().getTypes())
@@ -26,7 +35,7 @@ PluginPanel::PluginPanel (Track& t, Engine& e, PluginHost& h, std::function<void
                     if (pass == 1 && ! headingAdded)
                     {
                         instrumentBox.addSeparator();
-                        instrumentBox.addSectionHeading ("Sequencers / MIDI effects / other");
+                        instrumentBox.addSectionHeading ("Effects / MIDI tools / other");
                         headingAdded = true;
                     }
                     instruments.add (d);
@@ -50,11 +59,17 @@ PluginPanel::PluginPanel (Track& t, Engine& e, PluginHost& h, std::function<void
         };
         addAndMakeVisible (instrumentEdit);
 
-        midiOutButton.setTooltip ("For a sequencer plugin (e.g. Stochas): the tracks whose synths should play the notes it makes");
-        midiOutButton.onClick = [this] { showMidiOutMenu(); };
-        updateMidiOutText();
-        addAndMakeVisible (midiOutLabel);
-        addAndMakeVisible (midiOutButton);
+        routeHeading.setText ("Play the notes on these tracks", juce::dontSendNotification);
+        routeHeading.setFont (juce::FontOptions (13.0f, juce::Font::bold));
+        routeHint.setText ("Channel: \"All\" passes the notes on unchanged. A channel number sends only that MIDI channel "
+                           "(e.g. one Stochas track per synth), delivered to the synth as channel 1.",
+                           juce::dontSendNotification);
+        routeHint.setFont (juce::FontOptions (11.5f));
+        routeHint.setMinimumHorizontalScale (1.0f);
+        routeHint.setColour (juce::Label::textColourId, juce::Colours::white.withAlpha (0.55f));
+        addChildComponent (routeHeading);
+        addChildComponent (routeHint);
+        rebuildRoutes();
 
         setupList (midiFxList, "MIDI effects (before the instrument)", "+ Add MIDI effect...", true, 3);
     }
@@ -63,7 +78,7 @@ PluginPanel::PluginPanel (Track& t, Engine& e, PluginHost& h, std::function<void
     manageButton.onClick = [this] { host.showManager(); };
     addAndMakeVisible (manageButton);
 
-    setSize (panelWidth, layoutAll (false));
+    refreshLayout();
 }
 
 void PluginPanel::setupList (PluginList& list, const juce::String& title, const juce::String& addText, bool midi, int maxRows)
@@ -91,6 +106,14 @@ void PluginPanel::alert (const juce::String& title, const juce::String& message)
     juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, title, message);
 }
 
+void PluginPanel::refreshLayout()
+{
+    setSize (panelWidth, layoutAll (false));   // the callout follows the new height
+    resized();
+    repaint();
+}
+
+//==============================================================================
 void PluginPanel::chooseInstrument()
 {
     const int id = instrumentBox.getSelectedId();
@@ -118,59 +141,71 @@ void PluginPanel::chooseInstrument()
     host.showEditor (*slot);   // so the sound can be set up right away
 }
 
-void PluginPanel::updateMidiOutText()
+void PluginPanel::roleChanged()
 {
-    if (track.midiOuts.empty())
-    {
-        midiOutButton.setButtonText ("None - this track plays its own sound");
+    const bool sequencer = roleBox.getSelectedId() == 2;
+    beginEdit();
+    track.sequencer = sequencer;
+    if (! sequencer)
+        engine.setMidiOuts (track, {});   // an instrument plays its own sound again
+    instrumentLabel.setText (sequencer ? "Plugin" : "Instrument", juce::dontSendNotification);
+    rebuildRoutes();
+    refreshLayout();
+}
+
+// One row per other MIDI track: a tick to play the notes there, and the channel it listens to.
+void PluginPanel::rebuildRoutes()
+{
+    routeRows.clear();
+
+    const bool show = isMidi && track.sequencer;
+    routeHeading.setVisible (show);
+    routeHint.setVisible (show);
+    if (! show)
         return;
-    }
-    juce::StringArray names;
-    for (auto* target : track.midiOuts)
-        names.add (target->name);
-    midiOutButton.setButtonText ("Notes go to: " + names.joinIntoString (", "));
-}
 
-// Tick the tracks that should play this track's notes (one pick per opening of the menu).
-void PluginPanel::showMidiOutMenu()
-{
-    std::vector<Track*> others;
-    juce::PopupMenu menu;
-    menu.addItem (1000, "None - this track plays its own sound", true, track.midiOuts.empty());
-    menu.addSeparator();
     for (int i = 0; i < engine.getNumTracks(); ++i)
-        if (auto* other = engine.getTrack (i); other != &track && other->type == Track::Type::Midi)
-        {
-            others.push_back (other);
-            const bool ticked = std::find (track.midiOuts.begin(), track.midiOuts.end(), other) != track.midiOuts.end();
-            menu.addItem ((int) others.size(), other->name, true, ticked);
-        }
-    if (others.empty())
-        menu.addItem (-1, "Add another MIDI track first", false);
+    {
+        auto* other = engine.getTrack (i);
+        if (other == &track || other->type != Track::Type::Midi)
+            continue;
 
-    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&midiOutButton),
-                        [this, others, safe = juce::Component::SafePointer<PluginPanel> (this)] (int result)
-                        {
-                            if (safe == nullptr || result <= 0)
-                                return;
+        auto row = std::make_unique<RouteRow>();
+        row->target = other;
+        row->use.setButtonText (other->name);
 
-                            auto targets = track.midiOuts;
-                            if (result == 1000)
-                            {
-                                targets.clear();
-                            }
-                            else
-                            {
-                                auto* picked = others[(size_t) result - 1];
-                                auto it = std::find (targets.begin(), targets.end(), picked);
-                                if (it == targets.end()) targets.push_back (picked); else targets.erase (it);
-                            }
-                            beginEdit();
-                            engine.setMidiOuts (track, targets);
-                            updateMidiOutText();
-                        });
+        row->channel.addItem ("All channels", 1);
+        for (int ch = 1; ch <= 16; ++ch)
+            row->channel.addItem ("Channel " + juce::String (ch), ch + 1);
+        row->channel.setSelectedId (1, juce::dontSendNotification);
+
+        for (auto& route : track.midiOuts)
+            if (route.target == other)
+            {
+                row->use.setToggleState (true, juce::dontSendNotification);
+                row->channel.setSelectedId (route.channel + 1, juce::dontSendNotification);
+            }
+
+        row->use.onClick = [this] { routesChanged(); };
+        row->channel.onChange = [this] { routesChanged(); };
+        addAndMakeVisible (row->use);
+        addAndMakeVisible (row->channel);
+        routeRows.push_back (std::move (row));
+    }
 }
 
+void PluginPanel::routesChanged()
+{
+    std::vector<MidiRoute> routes;
+    for (auto& row : routeRows)
+        if (row->use.getToggleState())
+            routes.push_back ({ row->target, row->channel.getSelectedId() - 1 });   // id 1 = all channels = 0
+
+    beginEdit();
+    engine.setMidiOuts (track, routes);
+}
+
+//==============================================================================
 void PluginPanel::addPluginMenu (PluginList& list)
 {
     juce::Array<juce::PluginDescription> candidates;
@@ -237,9 +272,7 @@ void PluginPanel::rebuild (PluginList& list)
 
     list.hint.setText (list.rows.empty() ? "None yet." : "", juce::dontSendNotification);
     list.addButton.setEnabled ((int) list.rows.size() < list.maxRows);
-    setSize (panelWidth, layoutAll (false));   // the callout follows the new height
-    resized();
-    repaint();
+    refreshLayout();
 }
 
 void PluginPanel::paint (juce::Graphics& g)
@@ -275,17 +308,37 @@ int PluginPanel::layoutAll (bool apply)
 
     if (isMidi)
     {
+        auto roleLine = area.removeFromTop (30);
+        place (roleLabel, roleLine.removeFromLeft (74));
+        place (roleBox, roleLine);
+        area.removeFromTop (6);
+
         auto line = area.removeFromTop (30);
         place (instrumentLabel, line.removeFromLeft (74));
         place (instrumentEdit, line.removeFromRight (50));
         line.removeFromRight (6);
         place (instrumentBox, line);
-        area.removeFromTop (6);
+        area.removeFromTop (8);
 
-        auto outLine = area.removeFromTop (30);
-        place (midiOutLabel, outLine.removeFromLeft (74));
-        place (midiOutButton, outLine);
-        area.removeFromTop (sectionGap + 4);
+        if (track.sequencer)
+        {
+            place (routeHeading, area.removeFromTop (22));
+            place (routeHint, area.removeFromTop (48));
+            if (routeRows.empty())
+                area.removeFromTop (rowH);
+            for (auto& row : routeRows)
+            {
+                auto r = area.removeFromTop (rowH).reduced (0, 2);
+                place (row->use, r.removeFromLeft (r.getWidth() / 2));
+                place (row->channel, r);
+            }
+            if (routeRows.empty())
+            {
+                // nothing to route to yet
+                routeHint.setText ("Add another MIDI track (+ MIDI or + Drums) to send these notes to.", juce::dontSendNotification);
+            }
+        }
+        area.removeFromTop (sectionGap);
 
         layoutList (midiFxList);
     }
