@@ -1,0 +1,69 @@
+# Builds UFODAW on GitHub's servers (so the build is reproducible and can be signed by SignPath), and packs it.
+#
+# Run it by hand (Actions > Release build > Run workflow) or by pushing a version tag (v0.1.1 ...).
+# Signing is switched on by setting the repository variable SIGNPATH_ORGANIZATION_ID (and the secret SIGNPATH_API_TOKEN),
+# see "Code signing policy" in the README. Without them the workflow only makes the unsigned zip as a workflow artifact.
+#
+# This build does NOT contain ASIO: Steinberg's ASIO SDK cannot be put in the repository. Builds made on your own PC
+# (scripts/package.ps1, with the SDK in third_party/) do contain it.
+name: Release build
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S . -B build -A x64
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Upload the program for signing
+        id: upload-exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: UFODAW-exe
+          path: build/UFODAW_artefacts/Release/UFODAW.exe
+
+      - name: Sign with SignPath
+        id: sign
+        if: ${{ vars.SIGNPATH_ORGANIZATION_ID != '' }}
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ufodaw
+          signing-policy-slug: release-signing
+          github-artifact-id: ${{ steps.upload-exe.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: signed
+
+      - name: Make the zip
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path CMakeLists.txt -Pattern 'project\(UFODAW VERSION ([0-9.]+)').Matches[0].Groups[1].Value
+          $signed = '${{ steps.sign.outcome }}' -eq 'success'
+          $suffix = if ($signed) { '' } else { '-unsigned' }
+          $stage = "UFODAW-$version"
+          New-Item -ItemType Directory $stage | Out-Null
+          Copy-Item ($(if ($signed) { 'signed/UFODAW.exe' } else { 'build/UFODAW_artefacts/Release/UFODAW.exe' })) $stage
+          Copy-Item README.md, LICENSE $stage
+          Compress-Archive -Path "$stage/*" -DestinationPath "UFODAW-$version-win64$suffix.zip"
+          "ZIP=UFODAW-$version-win64$suffix.zip" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+
+      - name: Keep the zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ZIP }}
+          path: ${{ env.ZIP }}

@@ -275,3 +275,14 @@ It is built on:
 - Optionally Steinberg's ASIO SDK (not included; see *Audio interfaces and ASIO*). Builds that include ASIO follow Steinberg's licence for it (the SDK is also offered under the GPLv3).
 
 VST is a registered trademark of Steinberg Media Technologies GmbH. UFODAW is not affiliated with or endorsed by Steinberg, the JUCE team or Particular Programs.
+
+## Code signing policy
+
+Free code signing provided by [SignPath.io](https://signpath.io), certificate by [SignPath Foundation](https://signpath.org).
+*(Active once the project has been accepted by SignPath Foundation; until then releases are not signed and Windows SmartScreen may warn.)*
+
+- **What is signed:** `UFODAW.exe` of the official releases, built from this repository by the GitHub Actions workflow
+  `.github/workflows/release.yml` (so the signed program can be checked against the source). Builds you make yourself are not signed.
+- **Roles:** the committer, reviewer and approver of this project is its owner, [@Thulehunter](https://github.com/Thulehunter).
+- **Privacy:** UFODAW does not send any information to other networked systems unless you ask for it. (Plugins you load may do
+  what they like; they are not part of UFODAW.)
