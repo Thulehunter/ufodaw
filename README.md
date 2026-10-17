@@ -73,7 +73,7 @@ A small digital audio workstation for Windows, written in C++17 with [JUCE](http
 
 ## Running
 
-Download `UFODAW-<version>-win64.zip` (see *Packaging*), unzip it and start `UFODAW.exe`. No installation is needed.
+Download `UFODAW-<version>-win64.zip` from the [Releases](../../releases) page (or build it yourself, see *Packaging*), unzip it and start `UFODAW.exe`. No installation is needed.
 `UFODAW.exe project.mdaw` (or "Open with" on a `.mdaw` file) opens that project right away.
 
 The interface uses a warm dark theme with red, orange and yellow accents; the colours live in `Source/Theme.h`. Track colours tell the types apart: orange = audio, red = MIDI synth, yellow = drums.
@@ -265,6 +265,13 @@ The audio thread never blocks: the UI edits the project under a lock that the au
 
 ## License
 
-UFODAW uses JUCE, which is available under the AGPLv3 or a commercial license. If you distribute UFODAW binaries, you must comply with one of them (for AGPLv3 that means offering the source under the same terms).
+UFODAW is free software, released under the **GNU Affero General Public License v3.0** (see `LICENSE`). If you distribute a modified
+version, or let people use it over a network, you must offer them the source under the same terms.
 
-Time-stretching and pitch-shifting use the [Rubber Band Library](https://breakfastquay.com/rubberband/) (Particular Programs Ltd.), compiled into UFODAW under the GPL (v2 or later), which fits the AGPLv3 above. Distributing a closed-source build would need a commercial licence from them as well.
+It is built on:
+
+- [JUCE](https://juce.com) 8 (AGPLv3, or a commercial licence from its makers), which also provides VST3 hosting under the GPLv3 terms of Steinberg's VST3 SDK.
+- The [Rubber Band Library](https://breakfastquay.com/rubberband/) (Particular Programs Ltd., GPL v2 or later) for time-stretching and pitch-shifting. A closed-source build would need a commercial licence from them as well.
+- Optionally Steinberg's ASIO SDK (not included; see *Audio interfaces and ASIO*). Builds that include ASIO follow Steinberg's licence for it (the SDK is also offered under the GPLv3).
+
+VST is a registered trademark of Steinberg Media Technologies GmbH. UFODAW is not affiliated with or endorsed by Steinberg, the JUCE team or Particular Programs.
