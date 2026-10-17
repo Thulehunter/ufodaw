@@ -38,6 +38,10 @@ A small digital audio workstation for Windows, written in C++17 with [JUCE](http
 - **Plugin delay compensation** - tracks are delayed to line up with plugins that report latency (up to half a second).
 - **Automation** - breakpoint envelopes for volume, pan, every built-in effect parameter, the synth, and any parameter of a hosted VST3 plugin.
 - **Velocity editing** - velocity bars under the piano roll; Ctrl+drag a step in the drum sequencer.
+- **Clipping indicators** - a red **CLIP** lamp in the top bar, a lamp at the top of every level meter, a red frame round the strip and a red
+  track name show when something reached full scale: a track's output, the master mix (over 0 dB before the limiter), or the input of an
+  armed audio track (then lower the gain on the interface; a recording that clips cannot be repaired). They stay lit until you click
+  them, and are cleared when playback starts. Hover a lamp to see where. Armed audio tracks show their input level on their meter.
 - **Mixer** - volume, pan, mute, solo and level meters per track, plus a **master channel** (the yellow strip under the tracks):
   volume with automation, the built-in effects (EQ, compressor, delay, reverb), VST3 effect plugins on the whole mix, a
   level meter, and the soft limiter after it. Stems skip the master channel.

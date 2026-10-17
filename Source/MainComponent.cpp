@@ -33,7 +33,7 @@ public:
 
 //==============================================================================
 // Left-hand controls for one track: name, volume, pan, mute, solo, level meter.
-class TrackHeader : public juce::Component
+class TrackHeader : public juce::Component, public juce::SettableTooltipClient
 {
 public:
     TrackHeader (Track& t, std::function<void (Track*)> onRemove, std::function<void()> onBeginEdit,
@@ -189,15 +189,48 @@ public:
                                                           : Theme::trackColour (track.type == Track::Type::Midi, track.kit != nullptr));
         g.fillRect (0, 0, isMaster ? 8 : 5, getHeight() - 1);
 
-        auto m = juce::Rectangle<int> (getWidth() - 8, 6, 4, getHeight() - 12);
+        // level meter, with a clip lamp on top: it lights red when the track (or, for an armed audio track, its input) reached full
+        // scale and stays lit until you click it, so a clip that happened a moment ago is not missed
+        const bool clip = track.clipped.load() || track.inputClipped.load();
+        auto lamp = juce::Rectangle<int> (getWidth() - 13, 4, 9, 11);
+        auto m = juce::Rectangle<int> (getWidth() - 13, 18, 9, getHeight() - 22);
         g.setColour (juce::Colours::black);
         g.fillRect (m);
         const float lvl = juce::jlimit (0.0f, 1.0f, shown);
         g.setColour (lvl > 0.9f ? Theme::redBright : Theme::yellow);
         g.fillRect (m.withTop (m.getBottom() - (int) (lvl * (float) m.getHeight())));
+        g.setColour (Theme::redBright.withAlpha (0.45f));   // the 0 dB mark
+        g.drawHorizontalLine (m.getY() + 1, (float) m.getX(), (float) m.getRight());
+
+        if (clip)
+        {
+            g.setColour (Theme::redBright.withAlpha (0.25f));   // a glow behind the lamp
+            g.fillRoundedRectangle (lamp.expanded (3).toFloat(), 4.0f);
+            g.setColour (Theme::redBright);
+            g.fillRect (lamp);
+            g.setColour (Theme::text);
+            g.drawRect (lamp, 1);
+            g.setColour (Theme::redBright);
+            g.drawRect (getLocalBounds().withWidth (getWidth() - 1).withHeight (getHeight() - 1), 2);   // a red frame round the whole strip
+        }
+        else
+        {
+            g.setColour (Theme::redDim.withAlpha (0.45f));
+            g.fillRect (lamp);
+        }
 
         g.setColour (Theme::border);
         g.drawHorizontalLine (getHeight() - 1, 0.0f, (float) getWidth());
+    }
+
+    void mouseDown (const juce::MouseEvent& e) override
+    {
+        if (e.x >= getWidth() - 22 && e.y < 24)   // the clip lamp: click to clear it
+        {
+            track.clipped = false;
+            track.inputClipped = false;
+            repaint();
+        }
     }
 
     void resized() override
@@ -258,8 +291,19 @@ public:
 
     void tick()
     {
-        const float l = track.level;
+        const bool armedAudio = track.type == Track::Type::Audio && ! track.bus && track.recordArmed;
+        const float l = juce::jmax (track.level.load(), armedAudio ? track.inputLevel.load() : 0.0f);   // an armed track shows its input
         shown = l > shown ? l : shown * 0.85f;
+
+        const bool clipNow = track.clipped.load() || track.inputClipped.load();
+        if (clipNow != clipShown)
+        {
+            clipShown = clipNow;
+            nameLabel.setColour (juce::Label::textColourId, clipNow ? Theme::redBright : (isMaster ? Theme::yellow : Theme::text));
+            setTooltip (clipNow ? juce::String (track.inputClipped.load() ? "The input clipped: lower the gain on the interface. " : "This track clipped: lower its volume or what is before it. ")
+                                      + "Click the red lamp to clear it."
+                                : juce::String());
+        }
 
         const bool fxActive = track.fx.anyOn();
         if (fxActive != fxShownActive)
@@ -379,6 +423,7 @@ private:
     bool monitorShown = false;
     bool isMaster = false;
     bool armShown = false;
+    bool clipShown = false;
     float shown = 0.0f;
 
     juce::Label nameLabel;
@@ -1488,6 +1533,9 @@ MainComponent::MainComponent()
         applyTempoMap (m);
     };
 
+    clipLamp.onClick = [this] { engine.clearClipIndicators(); updateClipLamp(); repaint(); };
+    addAndMakeVisible (clipLamp);
+
     tempoButton.setTooltip ("Tempo and time signature changes: add sections that start at a bar (for example 3/4 from bar 17, or 140 BPM from bar 33). "
                             "MIDI follows the tempo; audio clips stay where they are in time.");
     tempoButton.setWantsKeyboardFocus (false);
@@ -1561,6 +1609,30 @@ double MainComponent::snapTime (double seconds) const
         return seconds;
     const double beats = tempoMap.secondsToBeats (seconds);   // snap in 16th notes, wherever the tempo changes
     return tempoMap.beatsToSeconds (std::round (beats * 4.0) / 4.0);
+}
+
+// The lamp in the top bar lights when the master mix, any track, or the input of an armed track has clipped; the tooltip says where.
+void MainComponent::updateClipLamp()
+{
+    juce::StringArray where;
+    if (engine.getMaster().clipped.load())
+        where.add ("the master mix (over 0 dB before the limiter)");
+    for (int i = 0; i < engine.getNumTracks(); ++i)
+        if (auto* t = engine.getTrack (i))
+        {
+            if (t->inputClipped.load())
+                where.add (t->name + " (input: lower the gain on the interface)");
+            if (t->clipped.load())
+                where.add (t->name);
+        }
+
+    const auto text = where.joinIntoString ("\n");
+    if (text == clipLampText)
+        return;
+    clipLampText = text;
+    clipLamp.setLit (where.size() > 0);
+    clipLamp.setTooltip (where.isEmpty() ? juce::String ("Lights up when the mix, a track or an armed input clips (reaches full scale). Click to clear.")
+                                         : "Clipped:\n" + text + "\n\nClick to clear.");
 }
 
 // A new tempo map: MIDI, the loop and the punch region are re-timed so they keep their place in the music.
@@ -2527,6 +2599,8 @@ void MainComponent::resized()
     undoButton.setBounds (top.removeFromLeft (50));
     top.removeFromLeft (4);
     redoButton.setBounds (top.removeFromLeft (50));
+    separator();
+    clipLamp.setBounds (top.removeFromLeft (64));
 
     // bottom bar: MIDI/armed status on the left, computer-keys toggle on the right
     statusLabel.setBounds (10, getHeight() - bottomBarHeight + 8, juce::jmax (100, getWidth() / 2 - 150), bottomBarHeight - 16);
@@ -3036,6 +3110,7 @@ void MainComponent::timerCallback()
     const double p = engine.getPositionSeconds();
     const int mins = (int) (p / 60.0);
     refreshLiveTargets();   // picks up red-dot arming and input choices made anywhere
+    updateClipLamp();
 
     if (juce::Time::getMillisecondCounter() - lastAutosaveMs > 120000u)   // every two minutes
     {
@@ -3080,6 +3155,7 @@ void MainComponent::startPlayback()
     if (! engine.isPlaying())
     {
         playStartSeconds = engine.getPositionSeconds();
+        engine.clearClipIndicators();   // a fresh run: only clipping from now on counts
         engine.play();
     }
 }

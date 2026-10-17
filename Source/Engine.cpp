@@ -345,6 +345,31 @@ bool Engine::readTunerSamples (float* dest, int n) const
     return true;
 }
 
+// The input level of every armed audio track (the loudest sample of its input channels in this block), and a latch when it
+// reaches full scale: a recording that clips cannot be repaired afterwards.
+void Engine::updateInputMeters()
+{
+    for (auto& t : tracks)
+    {
+        if (t->type != Track::Type::Audio || t->bus)
+            continue;
+        if (! t->recordArmed || inputChannelsCopied <= 0 || inputOffset != 0)
+        {
+            t->inputLevel = 0.0f;
+            continue;
+        }
+
+        float peak = 0.0f;
+        const int first = juce::jmin (t->inputFirst, inputChannelsCopied - 1);
+        const int last = juce::jmin (t->inputFirst + juce::jmax (1, t->inputCount) - 1, inputChannelsCopied - 1);
+        for (int c = first; c <= last; ++c)
+            peak = juce::jmax (peak, inputBuf.getMagnitude (c, 0, juce::jmin (inputBuf.getNumSamples(), inputBlockSize)));
+        t->inputLevel = peak;
+        if (peak >= 0.995f)
+            t->inputClipped = true;
+    }
+}
+
 bool Engine::anyMonitoring() const
 {
     for (auto& t : tracks)
@@ -1758,6 +1783,7 @@ void Engine::getNextAudioBlock (const juce::AudioSourceChannelInfo& info)
     else
         inputChannelsCopied = 0;
     inputOffset = 0;
+    inputBlockSize = info.numSamples;
 
     info.clearActiveBufferRegion();
 
@@ -1785,6 +1811,7 @@ void Engine::getNextAudioBlock (const juce::AudioSourceChannelInfo& info)
     }
 
     drainPreviewEvents();
+    updateInputMeters();
 
     const bool counting = playing && countInRemaining.load() > 0;   // the count-in plays: the transport waits
     const bool running = playing && ! counting;
@@ -2640,6 +2667,8 @@ void Engine::mixBlock (float* outL, float* outR, int n, juce::int64 pos, bool wi
                 b->busFed = true;
             }
         t->level = peak * g;
+        if (audible && peak * g >= 1.0f)
+            t->clipped = true;   // this track's own output reaches digital full scale (shown until cleared)
     }
 
     // ---- Master channel: effects and plugin inserts on the summed tracks, run in slices while its parameters
@@ -2711,19 +2740,23 @@ void Engine::mixBlock (float* outL, float* outR, int n, juce::int64 pos, bool wi
 
     // Stems skip the master volume and the limiter, so that they add up to the mix instead of being limited one by one.
     const float masterRamp = n > 0 ? 1.0f / (float) n : 0.0f;
-    float mp = 0.0f;
+    float mp = 0.0f, beforeLimiter = 0.0f;
     for (int i = 0; i < n; ++i)
     {
         const float mg = masterGain0 + (masterGain1 - masterGain0) * (float) i * masterRamp;
+        beforeLimiter = juce::jmax (beforeLimiter, std::abs (outL[i] * mg));
         outL[i] = renderMaster ? softClip (outL[i] * mg) : outL[i];
         mp = juce::jmax (mp, std::abs (outL[i]));
         if (outR)
         {
+            beforeLimiter = juce::jmax (beforeLimiter, std::abs (outR[i] * mg));
             outR[i] = renderMaster ? softClip (outR[i] * mg) : outR[i];
             mp = juce::jmax (mp, std::abs (outR[i]));
         }
     }
     setMasterLevel (mp);
+    if (renderMaster && beforeLimiter >= 1.0f)
+        master->clipped = true;   // the mix is over 0 dBFS before the limiter: it is being squashed
 }
 
 // True if a track has something to put in a stem: clips, or notes routed to it by a sequencer plugin.

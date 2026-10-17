@@ -26,6 +26,53 @@ namespace UiSettings
     constexpr double panStep = 0.05;   // 5 % towards left or right
 }
 
+// The big "CLIP" lamp in the top bar: red while something has clipped (the master mix, a track, or an armed input), until clicked.
+class ClipLamp : public juce::Component, public juce::SettableTooltipClient
+{
+public:
+    std::function<void()> onClick;
+
+    void setLit (bool on)
+    {
+        if (on != lit)
+        {
+            lit = on;
+            repaint();
+        }
+    }
+
+    void paint (juce::Graphics& g) override
+    {
+        auto r = getLocalBounds().toFloat().reduced (1.0f);
+        if (lit)
+        {
+            g.setColour (Theme::redBright.withAlpha (0.3f));
+            g.fillRoundedRectangle (r.expanded (1.0f), 7.0f);
+            g.setColour (Theme::redBright);
+            g.fillRoundedRectangle (r, 6.0f);
+            g.setColour (Theme::text);
+            g.drawRoundedRectangle (r, 6.0f, 1.5f);
+        }
+        else
+        {
+            g.setColour (Theme::redDim.withAlpha (0.35f));
+            g.fillRoundedRectangle (r, 6.0f);
+        }
+        g.setColour (lit ? Theme::text : Theme::textFaint);
+        g.setFont (juce::FontOptions (15.0f, juce::Font::bold));
+        g.drawText ("CLIP", getLocalBounds(), juce::Justification::centred);
+    }
+
+    void mouseDown (const juce::MouseEvent&) override
+    {
+        if (onClick)
+            onClick();
+    }
+
+private:
+    bool lit = false;
+};
+
 class TrackHeader;
 class TrackLane;
 class TimeRuler;
@@ -328,6 +375,9 @@ private:
                     recordButton { TransportButton::Record, "Record (R)" };
     juce::TextButton loopButton { "Loop" }, pluginsButton { "Plugins..." };
     juce::TextButton punchButton { "Punch" }, tunerButton { "Tuner" };
+    ClipLamp clipLamp;
+    juce::String clipLampText;   // what the lamp last said (so it is only touched when it changes)
+    void updateClipLamp();
     std::unique_ptr<TunerWindow> tunerWindow;
 
     // what a loop/punch recording needs to know when it ends

@@ -201,6 +201,9 @@ struct Track
     std::atomic<bool> mute { false };
     std::atomic<bool> solo { false };
     std::atomic<float> level { 0.0f };
+    std::atomic<bool> clipped { false };        // the track's output reached full scale (latched until cleared)
+    std::atomic<float> inputLevel { 0.0f };     // armed audio tracks: the loudest sample of the input in the last block
+    std::atomic<bool> inputClipped { false };   // ...and whether the input reached full scale (latched until cleared)
 
     AutomationLane autoVolume, autoPan;                   // fader range 0..1.5, pan -1..1
     std::vector<std::unique_ptr<ParamAutomation>> autoLanes;
@@ -463,6 +466,17 @@ public:
     std::atomic<float> bpm { 120.0f };
     std::atomic<bool> metronome { false };
     std::atomic<float> masterLevel { 0.0f };
+    // (master->clipped: the mix went over 0 dBFS before the master limiter; latched until cleared)
+    void clearClipIndicators()
+    {
+        master->clipped = false;
+        const juce::ScopedLock sl (lock);
+        for (auto& t : tracks)
+        {
+            t->clipped = false;
+            t->inputClipped = false;
+        }
+    }
 
     // The master channel: the last stage of the mix. It is a Track without clips, so it has a volume
     // (gain), built-in effects, plugin inserts and automation like any other channel; mixBlock runs the
@@ -593,6 +607,8 @@ private:
     juce::AudioBuffer<float> inputBuf;
     int inputChannelsCopied = 0;
     int inputOffset = 0;                            // where the sub-block being mixed starts inside the callback's block
+    int inputBlockSize = 0;                         // samples in the callback's block
+    void updateInputMeters();
     bool anyMonitoring() const;
     juce::SpinLock recLock;
 
