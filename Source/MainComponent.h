@@ -129,8 +129,9 @@ public:
     void openInstrumentEditor (Track&);   // the plugin window of the track's instrument (or first effect); the VST panel if none
     double getPixelsPerSecond() const { return pixelsPerSecond; }
     int getScrollX() const { return laneViewport.getViewPositionX(); }
-    double beatSeconds() const;
-    double barSeconds() const { return beatSeconds() * 4.0; }
+    const TempoMap& getTempoMap() const { return tempoMap; }   // tempo and time signature sections: grid, snapping, ruler
+    void applyTempoMap (const TempoMap&);                       // also re-times MIDI, the loop and the punch region
+    void openTempoPanel();
     double snapTime (double seconds) const;
 
     bool isLiveNoteDown (int pitch) const   // a note being played right now on a MIDI keyboard or the computer keys
@@ -301,6 +302,8 @@ private:
     juce::ToggleButton panSnapButton { "Pan snap 5%" };
     juce::File currentProject;
     juce::ToggleButton metroButton { "Metronome" };
+    TempoMap tempoMap;   // the same as the engine's; only the message thread changes either, always together
+    juce::TextButton tempoButton { "Tempo" };
     juce::Label bpmLabel { {}, "BPM" }, timeLabel;
     juce::Slider bpmSlider { juce::Slider::LinearBar, juce::Slider::TextBoxLeft };
     // The master channel strip, pinned below the tracks: controls on the left, an automation lane on the right.

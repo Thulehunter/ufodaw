@@ -10,6 +10,7 @@
 #include "Plugin.h"
 #include "DrumKit.h"
 #include "ExternalMidi.h"
+#include "TempoMap.h"
 
 // A piece of audio placed on the timeline. The sample data is immutable and shared, so
 // splitting and duplicating clips is free; only start/offset/length differ.
@@ -23,6 +24,11 @@ struct Clip
     double start = 0.0;   // position on the timeline (seconds)
     double offset = 0.0;  // where in the source audio the clip begins (seconds)
     double length = 0.0;  // how long the clip plays (seconds)
+
+    // Fades (seconds, equal-power curves; an overlap fade-out + fade-in on two clips is a crossfade) and reverse (the clip's
+    // region of the source plays backwards).
+    double fadeIn = 0.0, fadeOut = 0.0;
+    bool reverse = false;
 
     // Takes: clips of one group are alternatives for the same spot (a loop recording makes one per pass); only the
     // active one plays and shows. takeGroup 0 = an ordinary clip.
@@ -240,7 +246,7 @@ struct TrackState
 struct ProjectState
 {
     std::vector<TrackState> tracks;
-    float bpm = 120.0f;
+    TempoMap tempo;
     TrackState master;   // the master channel: volume, effects, plugins, automation
 };
 
@@ -282,6 +288,11 @@ public:
     std::vector<Clip> getClips (const Track&) const;                        // snapshot, safe to read
     bool getClip (const Track&, int clipId, Clip& out) const;
     bool setClipRegion (Track&, int clipId, double start, double offset, double length);
+
+    // Fades, crossfades and reverse of audio clips.
+    bool setClipFades (Track&, int clipId, double fadeIn, double fadeOut);   // clamped to the clip's length
+    bool setClipReverse (Track&, int clipId, bool reverse);
+    int crossfadeOverlaps (Track&, int clipId);                             // how many neighbours were crossfaded with this clip
 
     // Takes (see Clip::takeGroup). addTakes puts the clips in one group, the last one active, and returns its id.
     int addTakes (Track&, std::vector<Clip>);
@@ -398,6 +409,10 @@ public:
     std::atomic<bool> loopEnabled { false };
     std::atomic<double> loopStart { 0.0 }, loopEnd { 0.0 };
 
+    // The tempo and time signature (see TempoMap). `bpm` mirrors the first section's tempo. Changing the map re-times the
+    // MIDI clips, the loop and the punch region so they keep their place in the music; audio clips stay where they are in time.
+    void setTempoMap (const TempoMap&, bool retimeMidi);
+    TempoMap getTempoMap() const;
     std::atomic<float> bpm { 120.0f };
     std::atomic<bool> metronome { false };
     std::atomic<float> masterLevel { 0.0f };
@@ -473,6 +488,7 @@ private:
     juce::AudioFormatManager formats;
     mutable juce::CriticalSection lock;
     std::vector<std::unique_ptr<Track>> tracks;
+    TempoMap tempoMap;                              // guarded by `lock`
     std::unique_ptr<Track> master;
     int nextClipId = 1;
 

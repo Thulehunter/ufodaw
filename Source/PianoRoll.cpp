@@ -168,20 +168,17 @@ public:
             g.drawHorizontalLine (r.getBottom() - 1, 0.0f, (float) getWidth());
         }
 
-        // vertical grid: bars, beats and 16ths (when there is room)
-        const double step = main.beatSeconds() / 4.0;
-        const double firstT = std::floor (xToTime (area.getX()) / step) * step;
-        for (double t = firstT;; t += step)
+        // vertical grid from the tempo map: bars, beats and 16ths (when there is room)
+        const auto& map = main.getTempoMap();
+        const double leftT = xToTime (area.getX()), rightT = xToTime (area.getRight());
+        const double beatPx = map.beatSecondsAt (leftT) * pps;
+        map.forEachGridLine (leftT, rightT, 4, [&] (double t, int kind, int)
         {
-            const int x = timeToX (t);
-            if (x > area.getRight()) break;
-            const auto index = (long long) std::llround (t / step);
-            const bool isBar = index % 16 == 0, isBeat = index % 4 == 0;
-            if (! isBar && ! isBeat && step * pps < 9.0) continue;
-            if (! isBar && isBeat && main.beatSeconds() * pps < 9.0) continue;
-            g.setColour (Theme::text.withAlpha (isBar ? 0.16f : isBeat ? 0.08f : 0.035f));
-            g.drawVerticalLine (x, 0.0f, (float) getHeight());
-        }
+            if (kind == 0 && beatPx / 4.0 < 9.0) return;
+            if (kind == 1 && beatPx < 9.0) return;
+            g.setColour (Theme::text.withAlpha (kind == 2 ? 0.16f : kind == 1 ? 0.08f : 0.035f));
+            g.drawVerticalLine (timeToX (t), 0.0f, (float) getHeight());
+        });
 
         // dim everything outside the clip
         g.setColour (juce::Colours::black.withAlpha (0.4f));
@@ -256,7 +253,7 @@ public:
             Note n;
             n.pitch = yToPitch (e.y);
             n.start = t;
-            n.length = juce::jmin (main.beatSeconds(), clip.length - t);
+            n.length = juce::jmin (main.getTempoMap().beatSecondsAt (clip.start + t), clip.length - t);
             main.beginEdit();
             gestureEdited = true;   // adding the note and stretching it afterwards is one undo step
             clip.notes.push_back (n);
@@ -274,7 +271,7 @@ public:
             return;
 
         auto& n = clip.notes[(size_t) selected];
-        const double minLen = main.beatSeconds() / 4.0;
+        const double minLen = main.getTempoMap().beatSecondsAt (clip.start + n.start) / 4.0;
 
         // work out the new values first so the undo snapshot is only taken when something changes
         double newStart = n.start, newLength = n.length;

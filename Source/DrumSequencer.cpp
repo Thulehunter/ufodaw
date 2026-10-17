@@ -132,7 +132,7 @@ public:
 
         const auto area = g.getClipBounds();
         const double pps = main.getPixelsPerSecond();
-        const double step = main.beatSeconds() / 4.0;
+        const double step = stepSeconds();
 
         for (int pad = 0; pad < DrumKit::numPads; ++pad)
         {
@@ -145,13 +145,14 @@ public:
             g.drawHorizontalLine (r.getBottom() - 1, 0.0f, (float) getWidth());
         }
 
-        // grid lines, clipped to what is visible
-        const double firstT = std::floor (xToTime (area.getX()) / step) * step;
+        // grid lines of the steps, counted from the start of the clip (a clip starts on a bar); the step length is the one in
+        // force at the start of the clip
+        const double firstT = std::floor ((xToTime (area.getX()) - clip.start) / step) * step + clip.start;
         for (double t = firstT;; t += step)
         {
             const int x = timeToX (t);
             if (x > area.getRight()) break;
-            const auto index = (long long) std::llround (t / step);
+            const auto index = (long long) std::llround ((t - clip.start) / step);
             const bool isBar = index % 16 == 0, isBeat = index % 4 == 0;
             if (! isBeat && step * pps < 8.0) continue;
             g.setColour (Theme::text.withAlpha (isBar ? 0.18f : isBeat ? 0.09f : 0.04f));
@@ -263,7 +264,8 @@ private:
 
     double xToTime (int x) const { return (x + main.getScrollX()) / main.getPixelsPerSecond(); }
     int timeToX (double t) const { return (int) std::round (t * main.getPixelsPerSecond()) - main.getScrollX(); }
-    double step() const { return main.beatSeconds() / 4.0; }
+    double step() const { return stepSeconds(); }
+    double stepSeconds() const { return main.getTempoMap().beatSecondsAt (clip.start) / 4.0; }   // a sixteenth at the clip's start
 
     // (step index, pad) under a point, or (-1, -1) outside the clip
     juce::Point<int> cellAt (juce::Point<int> p) const

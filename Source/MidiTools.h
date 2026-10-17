@@ -7,7 +7,7 @@
 // Quantize, swing and humanize for the notes of a MIDI clip.
 struct QuantizeSettings
 {
-    double gridSeconds = 0.25;       // one grid step
+    double gridBeats = 0.25;         // one grid step in quarter notes (0.25 = a sixteenth)
     float strength = 1.0f;           // 0..1: how far notes move toward the grid (0 = not at all, 1 = exactly on it)
     float swing = 0.0f;              // 0..1: delay of every second step; 1 = triplet feel (a third of a step)
     double humanizeSeconds = 0.0;    // each note moves by a random amount up to this, earlier or later
@@ -15,18 +15,21 @@ struct QuantizeSettings
     bool quantizeLength = false;     // note lengths are pulled to the grid as well
 };
 
-// Notes are placed relative to the clip; the grid is anchored to the timeline (bar 1 = 0 s), so a clip that does not start on
-// the grid still lands on it. Result: the notes moved, clamped inside the clip.
-inline void quantizeNotes (std::vector<Note>& notes, double clipStart, double clipLength, const QuantizeSettings& s, juce::Random& rng)
+// Notes are placed relative to the clip; the grid follows the tempo map and is anchored to the start of the song, so a clip that
+// does not start on the grid still lands on it, also across tempo changes. Result: the notes moved, clamped inside the clip.
+inline void quantizeNotes (std::vector<Note>& notes, double clipStart, double clipLength, const QuantizeSettings& s,
+                           const TempoMap& map, juce::Random& rng)
 {
-    const double grid = juce::jmax (1.0e-3, s.gridSeconds);
+    const double grid = juce::jmax (1.0e-3, s.gridBeats);
     for (auto& n : notes)
     {
         const double absolute = clipStart + n.start;
-        const auto step = (juce::int64) std::llround (absolute / grid);
-        double target = (double) step * grid;
+        const double beat = map.secondsToBeats (absolute);
+        const auto step = (juce::int64) std::llround (beat / grid);
+        double targetBeat = (double) step * grid;
         if ((step & 1) != 0)
-            target += (double) s.swing * grid / 3.0;   // every second step comes late
+            targetBeat += (double) s.swing * grid / 3.0;   // every second step comes late
+        const double target = map.beatsToSeconds (targetBeat);
 
         double moved = absolute + (target - absolute) * (double) s.strength;
         if (s.humanizeSeconds > 0.0)
@@ -34,7 +37,9 @@ inline void quantizeNotes (std::vector<Note>& notes, double clipStart, double cl
 
         if (s.quantizeLength)
         {
-            const double wanted = juce::jmax (grid, std::round (n.length / grid) * grid);
+            const double lengthBeats = map.secondsToBeats (absolute + n.length) - beat;
+            const double wantedBeats = juce::jmax (grid, std::round (lengthBeats / grid) * grid);
+            const double wanted = map.beatsToSeconds (targetBeat + wantedBeats) - target;
             n.length += (wanted - n.length) * (double) s.strength;
         }
 
@@ -51,7 +56,7 @@ inline void quantizeNotes (std::vector<Note>& notes, double clipStart, double cl
 class QuantizePanel : public juce::Component
 {
 public:
-    QuantizePanel (double beatSeconds, std::function<void (const QuantizeSettings&)> onApply) : beat (beatSeconds), apply (std::move (onApply))
+    explicit QuantizePanel (std::function<void (const QuantizeSettings&)> onApply) : apply (std::move (onApply))
     {
         auto setupLabel = [this] (juce::Label& l, const juce::String& text)
         {
@@ -131,7 +136,7 @@ private:
     {
         QuantizeSettings s;
         const double steps[] = { 1.0, 0.5, 1.0 / 3.0, 0.25, 1.0 / 6.0, 0.125 };   // in beats
-        s.gridSeconds = beat * steps[juce::jlimit (0, 5, grid.getSelectedId() - 1)];
+        s.gridBeats = steps[juce::jlimit (0, 5, grid.getSelectedId() - 1)];
         s.strength = (float) strength.getValue() / 100.0f;
         s.swing = (float) swing.getValue() / 100.0f;
         s.humanizeSeconds = humTime.getValue() / 1000.0;
@@ -160,7 +165,6 @@ private:
         m.lengths = lengths.getToggleState();
     }
 
-    double beat;
     std::function<void (const QuantizeSettings&)> apply;
     juce::Label gridLabel, strengthLabel, swingLabel, humTimeLabel, humVelLabel;
     juce::ComboBox grid;

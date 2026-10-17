@@ -5,6 +5,7 @@
 #include "PluginPanel.h"
 #include "RoutingPanel.h"
 #include "MidiTools.h"
+#include "TempoPanel.h"
 #include <algorithm>
 #include <map>
 
@@ -392,7 +393,6 @@ public:
     {
         g.fillAll (Theme::panel);
         const double pps = main.getPixelsPerSecond();
-        const double bar = main.barSeconds(), beat = main.beatSeconds();
         const double scroll = main.getScrollX();
 
         auto& engine = main.getEngine();
@@ -418,29 +418,48 @@ public:
             g.fillRect (x1, 0, x2 - x1, 3);
         }
 
-        const int labelEvery = juce::jmax (1, (int) std::ceil (60.0 / (bar * pps)));
-        const int firstBar = (int) std::floor (scroll / (bar * pps));
+        // bar and beat lines from the tempo map (bar numbers are thinned out when the bars get narrow)
+        const auto& map = main.getTempoMap();
+        const double secondsAtLeft = scroll / pps, secondsAtRight = (scroll + getWidth()) / pps;
+        const double barPx = map.barSecondsAt (secondsAtLeft) * pps;
+        const int labelEvery = juce::jmax (1, (int) std::ceil (60.0 / juce::jmax (1.0, barPx)));
+        const double beatPx = map.beatSecondsAt (secondsAtLeft) * pps;
 
         g.setFont (11.0f);
-        for (int b = firstBar;; ++b)
+        map.forEachGridLine (secondsAtLeft, secondsAtRight, 1, [&] (double sec, int kind, int bar)
         {
-            const int x = (int) (b * bar * pps - scroll);
-            if (x > getWidth()) break;
-
-            g.setColour (Theme::text.withAlpha (0.4f));
-            g.drawVerticalLine (x, (float) getHeight() * 0.45f, (float) getHeight());
-            if (b % labelEvery == 0)
+            const int x = (int) (sec * pps - scroll);
+            if (kind == 2)
             {
-                g.setColour (Theme::text.withAlpha (0.75f));
-                g.drawText (juce::String (b + 1), x + 3, 1, 50, 14, juce::Justification::left);
-            }
-
-            if (beat * pps >= 14.0)
-                for (int k = 1; k < 4; ++k)
+                g.setColour (Theme::text.withAlpha (0.4f));
+                g.drawVerticalLine (x, (float) getHeight() * 0.45f, (float) getHeight());
+                if (bar % labelEvery == 0)
                 {
-                    g.setColour (Theme::text.withAlpha (0.2f));
-                    g.drawVerticalLine (x + (int) (k * beat * pps), (float) getHeight() * 0.7f, (float) getHeight());
+                    g.setColour (Theme::text.withAlpha (0.75f));
+                    g.drawText (juce::String (bar + 1), x + 3, 1, 50, 14, juce::Justification::left);
                 }
+            }
+            else if (beatPx >= 14.0)
+            {
+                g.setColour (Theme::text.withAlpha (0.2f));
+                g.drawVerticalLine (x, (float) getHeight() * 0.7f, (float) getHeight());
+            }
+        });
+
+        // where the tempo or the time signature changes
+        const auto& sections = map.getSections();
+        for (size_t i = 1; i < sections.size(); ++i)
+        {
+            const int x = (int) (map.barStartSeconds (sections[i].bar) * pps - scroll);
+            if (x < -80 || x > getWidth())
+                continue;
+            juce::String text = juce::String ((int) std::round (sections[i].bpm));
+            if (sections[i].numerator != sections[i - 1].numerator || sections[i].denominator != sections[i - 1].denominator)
+                text += "  " + juce::String (sections[i].numerator) + "/" + juce::String (sections[i].denominator);
+            g.setColour (Theme::yellow);
+            g.fillRect (x, 0, 2, getHeight());
+            g.setFont (juce::FontOptions (10.5f, juce::Font::bold));
+            g.drawText (text, x + 4, getHeight() - 14, 70, 13, juce::Justification::left);
         }
         g.setColour (Theme::border);
         g.drawHorizontalLine (getHeight() - 1, 0.0f, (float) getWidth());
@@ -502,21 +521,23 @@ public:
         g.fillAll (Theme::laneBg);
 
         // grid
-        const double bar = main.barSeconds(), beat = main.beatSeconds();
-        const int firstBar = juce::jmax (0, (int) std::floor (area.getX() / (bar * pps)));
-        for (int b = firstBar;; ++b)
+        const auto& map = main.getTempoMap();
+        const double leftSeconds = area.getX() / pps, rightSeconds = area.getRight() / pps;
+        const double beatPx = map.beatSecondsAt (leftSeconds) * pps;
+        map.forEachGridLine (leftSeconds, rightSeconds, 1, [&] (double sec, int kind, int)
         {
-            const int x = (int) (b * bar * pps);
-            if (x > area.getRight()) break;
-            g.setColour (Theme::text.withAlpha (0.10f));
-            g.drawVerticalLine (x, 0.0f, (float) getHeight());
-            if (beat * pps >= 14.0)
+            const int x = (int) (sec * pps);
+            if (kind == 2)
+            {
+                g.setColour (Theme::text.withAlpha (0.10f));
+                g.drawVerticalLine (x, 0.0f, (float) getHeight());
+            }
+            else if (beatPx >= 14.0)
             {
                 g.setColour (Theme::text.withAlpha (0.04f));
-                for (int k = 1; k < 4; ++k)
-                    g.drawVerticalLine (x + (int) (k * beat * pps), 0.0f, (float) getHeight());
+                g.drawVerticalLine (x, 0.0f, (float) getHeight());
             }
-        }
+        });
 
         // clips
         const auto clips = main.getEngine().getClips (track);
@@ -541,13 +562,41 @@ public:
             g.setColour (Theme::audioWave);
             for (int x = juce::jmax (r.getX(), area.getX()); x < juce::jmin (r.getRight(), area.getRight()); ++x)
             {
-                const int idx = x - r.getX();
+                const int idx = c.reverse ? r.getWidth() - 1 - (x - r.getX()) : x - r.getX();   // a reversed clip shows its wave backwards
                 if (idx >= 0 && idx < (int) peaks.size())
                     g.drawVerticalLine (x, mid - peaks[(size_t) idx] * half, mid + peaks[(size_t) idx] * half);
             }
 
+            // fades: the part that is faded away is darkened, with the fade curve as a line
+            const int fiPx = juce::jmin (r.getWidth(), (int) (c.fadeIn * pps)), foPx = juce::jmin (r.getWidth(), (int) (c.fadeOut * pps));
+            if (fiPx > 1)
+            {
+                juce::Path p;
+                p.addTriangle ((float) r.getX(), (float) r.getY(), (float) (r.getX() + fiPx), (float) r.getY(), (float) r.getX(), (float) r.getBottom());
+                g.setColour (juce::Colours::black.withAlpha (0.4f));
+                g.fillPath (p);
+                g.setColour (Theme::text.withAlpha (0.8f));
+                g.drawLine ((float) r.getX(), (float) r.getBottom(), (float) (r.getX() + fiPx), (float) r.getY(), 1.5f);
+            }
+            if (foPx > 1)
+            {
+                juce::Path p;
+                p.addTriangle ((float) r.getRight(), (float) r.getY(), (float) (r.getRight() - foPx), (float) r.getY(), (float) r.getRight(), (float) r.getBottom());
+                g.setColour (juce::Colours::black.withAlpha (0.4f));
+                g.fillPath (p);
+                g.setColour (Theme::text.withAlpha (0.8f));
+                g.drawLine ((float) r.getRight(), (float) r.getBottom(), (float) (r.getRight() - foPx), (float) r.getY(), 1.5f);
+            }
+
             g.setColour (sel ? Theme::text : Theme::text.withAlpha (0.35f));
             g.drawRoundedRectangle (r.toFloat(), 4.0f, sel ? 2.0f : 1.0f);
+
+            if (r.getWidth() > 30)   // the handles to drag the fades
+            {
+                g.setColour (sel ? Theme::yellow : Theme::text.withAlpha (0.45f));
+                g.fillRoundedRectangle (fadeInHandle (r, c, pps).toFloat(), 2.0f);
+                g.fillRoundedRectangle (fadeOutHandle (r, c, pps).toFloat(), 2.0f);
+            }
 
             g.saveState();
             g.reduceClipRegion (r.reduced (2));
@@ -654,6 +703,28 @@ public:
         dragId = -1;
         resizing = false;
         rightPending = rightDragging = false;
+        fadeDrag = 0;
+
+        // the fade handles at the top corners of an audio clip
+        if (! e.mods.isPopupMenu())
+            for (auto& c : main.getEngine().getClips (track))
+            {
+                if (! c.audible())
+                    continue;
+                const auto r = clipRect (c, pps);
+                if (r.getWidth() <= 30)
+                    continue;
+                const bool inHandle = fadeInHandle (r, c, pps).expanded (2).contains (e.getPosition());
+                const bool outHandle = fadeOutHandle (r, c, pps).expanded (2).contains (e.getPosition());
+                if (inHandle || outHandle)
+                {
+                    fadeDrag = inHandle ? 1 : 2;
+                    fadeClipId = c.id;
+                    edited = false;
+                    main.selectClip (&track, c.id);
+                    return;
+                }
+            }
 
         // Right button: a click opens the clip menu (on release), a drag sets the loop region (Shift: the punch region).
         if (e.mods.isPopupMenu())
@@ -707,10 +778,11 @@ public:
             }
 
         // empty spot on a MIDI track: new two-bar clip at the bar under the cursor
-        const double bar = main.barSeconds();
-        const double start = std::floor ((e.x / pps) / bar) * bar;
+        const auto& map = main.getTempoMap();
+        const int barIndex = map.barAtSeconds (e.x / pps);
+        const double start = map.barStartSeconds (barIndex);
         main.beginEdit();
-        const int id = main.getEngine().addMidiClip (track, start, bar * 2.0);
+        const int id = main.getEngine().addMidiClip (track, start, map.barStartSeconds (barIndex + 2) - start);
         if (id >= 0)
         {
             main.selectClip (&track, id);
@@ -727,6 +799,28 @@ public:
         }
 
         const double t = juce::jmax (0.0, e.x / main.getPixelsPerSecond());
+
+        if (fadeDrag != 0)
+        {
+            Clip c;
+            if (! main.getEngine().getClip (track, fadeClipId, c))
+                return;
+            double fi = c.fadeIn, fo = c.fadeOut;
+            if (fadeDrag == 1)
+                fi = juce::jlimit (0.0, juce::jmax (0.0, c.length - fo), t - c.start);
+            else
+                fo = juce::jlimit (0.0, juce::jmax (0.0, c.length - fi), c.end() - t);
+            if (std::abs (fi - c.fadeIn) < 1.0e-6 && std::abs (fo - c.fadeOut) < 1.0e-6)
+                return;
+            if (! edited)
+            {
+                main.beginEdit();
+                edited = true;
+            }
+            main.getEngine().setClipFades (track, fadeClipId, fi, fo);
+            repaint();
+            return;
+        }
 
         if (rightPending)
         {
@@ -750,7 +844,7 @@ public:
         if (resizing)
         {
             const double end = e.mods.isAltDown() ? t : main.snapTime (t);
-            const double newLength = juce::jmax (main.beatSeconds(), end - dragStart);
+            const double newLength = juce::jmax (main.getTempoMap().beatSecondsAt (dragStart), end - dragStart);
             if (! edited)
             {
                 if (std::abs (newLength - dragLength) < 1.0e-6)
@@ -798,6 +892,7 @@ public:
         if (rightPending && ! rightDragging)
             main.showClipMenu (track, rightClipId, rightTime, *this);
         rightPending = rightDragging = false;
+        fadeDrag = 0;
         dragId = -1;
         autoDrag = -1;
     }
@@ -1015,6 +1110,16 @@ private:
 
     static juce::Rectangle<int> clipRect (const Clip& c, double pps) { return rectFor (c.start, c.length, pps); }
 
+    // the little squares at the top corners of an audio clip that set its fade-in and fade-out
+    static juce::Rectangle<int> fadeInHandle (const juce::Rectangle<int>& r, const Clip& c, double pps)
+    {
+        return { r.getX() + juce::jmin (r.getWidth() - 12, (int) (c.fadeIn * pps)), r.getY(), 10, 10 };
+    }
+    static juce::Rectangle<int> fadeOutHandle (const juce::Rectangle<int>& r, const Clip& c, double pps)
+    {
+        return { r.getRight() - 10 - juce::jmin (r.getWidth() - 12, (int) (c.fadeOut * pps)), r.getY(), 10, 10 };
+    }
+
     struct Hit { int id; double start, length; bool midi; };
 
     // Audio and MIDI clips of this track, topmost last-drawn first.
@@ -1075,6 +1180,8 @@ private:
     int dragId = -1;
     Track* dragTrack = nullptr;   // the track the dragged clip currently lives on
     bool resizing = false;
+    int fadeDrag = 0;                                    // 1 = dragging a fade-in handle, 2 = a fade-out handle
+    int fadeClipId = -1;
     bool rightPending = false, rightDragging = false;   // right button: click = menu, drag = loop region
     int rightClipId = -1;
     double rightTime = 0.0;
@@ -1323,7 +1430,20 @@ MainComponent::MainComponent()
     bpmSlider.setRange (40.0, 240.0, 1.0);
     bpmSlider.setValue (120.0, juce::dontSendNotification);
     bpmSlider.onDragStart = [this] { beginEdit(); };
-    bpmSlider.onValueChange = [this] { engine.bpm = (float) bpmSlider.getValue(); clipsChanged(); };
+    bpmSlider.onValueChange = [this]
+    {
+        auto sections = tempoMap.getSections();   // the slider is the tempo of the first section
+        sections[0].bpm = bpmSlider.getValue();
+        TempoMap m;
+        m.setSections (sections);
+        applyTempoMap (m);
+    };
+
+    tempoButton.setTooltip ("Tempo and time signature changes: add sections that start at a bar (for example 3/4 from bar 17, or 140 BPM from bar 33). "
+                            "MIDI follows the tempo; audio clips stay where they are in time.");
+    tempoButton.setWantsKeyboardFocus (false);
+    tempoButton.onClick = [this] { openTempoPanel(); };
+    addAndMakeVisible (tempoButton);
 
 
     timeLabel.setFont (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(), 24.0f, juce::Font::plain));
@@ -1382,14 +1502,30 @@ MainComponent::~MainComponent()
 }
 
 //==============================================================================
-double MainComponent::beatSeconds() const { return 60.0 / juce::jmax (20.0f, engine.bpm.load()); }
-
 double MainComponent::snapTime (double seconds) const
 {
     if (! snapButton.getToggleState())
         return seconds;
-    const double step = beatSeconds() / 4.0;   // 16th notes
-    return std::round (seconds / step) * step;
+    const double beats = tempoMap.secondsToBeats (seconds);   // snap in 16th notes, wherever the tempo changes
+    return tempoMap.beatsToSeconds (std::round (beats * 4.0) / 4.0);
+}
+
+// A new tempo map: MIDI, the loop and the punch region are re-timed so they keep their place in the music.
+void MainComponent::applyTempoMap (const TempoMap& m)
+{
+    tempoMap = m;
+    engine.setTempoMap (m, true);
+    clipsChanged();
+}
+
+void MainComponent::openTempoPanel()
+{
+    auto panel = std::make_unique<TempoPanel> (tempoMap, [this] { beginEdit(); }, [this] (const TempoMap& m)
+    {
+        applyTempoMap (m);
+        bpmSlider.setValue (m.getSections().front().bpm, juce::dontSendNotification);
+    });
+    juce::CallOutBox::launchAsynchronously (std::move (panel), tempoButton.getScreenBounds(), nullptr);
 }
 
 void MainComponent::selectClip (Track* t, int id)
@@ -1608,9 +1744,9 @@ void MainComponent::addMidiTrack (bool drums)
     beginEdit();
     auto* t = drums ? engine.addDrumTrack ("Drums " + juce::String (count))
                     : engine.addTrack ("Synth " + juce::String (count), Track::Type::Midi);
-    const double bar = barSeconds();
-    const double start = std::floor (engine.getPositionSeconds() / bar) * bar;
-    const int id = engine.addMidiClip (*t, start, bar * 2.0);
+    const int barIndex = tempoMap.barAtSeconds (engine.getPositionSeconds());
+    const double start = tempoMap.barStartSeconds (barIndex);
+    const int id = engine.addMidiClip (*t, start, tempoMap.barStartSeconds (barIndex + 2) - start);
     addTrackUI (*t);
     selectClip (t, id);   // opens the piano roll
     clipsChanged();
@@ -1626,7 +1762,7 @@ Track* MainComponent::trackAtY (int y) const
 
 void MainComponent::setLoopRegion (double a, double b)
 {
-    if (b - a < beatSeconds() * 0.5)
+    if (b - a < tempoMap.beatSecondsAt (a) * 0.5)
         return;
     engine.loopStart = a;
     engine.loopEnd = b;
@@ -1845,9 +1981,9 @@ void MainComponent::toggleLoop()
     const bool on = loopButton.getToggleState();
     if (on && engine.loopEnd <= engine.loopStart)   // no region yet: use the project, at least 4 bars
     {
-        const double bar = barSeconds();
+        const int endBar = juce::jmax (4, tempoMap.barAtSeconds (engine.getTotalLengthSeconds()) + 1);   // whole bars, at least 4
         engine.loopStart = 0.0;
-        engine.loopEnd = juce::jmax (4.0, std::ceil (engine.getTotalLengthSeconds() / bar)) * bar;
+        engine.loopEnd = tempoMap.barStartSeconds (endBar);
     }
     engine.loopEnabled = on;
     ruler->repaint();
@@ -1868,9 +2004,9 @@ void MainComponent::togglePunch()
             a = mc.start, b = mc.end();
         else
         {
-            const double bar = barSeconds();
-            a = std::floor (engine.getPositionSeconds() / bar) * bar;
-            b = a + 2.0 * bar;
+            const int barIndex = tempoMap.barAtSeconds (engine.getPositionSeconds());
+            a = tempoMap.barStartSeconds (barIndex);
+            b = tempoMap.barStartSeconds (barIndex + 2);
         }
         engine.punchIn = a;
         engine.punchOut = b;
@@ -1882,7 +2018,7 @@ void MainComponent::togglePunch()
 
 void MainComponent::setPunchRegion (double a, double b)
 {
-    if (b - a < beatSeconds() * 0.5)
+    if (b - a < tempoMap.beatSecondsAt (a) * 0.5)
         return;
     engine.punchIn = a;
     engine.punchOut = b;
@@ -2037,7 +2173,8 @@ void MainComponent::restoreSnapshot (const ProjectState& state)
     for (int i = 0; i < engine.getNumTracks(); ++i)
         addTrackUI (*engine.getTrack (i));
 
-    bpmSlider.setValue (engine.bpm, juce::dontSendNotification);
+    tempoMap = engine.getTempoMap();
+    bpmSlider.setValue (tempoMap.getSections().front().bpm, juce::dontSendNotification);
     masterHeader->syncControls();   // the master channel was restored in place
 
     if (selTrackIndex >= 0)
@@ -2181,6 +2318,8 @@ void MainComponent::resized()
     top.removeFromLeft (14);
     bpmLabel.setBounds (top.removeFromLeft (36));
     bpmSlider.setBounds (top.removeFromLeft (70));
+    top.removeFromLeft (4);
+    tempoButton.setBounds (top.removeFromLeft (58));
     top.removeFromLeft (10);
     metroButton.setBounds (top.removeFromLeft (110));
     separator();
@@ -2485,6 +2624,14 @@ void MainComponent::showClipMenu (Track& track, int clipId, double at, juce::Com
         m.addSeparator();
         m.addItem (9, "Quantize / swing / humanize...\tQ");
     }
+    Clip audioClip;
+    if (onClip && track.type == Track::Type::Audio && engine.getClip (track, clipId, audioClip))
+    {
+        m.addSeparator();
+        m.addItem (10, "Reverse", true, audioClip.reverse);
+        m.addItem (11, "Crossfade with overlapping clip(s)");
+        m.addItem (12, "Remove fades", audioClip.fadeIn > 0.0 || audioClip.fadeOut > 0.0);
+    }
 
     // takes of a loop recording (or of a clip that was split from one): pick which plays
     std::vector<Clip> takes;
@@ -2552,6 +2699,37 @@ void MainComponent::showClipMenu (Track& track, int clipId, double at, juce::Com
             case 5: self.duplicateSelected(); break;
             case 6: self.deleteSelected(); break;
             case 9: self.openQuantize (*tr, clipId); break;
+            case 10:
+            {
+                Clip c;
+                if (self.engine.getClip (*tr, clipId, c))
+                {
+                    self.beginEdit();
+                    self.engine.setClipReverse (*tr, clipId, ! c.reverse);
+                    self.clipsChanged();
+                }
+                break;
+            }
+            case 11:
+            {
+                self.beginEdit();
+                if (self.engine.crossfadeOverlaps (*tr, clipId) == 0)
+                {
+                    self.cancelEdit();
+                    juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::InfoIcon, "Crossfade",
+                                                            "This clip does not overlap another clip on its track. Drag it over the end (or start) of a neighbour "
+                                                            "so they overlap a little, then choose this again.");
+                }
+                self.clipsChanged();
+                break;
+            }
+            case 12:
+            {
+                self.beginEdit();
+                self.engine.setClipFades (*tr, clipId, 0.0, 0.0);
+                self.clipsChanged();
+                break;
+            }
             default: break;
         }
     });
@@ -2794,7 +2972,7 @@ void MainComponent::toggleRecording()
     // Punch: from a stop (or from after the region) start a bar ahead of it, so there is a run-up.
     if (engine.punchEnabled && engine.punchOut > engine.punchIn && ! engine.isPlaying()
         && engine.getPositionSeconds() > engine.punchIn - 0.001)
-        setPlayhead (juce::jmax (0.0, engine.punchIn - barSeconds()));
+        setPlayhead (juce::jmax (0.0, tempoMap.barStartSeconds (juce::jmax (0, tempoMap.barAtSeconds (engine.punchIn) - 1))));
 
     recStartSeconds = engine.getPositionSeconds();
 
@@ -2834,15 +3012,20 @@ void MainComponent::finishMidiRecording()
     if (notes.empty() || t == nullptr || engine.indexOfTrack (t) < 0)
         return;
 
-    const double bar = barSeconds();
-    const double clipStart = std::floor (recStartSeconds / bar) * bar;
+    const int startBar = tempoMap.barAtSeconds (recStartSeconds);
+    const double clipStart = tempoMap.barStartSeconds (startBar);
     double end = 0.0;
     for (auto& n : notes)
     {
         n.start = juce::jmax (0.0, n.start - clipStart);
         end = juce::jmax (end, n.start + n.length);
     }
-    const double clipLength = juce::jmax (1.0, std::ceil (end / bar)) * bar;
+    // the clip lasts a whole number of bars (at least one)
+    const double absoluteEnd = clipStart + end;
+    int endBar = tempoMap.barAtSeconds (absoluteEnd);
+    if (absoluteEnd > tempoMap.barStartSeconds (endBar) + 1.0e-6)
+        ++endBar;
+    const double clipLength = tempoMap.barStartSeconds (juce::jmax (startBar + 1, endBar)) - clipStart;
 
     beginEdit();
     const int id = engine.addMidiClip (*t, clipStart, clipLength);
@@ -2983,8 +3166,8 @@ void MainComponent::openQuantize (Track& t, int clipId)
     Track* tr = &t;
     const double clipStart = clip.start, clipLength = clip.length;
 
-    auto panel = std::make_unique<QuantizePanel> (beatSeconds(), [safe, tr, clipId, original, edited, clipStart, clipLength]
-                                                                  (const QuantizeSettings& s)
+    auto panel = std::make_unique<QuantizePanel> ([safe, tr, clipId, original, edited, clipStart, clipLength]
+                                                  (const QuantizeSettings& s)
     {
         if (safe == nullptr || safe->engine.indexOfTrack (tr) < 0)
             return;
@@ -2995,7 +3178,7 @@ void MainComponent::openQuantize (Track& t, int clipId)
         }
         auto notes = *original;
         juce::Random rng;
-        quantizeNotes (notes, clipStart, clipLength, s, rng);
+        quantizeNotes (notes, clipStart, clipLength, s, safe->tempoMap, rng);
         safe->engine.setMidiNotes (*tr, clipId, std::move (notes));
         safe->clipsChanged();
         if (safe->rollVisible)
@@ -3154,6 +3337,9 @@ void MainComponent::saveProject (const juce::File& file)
             co->setProperty ("start", c.start);
             co->setProperty ("offset", c.offset);
             co->setProperty ("length", c.length);
+            if (c.fadeIn > 0.0)  co->setProperty ("fadeIn", c.fadeIn);
+            if (c.fadeOut > 0.0) co->setProperty ("fadeOut", c.fadeOut);
+            if (c.reverse)       co->setProperty ("reverse", true);
             if (c.takeGroup != 0)
             {
                 co->setProperty ("takeGroup", c.takeGroup);
@@ -3268,7 +3454,20 @@ void MainComponent::saveProject (const juce::File& file)
 
     auto* root = new juce::DynamicObject();
     root->setProperty ("version", 3);
-    root->setProperty ("bpm", (double) engine.bpm.load());
+    root->setProperty ("bpm", (double) engine.bpm.load());   // (the first section's tempo, for older versions)
+    {
+        juce::Array<juce::var> sectionList;
+        for (auto& s : tempoMap.getSections())
+        {
+            auto* so = new juce::DynamicObject();
+            so->setProperty ("bar", s.bar);
+            so->setProperty ("bpm", s.bpm);
+            so->setProperty ("numerator", s.numerator);
+            so->setProperty ("denominator", s.denominator);
+            sectionList.add (juce::var (so));
+        }
+        root->setProperty ("tempoSections", sectionList);
+    }
     root->setProperty ("master", juce::var (masterObject));
     root->setProperty ("metronome", engine.metronome.load());
     root->setProperty ("loopEnabled", engine.loopEnabled.load());
@@ -3336,9 +3535,30 @@ void MainComponent::loadProject (const juce::File& file)
     redoStack.clear();
     updateUndoButtons();
 
-    engine.bpm = (float) (double) root.getProperty ("bpm", 120.0);
+    {
+        // tempo sections; older projects only have one BPM (4/4 all the way)
+        std::vector<TempoSection> sections;
+        if (auto* list = root["tempoSections"].getArray())
+            for (auto& sv : *list)
+            {
+                TempoSection s;
+                s.bar = sv.getProperty ("bar", 0);
+                s.bpm = sv.getProperty ("bpm", 120.0);
+                s.numerator = sv.getProperty ("numerator", 4);
+                s.denominator = sv.getProperty ("denominator", 4);
+                sections.push_back (s);
+            }
+        if (sections.empty())
+        {
+            TempoSection s;
+            s.bpm = (double) root.getProperty ("bpm", 120.0);
+            sections.push_back (s);
+        }
+        tempoMap.setSections (sections);
+        engine.setTempoMap (tempoMap, false);   // loading: the MIDI is already where it belongs
+    }
     engine.metronome = (bool) root.getProperty ("metronome", false);
-    bpmSlider.setValue (engine.bpm, juce::dontSendNotification);
+    bpmSlider.setValue (tempoMap.getSections().front().bpm, juce::dontSendNotification);
     metroButton.setToggleState (engine.metronome, juce::dontSendNotification);
 
     engine.loopStart = (double) root.getProperty ("loopStart", 0.0);
@@ -3407,6 +3627,8 @@ void MainComponent::loadProject (const juce::File& file)
             engine.setClipRegion (*t, id, start,
                                   v.getProperty ("offset", 0.0),
                                   v.getProperty ("length", c.sourceLength()));
+            engine.setClipFades (*t, id, v.getProperty ("fadeIn", 0.0), v.getProperty ("fadeOut", 0.0));
+            engine.setClipReverse (*t, id, (bool) v.getProperty ("reverse", false));
             if ((int) v.getProperty ("takeGroup", 0) != 0)
                 engine.setClipTake (*t, id, v["takeGroup"], v.getProperty ("takeIndex", 1), v.getProperty ("takeActive", true));
         };

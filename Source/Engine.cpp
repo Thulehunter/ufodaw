@@ -106,21 +106,28 @@ void Engine::prepareToPlay (int samplesPerBlock, double newRate)
 juce::Optional<juce::AudioPlayHead::PositionInfo> Engine::PlayHead::getPosition() const
 {
     const double rate = juce::jmax (1.0, engine.sampleRate);
-    const double bpm = engine.bpm.load();
     const auto samples = this->samples.load();
     const double seconds = (double) samples / rate;
 
+    const juce::ScopedLock sl (engine.lock);   // (the audio thread already holds it while it mixes; the tempo map is edited under it)
+    const auto& map = engine.tempoMap;
+    const auto& section = map.sectionAt (seconds);
+    const double beats = map.secondsToBeats (seconds);
+    double intoBar = 0.0;
+    map.barAtBeat (beats, &intoBar);
+
     PositionInfo info;
-    info.setBpm (bpm);
-    info.setTimeSignature (TimeSignature { 4, 4 });
+    info.setBpm (section.bpm);
+    info.setTimeSignature (TimeSignature { section.numerator, section.denominator });
     info.setTimeInSamples (samples);
     info.setTimeInSeconds (seconds);
-    info.setPpqPosition (seconds * bpm / 60.0);
+    info.setPpqPosition (beats);
+    info.setPpqPositionOfLastBarStart (beats - intoBar);
     info.setIsPlaying (playing.load());
     info.setIsRecording (false);
     info.setIsLooping (engine.loopEnabled.load());
     if (engine.loopEnabled && engine.loopEnd > engine.loopStart)
-        info.setLoopPoints (LoopPoints { engine.loopStart * bpm / 60.0, engine.loopEnd * bpm / 60.0 });
+        info.setLoopPoints (LoopPoints { map.secondsToBeats (engine.loopStart), map.secondsToBeats (engine.loopEnd) });
     return info;
 }
 
@@ -575,6 +582,52 @@ int Engine::addClip (Track& track, Clip c)
     return track.clips.back().id;
 }
 
+bool Engine::setClipFades (Track& t, int id, double fadeIn, double fadeOut)
+{
+    const juce::ScopedLock sl (lock);
+    auto* c = findClip (t, id);
+    if (c == nullptr)
+        return false;
+    c->fadeIn = juce::jlimit (0.0, c->length, fadeIn);
+    c->fadeOut = juce::jlimit (0.0, juce::jmax (0.0, c->length - c->fadeIn), fadeOut);
+    return true;
+}
+
+bool Engine::setClipReverse (Track& t, int id, bool reverse)
+{
+    const juce::ScopedLock sl (lock);
+    auto* c = findClip (t, id);
+    if (c == nullptr)
+        return false;
+    c->reverse = reverse;
+    return true;
+}
+
+// Every clip that partly overlaps this one gets a crossfade over the overlap: the earlier clip fades out, the later one fades in.
+int Engine::crossfadeOverlaps (Track& t, int id)
+{
+    const juce::ScopedLock sl (lock);
+    auto* c = findClip (t, id);
+    if (c == nullptr)
+        return 0;
+
+    int count = 0;
+    for (auto& other : t.clips)
+    {
+        if (other.id == c->id || ! other.audible() || ! c->audible())
+            continue;
+        auto& a = other.start <= c->start ? other : *c;   // the earlier clip
+        auto& b = other.start <= c->start ? *c : other;
+        const double overlap = a.end() - b.start;
+        if (overlap < 0.002 || b.end() <= a.end() + 0.001 || a.start >= b.start)
+            continue;   // not overlapping, or one clip lies inside the other
+        a.fadeOut = juce::jmin (overlap, a.length - a.fadeIn);
+        b.fadeIn = juce::jmin (overlap, b.length - b.fadeOut);
+        ++count;
+    }
+    return count;
+}
+
 int Engine::addTakes (Track& track, std::vector<Clip> clips)
 {
     if (clips.empty())
@@ -839,10 +892,23 @@ int Engine::splitClip (Track& t, int id, double at)
             Clip right = *c;
             right.id = nextClipId++;
             right.start = at;
-            right.offset = c->offset + (at - c->start);
             right.length = c->end() - at;
+            if (! c->reverse)
+            {
+                right.offset = c->offset + (at - c->start);
+            }
+            else
+            {
+                // a reversed clip plays its source backwards: the right part is the *start* of the region
+                right.offset = c->offset;
+                c->offset += c->end() - at;
+            }
             right.takeGroup = newGroup;
+            right.fadeIn = 0.0;                                      // the cut gets no fade of its own
+            right.fadeOut = juce::jmin (right.fadeOut, right.length);
             c->length = at - c->start;   // `c` is not used after the push_back below
+            c->fadeOut = 0.0;
+            c->fadeIn = juce::jmin (c->fadeIn, c->length);
 
             if (cid == id)
                 result = right.id;
@@ -965,6 +1031,55 @@ bool Engine::moveClipToTrack (Track& from, Track& to, int id)
         return true;
     }
     return false;
+}
+
+TempoMap Engine::getTempoMap() const
+{
+    const juce::ScopedLock sl (lock);
+    return tempoMap;
+}
+
+void Engine::setTempoMap (const TempoMap& newMap, bool retimeMidi)
+{
+    const juce::ScopedLock sl (lock);
+    const TempoMap oldMap = tempoMap;
+
+    if (retimeMidi)
+    {
+        // MIDI keeps its place in the music (same bar, same distance into the bar), so it follows the new tempo; the notes
+        // of a clip are stored relative to it, so start and end of every note are moved as absolute times.
+        auto move = [&] (double s) { return TempoMap::retime (oldMap, newMap, s); };
+        for (auto& t : tracks)
+            for (auto& clip : t->midiClips)
+            {
+                const double oldStart = clip.start, oldEnd = clip.end();
+                const double newStart = move (oldStart), newEnd = move (oldEnd);
+                for (auto& n : clip.notes)
+                {
+                    const double a = move (oldStart + n.start), b = move (oldStart + n.start + n.length);
+                    n.start = juce::jmax (0.0, a - newStart);
+                    n.length = juce::jmax (0.01, b - a);
+                }
+                clip.start = newStart;
+                clip.length = juce::jmax (0.1, newEnd - newStart);
+            }
+
+        if (loopEnd > loopStart)
+        {
+            const double a = move (loopStart), b = move (loopEnd);
+            loopStart = a;
+            loopEnd = b;
+        }
+        if (punchOut > punchIn)
+        {
+            const double a = move (punchIn), b = move (punchOut);
+            punchIn = a;
+            punchOut = b;
+        }
+    }
+
+    tempoMap = newMap;
+    bpm = (float) tempoMap.getSections().front().bpm;
 }
 
 double Engine::getTotalLengthSeconds() const
@@ -1305,7 +1420,7 @@ ProjectState Engine::captureState() const
 {
     const juce::ScopedLock sl (lock);
     ProjectState s;
-    s.bpm = bpm;
+    s.tempo = tempoMap;
     s.master = captureTrack (*master);
 
     for (auto& t : tracks)
@@ -1374,9 +1489,10 @@ void Engine::restoreState (const ProjectState& s)
                 fresh[i]->midiOuts.push_back ({ fresh[(size_t) to].get(), channel });
     }
 
-    bpm = s.bpm;
     {
         const juce::ScopedLock sl (lock);
+        tempoMap = s.tempo;   // (the MIDI of the snapshot already matches it)
+        bpm = (float) tempoMap.getSections().front().bpm;
         tracks.swap (fresh);
         applyTrackState (*master, s.master);   // master channel: volume, effects, plugins, automation
     }
@@ -2082,6 +2198,9 @@ void Engine::mixBlock (float* outL, float* outR, int n, juce::int64 pos, bool wi
 
             const double ratio = c.fileRate / sampleRate;
             const double offsetSamples = c.offset * c.fileRate;
+            const double regionSamples = c.length * c.fileRate;   // where the clip's region of the source ends (for reverse)
+            const double fadeInSamples = juce::jmin (c.fadeIn, c.length) * sampleRate;
+            const double fadeOutSamples = juce::jmin (c.fadeOut, c.length) * sampleRate;
             const int len = c.audio->getNumSamples();
             const auto* srcL = c.audio->getReadPointer (0);
             const auto* srcR = c.audio->getNumChannels() > 1 ? c.audio->getReadPointer (1) : srcL;
@@ -2092,14 +2211,19 @@ void Engine::mixBlock (float* outL, float* outR, int n, juce::int64 pos, bool wi
                 if (tl < clipStart || tl >= clipEnd)
                     continue;
 
-                const double sp = (tl - clipStart) * ratio + offsetSamples;
+                const double sp = c.reverse ? offsetSamples + regionSamples - (tl - clipStart) * ratio
+                                            : (tl - clipStart) * ratio + offsetSamples;
                 if (sp < 0.0 || sp >= len - 1)
                     continue;
 
                 const int i0 = (int) sp;
                 const float frac = (float) (sp - i0);
-                const float edge = (float) juce::jmin (1.0, juce::jmin ((tl - clipStart) / fadeSamples,
-                                                                        (clipEnd - tl) / fadeSamples));
+                float edge = (float) juce::jmin (1.0, juce::jmin ((tl - clipStart) / fadeSamples,
+                                                                  (clipEnd - tl) / fadeSamples));
+                if (fadeInSamples > 0.0 && tl - clipStart < fadeInSamples)   // equal-power fades: a crossfade keeps the level
+                    edge *= (float) std::sin ((tl - clipStart) / fadeInSamples * juce::MathConstants<double>::halfPi);
+                if (fadeOutSamples > 0.0 && clipEnd - tl < fadeOutSamples)
+                    edge *= (float) std::sin ((clipEnd - tl) / fadeOutSamples * juce::MathConstants<double>::halfPi);
                 const float l = (srcL[i0] + frac * (srcL[i0 + 1] - srcL[i0])) * edge;
                 const float r = (srcR[i0] + frac * (srcR[i0 + 1] - srcR[i0])) * edge;
                 bufL[i] += l;
@@ -2229,15 +2353,22 @@ void Engine::mixBlock (float* outL, float* outR, int n, juce::int64 pos, bool wi
 
     if (withMetronome)
     {
-        const double samplesPerBeat = sampleRate * 60.0 / juce::jmax (20.0f, bpm.load());
+        // One click per counted beat of the time signature (the unit is 1/denominator of a whole note), the first of each bar
+        // higher. The tempo map is read once per block.
+        const double blockSeconds = (double) pos / sampleRate;
+        const auto& section = tempoMap.sectionAt (blockSeconds);
+        double intoBar = 0.0;
+        tempoMap.barAtSeconds (blockSeconds, &intoBar);
+        const double unit = section.beatUnit();
+        const double perSample = section.bpm / 60.0 / sampleRate;   // quarter notes per sample
         for (int i = 0; i < n; ++i)
         {
-            const double inBeat = std::fmod ((double) (pos + i), samplesPerBeat);
-            if (inBeat > sampleRate * 0.05)
+            const double units = (intoBar + (double) i * perSample) / unit;   // counted beats since the start of the bar
+            const double k = std::floor (units);
+            const double t = (units - k) * unit * 60.0 / section.bpm;        // seconds since the click
+            if (t > 0.05)
                 continue;
-            const auto beat = (juce::int64) (((double) (pos + i)) / samplesPerBeat);
-            const double t = inBeat / sampleRate;
-            const double freq = (beat % 4 == 0) ? 1500.0 : 1000.0;
+            const double freq = std::fmod (k, (double) section.numerator) < 0.5 ? 1500.0 : 1000.0;
             const auto s = (float) (std::sin (juce::MathConstants<double>::twoPi * freq * t) * std::exp (-t * 80.0) * 0.4);
             outL[i] += s;
             if (outR) outR[i] += s;

@@ -31,6 +31,14 @@ A small digital audio workstation for Windows, written in C++17 with [JUCE](http
 - **Mixer** - volume, pan, mute, solo and level meters per track, plus a **master channel** (the yellow strip under the tracks):
   volume with automation, the built-in effects (EQ, compressor, delay, reverb), VST3 effect plugins on the whole mix, a
   level meter, and the soft limiter after it. Stems skip the master channel.
+- **Clip fades, crossfades and reverse** - drag the little squares in the top corners of an audio clip to set its fade-in and
+  fade-out (equal-power curves). Drag a clip so it overlaps its neighbour a little, then right-click > *Crossfade with overlapping
+  clip(s)*. *Reverse* plays the clip backwards (also after splitting it).
+- **Tempo and time signature changes** - **Tempo** (next to BPM) opens the list of sections: each starts at a bar and has its own BPM
+  and time signature (3/4, 6/8, 7/8, ...). The ruler, grid, snapping, metronome (one click per counted beat, the first of the bar
+  higher) and the tempo/position given to plugins all follow it. Changing tempo or meter keeps MIDI, the loop and the punch region
+  in place *in the music* (same bar, same beat), so MIDI follows the new tempo; audio clips stay where they are in time. The BPM
+  slider is the tempo of the first section.
 - **Buses and sends** - **+ Track > Bus** makes a group / effects-return channel. Put a reverb or delay on it (FX or VST), then use
   the **Out** button on any track: play the track *into* the bus (a drum bus, say) and/or *send* part of it to buses with a level per
   bus (post-fader, or *Pre*). Muting a track mutes its sends; soloing a track keeps its bus audible. Buses are not exported as stems.
@@ -125,6 +133,10 @@ An arpeggiator or similar plugin that should change the notes of one track goes 
 | Set the loop region | right-drag on the ruler or in any track (a right-click without dragging opens the clip menu) |
 | Add an empty audio track | **+ Track** > *Empty audio track* (it starts armed for recording); drop audio files on it later, several files go one after the other |
 | Record into a specific audio track | click the red dot left of the track name to arm it, then **Record** (`R`). Arm several tracks to record them all at once. Without an armed track the recording becomes a new track from inputs 1+2 |
+| Fade in / out of an audio clip | drag the squares in the top corners of the clip; right-click > *Remove fades* |
+| Crossfade two clips | let the clips overlap a little, right-click one > *Crossfade with overlapping clip(s)* |
+| Reverse a clip | right-click > *Reverse* |
+| Tempo / time signature changes | **Tempo** button next to BPM: add sections that start at a bar, each with a BPM and a time signature |
 | Send a track to a bus / choose its output | **Out** button (bottom right of the track header, e.g. *→ Master*): pick the output and set a send level per bus |
 | Quantize / swing / humanize a MIDI clip | select the clip and press `Q`, or right-click it |
 | Punch in/out | turn on **Punch** (`P`); the region is the selected clip, or two bars at the playhead. Change it with **Shift + right-drag** on the ruler (red). Press Record: playback starts a bar before the region, records inside it, and the recording closes itself at the punch-out |
@@ -183,6 +195,7 @@ builds Release and writes `dist\UFODAW-<version>-win64.zip`. For a regular insta
 | `Source/MainComponent.*` | Main window: arrangement, transport, project files, undo/redo |
 | `Source/PianoRoll.*`, `Source/DrumSequencer.*` | Note editors below the arrangement |
 | `Source/Tuner.*` | Pitch detection (YIN) and the tuner window |
+| `Source/TempoMap.h`, `Source/TempoPanel.h` | Tempo and time signature sections: seconds / beats / bars, and the list to edit them |
 | `Source/RoutingPanel.h`, `Source/MidiTools.h` | Output and sends of a track; quantize / swing / humanize |
 | `Source/FxPanel.*`, `Source/PluginPanel.*` | Per-track effect and plugin panels |
 
