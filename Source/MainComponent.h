@@ -6,6 +6,7 @@
 #include "PluginHost.h"
 #include "Theme.h"
 #include "Tuner.h"
+#include "RailButton.h"
 #include <map>
 
 class SamplerWindow;   // (SamplerPanel.h)
@@ -173,8 +174,9 @@ public:
     bool isInterestedInFileDrag (const juce::StringArray&) override { return true; }
     void filesDropped (const juce::StringArray& files, int, int) override { importFiles (files, nullptr, 0.0); }
 
+    static constexpr int railWidth = 52;        // the icon rail on the left
     static constexpr int controlsWidth = 270;
-    static constexpr int stripHeight = 106;
+    static constexpr int stripHeight = 110;
     static constexpr int topBarHeight = 56;
     static constexpr int rulerHeight = 26;
     static constexpr int bottomBarHeight = 60;
@@ -427,7 +429,13 @@ private:
     juce::TooltipWindow tooltipWindow { this };
     double playStartSeconds = 0.0;
     double recStartSeconds = 0.0;
+    juce::Rectangle<int> transportPill;
     juce::TextButton fileButton { "File" }, stopAllButton { "STOP ALL" };
+    RailButton railFile { RailButton::Icon::Menu, "File: new project, open, save, export" },
+               railAdd { RailButton::Icon::Add, "Add a track", true },
+               railPlugins { RailButton::Icon::Plugins, "Plugins: scan and manage VST3 plugins" },
+               railTuner { RailButton::Icon::Tuner, "Tuner" },
+               railAudio { RailButton::Icon::Audio, "Audio and MIDI settings" };
     juce::TextButton openButton { "Open" }, saveButton { "Save" }, saveAsButton { "Save As" }, exportButton { "Export WAV" },
                      exportStemsButton { "Export stems" };
     juce::TextButton zoomOutButton { "-" }, zoomInButton { "+" };

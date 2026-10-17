@@ -196,18 +196,21 @@ public:
 
     void paint (juce::Graphics& g) override
     {
-        g.fillAll (Theme::panel);
+        g.fillAll (Theme::background);
+        const auto card = getLocalBounds().toFloat().reduced (5.0f, 3.0f);
+        g.setColour (Theme::panel);
+        g.fillRoundedRectangle (card, 10.0f);
 
         // colour stripe by track type: orange = audio, red = MIDI synth, yellow = drums
         g.setColour (isMaster ? Theme::yellow : track.bus ? Theme::yellowDim
                                                           : Theme::trackColour (track.type == Track::Type::Midi, track.kit != nullptr));
-        g.fillRect (0, 0, isMaster ? 8 : 5, getHeight() - 1);
+        g.fillRoundedRectangle (card.getX() + 3.0f, card.getY() + 8.0f, isMaster ? 5.0f : 4.0f, card.getHeight() - 16.0f, 2.0f);
 
         // level meter, with a clip lamp on top: it lights red when the track (or, for an armed audio track, its input) reached full
         // scale and stays lit until you click it, so a clip that happened a moment ago is not missed
         const bool clip = track.clipped.load() || track.inputClipped.load();
-        auto lamp = juce::Rectangle<int> (getWidth() - 13, 4, 9, 11);
-        auto m = juce::Rectangle<int> (getWidth() - 13, 18, 9, getHeight() - 22);
+        auto lamp = juce::Rectangle<int> (getWidth() - 19, 9, 9, 11);
+        auto m = juce::Rectangle<int> (getWidth() - 19, 23, 9, getHeight() - 32);
         g.setColour (juce::Colours::black);
         g.fillRect (m);
         const float lvl = juce::jlimit (0.0f, 1.0f, shown);
@@ -225,7 +228,7 @@ public:
             g.setColour (Theme::text);
             g.drawRect (lamp, 1);
             g.setColour (Theme::redBright);
-            g.drawRect (getLocalBounds().withWidth (getWidth() - 1).withHeight (getHeight() - 1), 2);   // a red frame round the whole strip
+            g.drawRoundedRectangle (card, 10.0f, 2.0f);   // a red frame round the whole strip
         }
         else
         {
@@ -233,13 +236,11 @@ public:
             g.fillRect (lamp);
         }
 
-        g.setColour (Theme::border);
-        g.drawHorizontalLine (getHeight() - 1, 0.0f, (float) getWidth());
     }
 
     void mouseDown (const juce::MouseEvent& e) override
     {
-        if (e.x >= getWidth() - 22 && e.y < 24)   // the clip lamp: click to clear it
+        if (e.x >= getWidth() - 24 && e.y < 26)   // the clip lamp: click to clear it
         {
             track.clipped = false;
             track.inputClipped = false;
@@ -251,7 +252,7 @@ public:
     {
         if (isMaster)   // compact: name and buttons on top, the volume fader below
         {
-            auto m = getLocalBounds().withTrimmedRight (14).withTrimmedLeft (4).reduced (8, 4);
+            auto m = getLocalBounds().withTrimmedRight (20).withTrimmedLeft (6).reduced (8, 7);
             auto row = m.removeFromTop (22);
             fxButton.setBounds (row.removeFromRight (32));
             row.removeFromRight (4);
@@ -267,7 +268,7 @@ public:
             return;
         }
 
-        auto c = getLocalBounds().withTrimmedRight (14).reduced (8, 4);
+        auto c = getLocalBounds().withTrimmedRight (20).withTrimmedLeft (6).reduced (8, 6);
         auto top = c.removeFromTop (20);
         deleteButton.setBounds (top.removeFromRight (22));
         top.removeFromRight (4);
@@ -617,7 +618,9 @@ public:
         const double pps = main.getPixelsPerSecond();
         const auto area = g.getClipBounds();
 
-        g.fillAll (Theme::laneBg);
+        g.fillAll (Theme::background);
+        g.setColour (Theme::laneBg);
+        g.fillRoundedRectangle (juce::Rectangle<float> (0.0f, 2.0f, (float) getWidth(), (float) getHeight() - 4.0f), 8.0f);
 
         // grid
         const auto& map = main.getTempoMap();
@@ -629,12 +632,12 @@ public:
             if (kind == 2)
             {
                 g.setColour (Theme::text.withAlpha (0.10f));
-                g.drawVerticalLine (x, 0.0f, (float) getHeight());
+                g.drawVerticalLine (x, 3.0f, (float) getHeight() - 3.0f);
             }
             else if (beatPx >= 14.0)
             {
                 g.setColour (Theme::text.withAlpha (0.04f));
-                g.drawVerticalLine (x, 0.0f, (float) getHeight());
+                g.drawVerticalLine (x, 3.0f, (float) getHeight() - 3.0f);
             }
         });
 
@@ -1615,7 +1618,7 @@ MainComponent::MainComponent()
 
     deviceManager.addMidiInputDeviceCallback ({}, &midiForwarder);   // all enabled MIDI inputs
     midiListConnection = juce::MidiDeviceListConnection::make ([this] { enableAllMidiInputs(); });   // hot-plugging
-    statusLabel.setFont (juce::FontOptions (12.0f));
+    statusLabel.setFont (juce::FontOptions (11.0f));
     statusLabel.setColour (juce::Label::textColourId, Theme::text.withAlpha (0.6f));
     addAndMakeVisible (statusLabel);
 
@@ -1740,6 +1743,19 @@ MainComponent::MainComponent()
     stopAllButton.setColour (juce::TextButton::textColourOffId, juce::Colours::white);
     stopAllButton.onClick = [this] { finishRecording(); engine.silenceEverything(); engine.setPositionSeconds (playStartSeconds); };
     addAndMakeVisible (stopAllButton);
+
+    // the icon rail replaces these buttons; they stay (hidden, placed over their rail icon) as the anchors of their menus
+    for (auto* hidden : { &addButton, &addMidiButton, &addDrumButton, &pluginsButton, &audioButton, &tunerButton, &fileButton })
+        hidden->setVisible (false);
+    railFile.onClick = [this] { fileMenu(); };
+    railAdd.onClick = [this] { addTrackMenu(); };
+    railPlugins.onClick = [this] { pluginHost.showManager(); };
+    railTuner.onClick = [this] { openTuner(); };
+    railAudio.onClick = [this] { openAudioSettings(); };
+    for (auto* rb : { &railFile, &railAdd, &railPlugins, &railTuner, &railAudio })
+        addAndMakeVisible (rb);
+    for (auto* pill : { &tempoButton, &countInButton, &undoButton, &redoButton, &stopAllButton })
+        pill->getProperties().set ("pill", true);
     zoomOutButton.onClick = [this] { zoomBy (1.0 / 1.4, laneViewport.getMaximumVisibleWidth() / 2); };
     zoomInButton.onClick  = [this] { zoomBy (1.4, laneViewport.getMaximumVisibleWidth() / 2); };
 
@@ -2952,25 +2968,26 @@ void MainComponent::layoutContent()
         return;
 
     const int y0 = topBarHeight + rulerHeight;
-    const int laneW = getWidth() - controlsWidth;
+    constexpr int R = railWidth;
+    const int laneW = getWidth() - R - controlsWidth;
     const int rollH = rollVisible ? juce::jmin (rollHeight, getHeight() / 2) : 0;
     const int lanesH = juce::jmax (0, getHeight() - y0 - bottomBarHeight - rollH - masterHeight - 2);   // 2 px for the line above the master strip
-    laneViewport.setBounds (controlsWidth, y0, laneW, lanesH);
+    laneViewport.setBounds (R + controlsWidth, y0, laneW, lanesH);
 
     // master channel strip pinned under the tracks
     const int masterY = y0 + lanesH + 2;
-    masterHeader->setBounds (0, masterY, controlsWidth, masterHeight);
-    masterArea.setBounds (controlsWidth, masterY, laneW, masterHeight);
+    masterHeader->setBounds (R, masterY, controlsWidth, masterHeight);
+    masterArea.setBounds (R + controlsWidth, masterY, laneW, masterHeight);
     for (juce::Component* panel : std::initializer_list<juce::Component*> { pianoRoll.get(), drumRoll.get() })
     {
-        panel->setBounds (0, getHeight() - bottomBarHeight - rollH, getWidth(), rollH);
+        panel->setBounds (R, getHeight() - bottomBarHeight - rollH, getWidth() - R, rollH);
         panel->setVisible (rollVisible && panel == roll);
     }
-    ruler->setBounds (controlsWidth, topBarHeight, laneW, rulerHeight);
+    ruler->setBounds (R + controlsWidth, topBarHeight, laneW, rulerHeight);
 
     const int visibleW = laneViewport.getMaximumVisibleWidth();
     const int visibleH = laneViewport.getMaximumVisibleHeight();
-    headerViewport.setBounds (0, y0, controlsWidth, visibleH);
+    headerViewport.setBounds (R, y0, controlsWidth, visibleH);
 
     const int contentH = juce::jmax (lanes.size() * stripHeight, visibleH);
     const double seconds = engine.getTotalLengthSeconds() + 10.0;
@@ -2995,58 +3012,64 @@ void MainComponent::layoutMasterLane()
 
 void MainComponent::resized()
 {
-    // top bar, in groups: add tracks | time and tempo | project files | undo / redo | master volume
-    topSeparators.clear();
-    auto top = getLocalBounds().removeFromTop (topBarHeight - 3).reduced (10, 9);
-    auto separator = [&] { top.removeFromLeft (10); topSeparators.push_back (top.getX()); top.removeFromLeft (11); };
+    constexpr int R = railWidth;
 
-    addButton.setBounds (top.removeFromLeft (80));
-    top.removeFromLeft (6);
-    addMidiButton.setBounds (top.removeFromLeft (70));
-    top.removeFromLeft (6);
-    addDrumButton.setBounds (top.removeFromLeft (76));
-    separator();
+    // icon rail: file, add, plugins, tuner at the top; audio settings at the bottom
+    constexpr int rb = 46;
+    railFile.setBounds (0, 8, R, rb);
+    railAdd.setBounds (0, 8 + rb + 4, R, rb);
+    railPlugins.setBounds (0, 8 + 2 * (rb + 4), R, rb);
+    railTuner.setBounds (0, 8 + 3 * (rb + 4), R, rb);
+    railAudio.setBounds (0, getHeight() - rb - 10, R, rb);
+    fileButton.setBounds (railFile.getBounds());          // (the hidden buttons sit over their icons)
+    addButton.setBounds (railAdd.getBounds());
+    pluginsButton.setBounds (railPlugins.getBounds());
+    tunerButton.setBounds (railTuner.getBounds());
+    audioButton.setBounds (railAudio.getBounds());
+
+    // top bar: time and tempo, then undo / redo, the clip lamp, and STOP ALL at the far right
+    topSeparators.clear();
+    auto top = juce::Rectangle<int> (R, 0, getWidth() - R, topBarHeight - 3).reduced (12, 9);
+    stopAllButton.setBounds (top.removeFromRight (104));   // (far right, away from the transport)
     timeLabel.setBounds (top.removeFromLeft (150));
     top.removeFromLeft (14);
     bpmLabel.setBounds (top.removeFromLeft (36));
     bpmSlider.setBounds (top.removeFromLeft (70));
-    top.removeFromLeft (4);
-    tempoButton.setBounds (top.removeFromLeft (58));
-    top.removeFromLeft (10);
-    countInButton.setBounds (top.removeFromLeft (124));
-    separator();
-    fileButton.setBounds (top.removeFromLeft (64));
-    separator();
-    undoButton.setBounds (top.removeFromLeft (50));
-    top.removeFromLeft (4);
-    redoButton.setBounds (top.removeFromLeft (50));
-    separator();
+    top.removeFromLeft (6);
+    tempoButton.setBounds (top.removeFromLeft (62));
+    top.removeFromLeft (8);
+    countInButton.setBounds (top.removeFromLeft (128));
+    top.removeFromLeft (20);
+    undoButton.setBounds (top.removeFromLeft (56));
+    top.removeFromLeft (6);
+    redoButton.setBounds (top.removeFromLeft (56));
+    top.removeFromLeft (16);
     clipLamp.setBounds (top.removeFromLeft (64));
-    stopAllButton.setBounds (top.removeFromRight (104));   // (far right, away from the transport)
 
-    // bottom bar: MIDI/armed status on the left, computer-keys toggle on the right
-    statusLabel.setBounds (10, getHeight() - bottomBarHeight + 8, juce::jmax (100, getWidth() / 2 - 150), bottomBarHeight - 16);
-    keysButton.setBounds (getWidth() - 100, getHeight() - bottomBarHeight + 18, 90, 24);
-    pluginsButton.setBounds (getWidth() - 100 - 96, getHeight() - bottomBarHeight + 16, 90, 28);
-    audioButton.setBounds (getWidth() - 100 - 96 - 84, getHeight() - bottomBarHeight + 16, 78, 28);
-    tunerButton.setBounds (getWidth() - 100 - 96 - 84 - 72, getHeight() - bottomBarHeight + 16, 66, 28);
+    // bottom: MIDI/armed status on the left, computer-keys toggle on the right, the transport as a floating pill in the middle
+    const int barTop = getHeight() - bottomBarHeight;
+    keysButton.setBounds (getWidth() - 100, barTop + 18, 90, 24);
 
-    // transport: centred along the bottom
-    constexpr int tb = 44, gap = 10;
-    const int rowW = 5 * tb + 4 * gap;
-    int bx = (getWidth() - rowW) / 2;
-    const int by = getHeight() - bottomBarHeight + (bottomBarHeight - tb) / 2;
+    constexpr int tb = 40, gap = 8;
+    const int extras = 6 + 60 + 6 + 60 + 6 + 56;   // loop, punch and click after the five transport buttons
+    const int groupW = 5 * tb + 4 * gap + extras;
+    int bx = R + (getWidth() - R - groupW) / 2;
+    const int by = barTop + (bottomBarHeight - tb) / 2;
+    transportPill = { bx - 16, by - 6, groupW + 32, tb + 12 };
+    statusLabel.setBounds (R + 10, barTop + 4, juce::jmax (100, transportPill.getX() - R - 22), bottomBarHeight - 8);
     for (auto* b : std::initializer_list<juce::Component*> { &rewindButton, &playButton, &pauseButton, &stopButton, &recordButton })
     {
         b->setBounds (bx, by, tb, tb);
         bx += tb + gap;
     }
-    loopButton.setBounds (bx + 6, by + 8, 60, tb - 16);
-    punchButton.setBounds (bx + 6 + 60 + 6, by + 8, 60, tb - 16);
-    metroButton.setBounds (bx + 6 + 60 + 6 + 60 + 6, by + 8, 56, tb - 16);
+    loopButton.setBounds (bx + 6, by + 6, 60, tb - 12);
+    punchButton.setBounds (bx + 6 + 60 + 6, by + 6, 60, tb - 12);
+    metroButton.setBounds (bx + 6 + 60 + 6 + 60 + 6, by + 6, 56, tb - 12);
+    for (auto* pill : { &loopButton, &punchButton, &metroButton })
+        pill->getProperties().set ("pill", true);
 
     // snap + zoom live in the corner above the track headers
-    auto corner = juce::Rectangle<int> (0, topBarHeight, controlsWidth, rulerHeight).reduced (6, 2);
+    auto corner = juce::Rectangle<int> (R, topBarHeight, controlsWidth, rulerHeight).reduced (6, 2);
     snapButton.setBounds (corner.removeFromLeft (62));
     corner.removeFromLeft (6);
     panSnapButton.setBounds (corner.removeFromLeft (112));
@@ -3059,30 +3082,33 @@ void MainComponent::resized()
 
 void MainComponent::paint (juce::Graphics& g)
 {
+    constexpr int R = railWidth;
     g.fillAll (Theme::background);
 
-    // top bar with a red - orange - yellow strip along its lower edge
+    // the icon rail, and the top bar with a thin red - orange - yellow strip along its lower edge
+    g.setColour (Theme::rowDark);
+    g.fillRect (0, 0, R, getHeight());
+    g.setColour (Theme::border);
+    g.fillRect (R - 1, 0, 1, getHeight());
+
     g.setColour (Theme::panel);
-    g.fillRect (0, 0, getWidth(), topBarHeight);
-    juce::ColourGradient strip (Theme::red, 0.0f, 0.0f, Theme::yellow, (float) getWidth(), 0.0f, false);
+    g.fillRect (R, 0, getWidth() - R, topBarHeight);
+    juce::ColourGradient strip (Theme::red, (float) R, 0.0f, Theme::yellow, (float) getWidth(), 0.0f, false);
     strip.addColour (0.5, Theme::orange);
     g.setGradientFill (strip);
-    g.fillRect (0, topBarHeight - 3, getWidth(), 3);
-    g.setColour (Theme::border);
-    for (int x : topSeparators)
-        g.fillRect (x, 12, 1, topBarHeight - 3 - 24);
+    g.fillRect (R, topBarHeight - 2, getWidth() - R, 2);
 
-    // bottom bar
+    // the transport floats on the bottom as a rounded pill
     g.setColour (Theme::panel);
-    g.fillRect (0, getHeight() - bottomBarHeight, getWidth(), bottomBarHeight);
-    g.setColour (Theme::border);
-    g.drawHorizontalLine (getHeight() - bottomBarHeight, 0.0f, (float) getWidth());
+    g.fillRoundedRectangle (transportPill.toFloat(), (float) transportPill.getHeight() * 0.5f);
+    g.setColour (Theme::gridLineStrong.withAlpha (0.6f));
+    g.drawRoundedRectangle (transportPill.toFloat().reduced (0.5f), (float) transportPill.getHeight() * 0.5f, 1.0f);
 
     // a yellow line above the master channel strip sets it apart from the tracks
     if (masterArea.isVisible())
     {
         g.setColour (Theme::yellowDim);
-        g.fillRect (0, masterArea.getY() - 2, getWidth(), 2);
+        g.fillRect (R, masterArea.getY() - 2, getWidth() - R, 2);
     }
 }
 
@@ -3130,7 +3156,7 @@ void MainComponent::paintOverChildren (juce::Graphics& g)
 
     if (engine.getNumTracks() == 0)   // empty project: say what to do
     {
-        auto area = juce::Rectangle<int> (0, topBarHeight + rulerHeight, getWidth(), getHeight() - topBarHeight - rulerHeight - bottomBarHeight);
+        auto area = juce::Rectangle<int> (railWidth, topBarHeight + rulerHeight, getWidth() - railWidth, getHeight() - topBarHeight - rulerHeight - bottomBarHeight);
         auto block = area.withSizeKeepingCentre (560, 230);
         g.setColour (Theme::background.withAlpha (0.85f));
         g.fillRoundedRectangle (block.toFloat().expanded (24.0f, 16.0f), 14.0f);
@@ -3963,17 +3989,21 @@ void MainComponent::finishRecording()
 void MainComponent::addTrackMenu()
 {
     juce::PopupMenu menu;
-    menu.addItem (1, "Empty audio track");
+    menu.addItem (1, "Audio track");
     menu.addItem (2, "Audio track from file(s)...");
+    menu.addItem (3, "MIDI track (built-in synth or VST)");
+    menu.addItem (4, "Drum track");
+    menu.addItem (5, "Sampler (plays one sample)");
     menu.addSeparator();
-    menu.addItem (3, "Bus (group / effects return)");
-    menu.addItem (4, "Sampler (MIDI track that plays a sample)");
-    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&addButton), [this] (int result)
+    menu.addItem (6, "Bus (group / effects return)");
+    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&railAdd), [this] (int result)
     {
         if (result == 1) addEmptyAudioTrack();
         if (result == 2) addTrackDialog();
-        if (result == 3) addBusTrack();
-        if (result == 4) addSamplerTrack();
+        if (result == 3) addMidiTrack (false);
+        if (result == 4) addMidiTrack (true);
+        if (result == 5) addSamplerTrack();
+        if (result == 6) addBusTrack();
     });
 }
 
@@ -4833,7 +4863,7 @@ void MainComponent::fileMenu()
     menu.addSeparator();
     menu.addItem (8, "Export WAV...");
     menu.addItem (9, "Export stems...");
-    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&fileButton), [this, recent] (int result)
+    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&railFile), [this, recent] (int result)
     {
         if (result == 1) newProject();
         else if (result == 2) openProjectDialog();

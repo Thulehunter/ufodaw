@@ -8,7 +8,7 @@ A small digital audio workstation for Windows, written in C++17 with [JUCE](http
   Every audio track has its own **input** (the button under the track name: one mono input or a stereo pair of your interface),
   several armed tracks record at once, each from its own input, and **Mon** lets you hear the input live through the track's
   effects, volume and pan.
-- **Tuner** - **Tuner** (bottom right) opens a chromatic tuner for any input of your interface: note, cents sharp/flat, a needle and
+- **Tuner** - **Tuner** (gauge icon in the left rail) opens a chromatic tuner for any input of your interface: note, cents sharp/flat, a needle and
   the frequency (A = 430-450 Hz). It starts on the input of the armed track and works down to a low bass B.
 - **Collect, versions and backups** - **Save As** (button) opens a menu: *Save a new version* (jam, jam v2, jam v3...), and *Save with all
   audio in one folder*, which copies every audio file the project uses into `<folder>Audio` and opens the project from there, so the
@@ -27,12 +27,13 @@ A small digital audio workstation for Windows, written in C++17 with [JUCE](http
 - **MIDI tracks** with a built-in polyphonic synth (sine / saw / square / triangle, ADSR, low-pass) and a **piano roll**
   that names every key and note, lights up the keys that sound (live or during playback) and scrolls to the clip's notes
   ("Show notes" brings them back).
-- **Sampler** (Simpler-style) - **+ Track > Sampler** makes a MIDI track that plays one sample: load a file (or drop one on the track), drag the
+- **Sampler** (Simpler-style) - **+ (left rail) > Sampler** makes a MIDI track that plays one sample: load a file (or drop one on the track), drag the
   yellow start/end markers in its window, and pick the mode: *Classic* (pitched by the key from the root note, with loop, ADSR and a low-pass
   filter), *One-shot* (plays out whatever the key does) or *Slice* (the region cut into equal slices, one key each). *Detect pitch* sets the root
   note and tuning from the sample itself. Right-click an audio clip > *Sample this clip* turns it into a sampler track with one note.
   Double-click the track name (or *Sampler window* in the piano roll) to open it again.
 - **Stretchable patterns** - drag the right edge of a MIDI or drum clip: longer repeats the pattern to fill the clip, shorter cuts it off. Hold **Shift** to stretch the pattern instead (half as long = twice as fast, longer = slower); hold **Alt** to switch snapping off.
+- **Icon rail** - the strip on the left has File, Add track (+), Plugins, Tuner and Audio settings; tracks are rounded cards; the transport floats as a pill at the bottom.
 - **File menu and STOP ALL** - the *File* button has New project (Ctrl+N), Open, Open recent, Save, Save as / new version / collect, and the exports. The red *STOP ALL* button at the top right (Ctrl+Shift+Space) stops playback and recording and cuts off every sound at once, plugins and MIDI hardware included.
   The **Stretch** slider time-stretches the sample (0.25x-4x) without changing its pitch (Rubber Band); it works on drum pads too.
 - **Drum Rack** - 16 pads, each a small Simpler (start / end, pitch, envelope, filter, reverse) with its own level, pan, mute, solo and choke group (closed / open hat). Click the track's "Drum kit" button or double-click a pad name in the step sequencer to open the 4x4 pad window; drop an audio file on a pad to load it. The first 8 pads come with generated sounds; a **step sequencer** plays all 16.
@@ -76,7 +77,7 @@ A small digital audio workstation for Windows, written in C++17 with [JUCE](http
   higher) and the tempo/position given to plugins all follow it. Changing tempo or meter keeps MIDI, the loop and the punch region
   in place *in the music* (same bar, same beat), so MIDI follows the new tempo; audio clips stay where they are in time. The BPM
   slider is the tempo of the first section.
-- **Buses and sends** - **+ Track > Bus** makes a group / effects-return channel. Put a reverb or delay on it (FX or VST), then use
+- **Buses and sends** - **+ (left rail) > Bus** makes a group / effects-return channel. Put a reverb or delay on it (FX or VST), then use
   the **Out** button on any track: play the track *into* the bus (a drum bus, say) and/or *send* part of it to buses with a level per
   bus (post-fader, or *Pre*). Muting a track mutes its sends; soloing a track keeps its bus audible. Buses are not exported as stems.
 - **MIDI quantize, swing, humanize** - right-click a MIDI clip (or press `Q`): grid from 1/4 to 1/32 and triplets, strength, swing
@@ -108,7 +109,7 @@ you can open the folder.
 
 ## Audio interfaces and ASIO
 
-Click **Audio...** (bottom right) to choose the driver type, the device, the sample rate, the buffer size and which
+Click the **Audio** icon (sliders, bottom of the left rail) to choose the driver type, the device, the sample rate, the buffer size and which
 channels are on. The choice is remembered. The status line at the bottom shows what is in use. UFODAW plays through the
 first two enabled output channels. Which input an audio track records from is chosen per track (see below); only inputs
 that are switched on in this window can be picked.
@@ -167,7 +168,7 @@ Notes to hardware are set up separately, in a track's VST panel (*External MIDI 
 
 ## Sequencer plugins (Stochas etc.) driving a synthesizer
 
-1. Add two MIDI tracks (**+ MIDI**): one for the sequencer, one for the synth.
+1. Add two MIDI tracks (**+** in the left rail > MIDI track): one for the sequencer, one for the synth.
 2. On the synth track, open **VST** and pick your synthesizer as its instrument.
 3. On the sequencer track, open **VST**, set **Use as** to *Sequencer*, and pick the sequencer plugin (e.g. Stochas) in the list below it.
 4. Still in that panel, tick the track(s) that should play its notes. Each ticked track has a **channel** setting:
@@ -186,12 +187,12 @@ An arpeggiator or similar plugin that should change the notes of one track goes 
 | Record (audio, or MIDI when a MIDI track is armed) | `R` |
 | Loop on / off | `L` (`Shift+L` loops the selected clip) |
 | Set the loop region | right-drag on the ruler or in any track (a right-click without dragging opens the clip menu) |
-| Add an empty audio track | **+ Track** > *Empty audio track* (it starts armed for recording); drop audio files on it later, several files go one after the other |
+| Add an empty audio track | **+** (left rail) > *Audio track* (it starts armed for recording); drop audio files on it later, several files go one after the other |
 | Record into a specific audio track | click the red dot left of the track name to arm it, then **Record** (`R`). Arm several tracks to record them all at once. Without an armed track the recording becomes a new track from inputs 1+2 |
 | Clip gain / stretch / pitch | right-click an audio clip > *Gain, stretch and pitch...* |
 | Volume curve of a clip | right-click the clip > *Edit volume curve* (click = add, drag = move, right-click = remove, `Esc` = done) |
 | New version / collect audio / backups | **Save As** button: its menu |
-| Sampler | **+ Track > Sampler**, then Load... (or drop an audio file on the track); right-click an audio clip > *Sample this clip* |
+| Sampler | **+ (left rail) > Sampler**, then Load... (or drop an audio file on the track); right-click an audio clip > *Sample this clip* |
 | Find a plugin | VST panel > the Instrument button or *+ Add effect plugin...*: type to search by name, maker or category; Up / Down, Enter |
 | Fade in / out of an audio clip | drag the squares in the top corners of the clip; right-click > *Remove fades* |
 | Crossfade two clips | let the clips overlap a little, right-click one > *Crossfade with overlapping clip(s)* |
@@ -202,13 +203,13 @@ An arpeggiator or similar plugin that should change the notes of one track goes 
 | Quantize / swing / humanize a MIDI clip | select the clip and press `Q`, or right-click it |
 | Metronome on / off | **Click** next to Punch, or `M` (works during playback and recording) |
 | Count-in before recording | **Count-in** in the top bar: off, 1, 2, 3 or 4 bars; applies when you press Record from a stop |
-| Latency compensation | **Audio...** > *Recording latency*: automatic, measured with a cable from an output to an input, plus a manual offset |
-| MIDI clock to hardware | **Audio...** > *MIDI clock*: tick the outputs that should follow the tempo |
+| Latency compensation | **Audio** icon > *Recording latency*: automatic, measured with a cable from an output to an input, plus a manual offset |
+| MIDI clock to hardware | **Audio** icon > *MIDI clock*: tick the outputs that should follow the tempo |
 | Punch in/out | turn on **Punch** (`P`); the region is the selected clip, or two bars at the playhead. Change it with **Shift + right-drag** on the ruler (red). Press Record: playback starts a bar before the region, records inside it, and the recording closes itself at the punch-out |
 | Record a keyboard and an e-drum together | arm both MIDI tracks with their red dot, set each track's *MIDI input* in its VST panel, press Record |
 | Edit a mod wheel / pedal / pitch bend | piano roll: the box in the lane under the notes (Velocity by default) lists the controllers |
 | Record several takes | turn on **Loop** (set the loop with right-drag on the ruler) and press Record; stop when you have enough. Pick takes with right-click > *Choose take*; `S` splits all takes of a clip at the playhead for comping |
-| Tune an instrument | **Tuner** at the bottom right; pick the input (defaults to the armed track's input) |
+| Tune an instrument | **Tuner** icon in the left rail; pick the input (defaults to the armed track's input) |
 | Choose a track's input | click the input button on the audio track (e.g. *In: 1+2*): mono inputs, stereo pairs, or *Audio settings...* |
 | Hear the input while playing | arm the track and turn on **Mon**; it goes through the track's effects, volume and pan (not in exports). Use headphones, or direct monitoring on your interface, to avoid feedback and double latency |
 | Move the playhead | click or drag on the ruler / empty lane |
@@ -229,7 +230,7 @@ An arpeggiator or similar plugin that should change the notes of one track goes 
 | Play with the computer keyboard | turn on **Keys**, then `A W S E D F T G Y H U J K O L P` (`Z` / `X` change octave) |
 
 Buttons on every track: **FX** (built-in effects), **VST** (VST3 instrument and inserts), **A** (volume / pan automation).
-Use **Plugins...** at the bottom right to scan for VST3 plugins first.
+Use the **Plugins** icon in the left rail to scan for VST3 plugins first.
 
 ## Building from source
 

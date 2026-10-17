@@ -58,14 +58,17 @@ void WarmLookAndFeel::drawButtonBackground (juce::Graphics& g, juce::Button& but
     auto bounds = button.getLocalBounds().toFloat().reduced (0.5f);
     auto base = backgroundColour.withMultipliedAlpha (button.isEnabled() ? 1.0f : 0.45f);
     if (down)             base = base.darker (0.25f);
-    else if (highlighted) base = base.brighter (0.15f);
+    else if (highlighted) base = base.brighter (0.12f);
 
-    g.setGradientFill (juce::ColourGradient (base.brighter (0.12f), 0.0f, bounds.getY(),
-                                             base.darker (0.12f), 0.0f, bounds.getBottom(), false));
-    g.fillRoundedRectangle (bounds, 5.0f);
-
-    g.setColour (Theme::border.withAlpha (0.9f));
-    g.drawRoundedRectangle (bounds, 5.0f, 1.0f);
+    // flat, softly rounded; buttons marked "pill" (the top bar) are fully round-ended
+    const float radius = button.getProperties().getWithDefault ("pill", false) ? bounds.getHeight() * 0.5f : 8.0f;
+    g.setColour (base);
+    g.fillRoundedRectangle (bounds, radius);
+    if (! button.getToggleState() || highlighted)
+    {
+        g.setColour (Theme::gridLineStrong.withAlpha (highlighted ? 0.7f : 0.35f));
+        g.drawRoundedRectangle (bounds, radius, 1.0f);
+    }
 }
 
 void WarmLookAndFeel::drawToggleButton (juce::Graphics& g, juce::ToggleButton& button, bool highlighted, bool)
