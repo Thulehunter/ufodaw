@@ -48,10 +48,44 @@ void Engine::prepareToPlay (int samplesPerBlock, double newRate)
 //==============================================================================
 // Hosted plugins
 
+juce::Optional<juce::AudioPlayHead::PositionInfo> Engine::PlayHead::getPosition() const
+{
+    const double rate = juce::jmax (1.0, engine.sampleRate);
+    const double bpm = engine.bpm.load();
+    const auto samples = this->samples.load();
+    const double seconds = (double) samples / rate;
+
+    PositionInfo info;
+    info.setBpm (bpm);
+    info.setTimeSignature (TimeSignature { 4, 4 });
+    info.setTimeInSamples (samples);
+    info.setTimeInSeconds (seconds);
+    info.setPpqPosition (seconds * bpm / 60.0);
+    info.setIsPlaying (playing.load());
+    info.setIsRecording (false);
+    info.setIsLooping (engine.loopEnabled.load());
+    if (engine.loopEnabled && engine.loopEnd > engine.loopStart)
+        info.setLoopPoints (LoopPoints { engine.loopStart * bpm / 60.0, engine.loopEnd * bpm / 60.0 });
+    return info;
+}
+
+void Engine::setMidiOut (Track& source, Track* target)
+{
+    const juce::ScopedLock sl (lock);
+    if (target == &source || (target != nullptr && target->type != Track::Type::Midi))
+        target = nullptr;
+    source.midiOut = target;
+    source.routedMidi.clear();
+    releaseAllNotes (source);
+    if (target != nullptr)
+        releaseAllNotes (*target);   // anything still sounding on the old route fades out
+}
+
 // Makes a plugin stereo where it can, prepares it for the current sample rate/block size and sizes its buffer.
 void Engine::preparePlugin (PluginSlot& s)
 {
     auto& p = *s.instance;
+    p.setPlayHead (&playHead);
 
     auto layout = p.getBusesLayout();
     if (p.getBusCount (true) > 0)  layout.inputBuses.getReference (0) = juce::AudioChannelSet::stereo();
@@ -146,6 +180,7 @@ Track* Engine::addTrack (const juce::String& name, Track::Type type)
     auto track = std::make_unique<Track>();
     track->name = name;
     track->type = type;
+    track->routedMidi.ensureSize (4096);
     track->fxState = std::make_unique<TrackFx>();
     track->fxState->prepare (sampleRate);
     if (type == Track::Type::Midi)
@@ -201,6 +236,9 @@ void Engine::resetDrumPad (Track& t, int pad)
 void Engine::removeTrack (Track* t)
 {
     const juce::ScopedLock sl (lock);
+    for (auto& other : tracks)
+        if (other->midiOut == t)
+            other->midiOut = nullptr;   // nobody keeps sending to a track that is going away
     tracks.erase (std::remove_if (tracks.begin(), tracks.end(),
                                   [t] (auto& p) { return p.get() == t; }),
                   tracks.end());
@@ -792,6 +830,9 @@ ProjectState Engine::captureState() const
         ts.synthValues[4] = t->synth.cutoff;
         ts.instrument = t->instrument;
         ts.inserts = t->inserts;
+        for (size_t k = 0; k < tracks.size(); ++k)
+            if (tracks[k].get() == t->midiOut)
+                ts.midiOutIndex = (int) k;
         ts.autoLanes.push_back ({ "volume", t->autoVolume.points, t->autoVolume.active.load() });
         ts.autoLanes.push_back ({ "pan", t->autoPan.points, t->autoPan.active.load() });
         for (auto& lane : t->autoLanes)
@@ -859,7 +900,15 @@ void Engine::restoreState (const ProjectState& s)
             t->voices = std::make_unique<Synth>();
             t->voices->prepare (sampleRate);
         }
+        t->routedMidi.ensureSize (4096);
         fresh.push_back (std::move (t));
+    }
+
+    for (size_t i = 0; i < s.tracks.size(); ++i)   // MIDI routes point at tracks by index
+    {
+        const int to = s.tracks[i].midiOutIndex;
+        if (to >= 0 && to < (int) fresh.size() && to != (int) i)
+            fresh[i]->midiOut = fresh[(size_t) to].get();
     }
 
     bpm = s.bpm;
@@ -1086,23 +1135,33 @@ void Engine::getNextAudioBlock (const juce::AudioSourceChannelInfo& info)
 void Engine::collectNoteEvents (Track& t, int n, juce::int64 pos, bool running)
 {
     noteEvents.clear();
-    if (! running)
-        return;
 
-    const double blockEnd = (double) (pos + n);
-    for (auto& clip : t.midiClips)
-        for (auto& note : clip.notes)
-        {
-            if (note.start >= clip.length)
-                continue;
+    if (running)
+    {
+        const double blockEnd = (double) (pos + n);
+        for (auto& clip : t.midiClips)
+            for (auto& note : clip.notes)
+            {
+                if (note.start >= clip.length)
+                    continue;
 
-            const double on = (clip.start + note.start) * sampleRate;
-            const double off = on + note.length * sampleRate;
-            if (on >= (double) pos && on < blockEnd)
-                noteEvents.push_back ({ (int) (on - (double) pos), true, note.pitch, note.velocity });
-            if (off >= (double) pos && off < blockEnd)
-                noteEvents.push_back ({ (int) (off - (double) pos), false, note.pitch, 0.0f });
-        }
+                const double on = (clip.start + note.start) * sampleRate;
+                const double off = on + note.length * sampleRate;
+                if (on >= (double) pos && on < blockEnd)
+                    noteEvents.push_back ({ (int) (on - (double) pos), true, note.pitch, note.velocity });
+                if (off >= (double) pos && off < blockEnd)
+                    noteEvents.push_back ({ (int) (off - (double) pos), false, note.pitch, 0.0f });
+            }
+    }
+
+    // notes that other tracks (a plugin sequencer) routed here during this block
+    for (const auto meta : t.routedMidi)
+    {
+        const auto m = meta.getMessage();
+        const int offset = juce::jlimit (0, juce::jmax (0, n - 1), meta.samplePosition);
+        if (m.isNoteOn())       noteEvents.push_back ({ offset, true, m.getNoteNumber(), m.getFloatVelocity() });
+        else if (m.isNoteOff()) noteEvents.push_back ({ offset, false, m.getNoteNumber(), 0.0f });
+    }
 
     // note-offs go first at the same sample so a repeated pitch retriggers cleanly
     std::sort (noteEvents.begin(), noteEvents.end(), [] (const NoteEvent& a, const NoteEvent& b)
@@ -1131,6 +1190,35 @@ void Engine::renderPluginInstrument (Track& t, int n, float* outL, float* outR)
 
     std::copy (buf.getReadPointer (0), buf.getReadPointer (0) + n, outL);
     std::copy (buf.getReadPointer (channels > 1 ? 1 : 0), buf.getReadPointer (channels > 1 ? 1 : 0) + n, outR);
+}
+
+// A plugin sequencer track (Stochas and the like): run the plugin, throw its audio away and hand the notes it
+// produced to the track it is routed to.
+void Engine::runMidiSource (Track& t, int n)
+{
+    auto& slot = *t.instrument;
+    auto& buf = slot.scratch;
+    const int channels = buf.getNumChannels();
+    if (channels < 1 || n > buf.getNumSamples())
+        return;
+
+    midiScratch.clear();
+    midiScratch.addEvents (t.liveMidi, 0, n, 0);
+    t.liveMidi.clear();
+    for (auto& e : noteEvents)
+        midiScratch.addEvent (e.on ? juce::MidiMessage::noteOn (1, e.pitch, e.velocity)
+                                   : juce::MidiMessage::noteOff (1, e.pitch), e.offset);
+
+    buf.clear (0, n);
+    juce::AudioBuffer<float> view (buf.getArrayOfWritePointers(), channels, n);
+    slot.instance->processBlock (view, midiScratch);   // the MIDI buffer now holds what the plugin sent out
+
+    for (const auto meta : midiScratch)
+    {
+        const auto m = meta.getMessage();
+        if (m.isNoteOnOrOff())
+            t.midiOut->routedMidi.addEvent (m, juce::jlimit (0, juce::jmax (0, n - 1), meta.samplePosition));
+    }
 }
 
 // Hosted VST3 effect, in place on the track's stereo buffer.
@@ -1201,6 +1289,28 @@ void Engine::mixBlock (float* outL, float* outR, int n, juce::int64 pos, bool wi
 
     constexpr double fadeSamples = 48.0;   // tiny fade at clip edges to avoid clicks
 
+    playHead.samples = pos;
+    playHead.playing = running;
+
+    // MIDI routing first: sequencer tracks run and fill the routedMidi of the tracks they play,
+    // so those tracks find their notes waiting when they are rendered below.
+    for (auto& t : tracks)
+        t->routedMidi.clear();
+    const int routeN = juce::jmin (n, (int) trackL.size());
+    for (auto& t : tracks)
+        if (t->type == Track::Type::Midi && t->instrument != nullptr && t->midiOut != nullptr)
+        {
+            if (running)
+                t->pluginTailSamples = 3.0 * sampleRate;
+            if (t->pluginTailSamples > 0.0)
+            {
+                collectNoteEvents (*t, routeN, pos, running);
+                runMidiSource (*t, routeN);
+                if (! running)
+                    t->pluginTailSamples -= routeN;
+            }
+        }
+
     for (auto& t : tracks)
     {
         float peak = 0.0f;
@@ -1240,7 +1350,11 @@ void Engine::mixBlock (float* outL, float* outR, int n, juce::int64 pos, bool wi
 
         if (t->type == Track::Type::Midi)
         {
-            if (t->instrument != nullptr)
+            if (t->instrument != nullptr && t->midiOut != nullptr)
+            {
+                // sequencer track: it makes no sound itself, its notes were routed to another track above
+            }
+            else if (t->instrument != nullptr)
             {
                 // the instrument keeps running for a while after the transport stops, so its tail can ring out
                 if (running)

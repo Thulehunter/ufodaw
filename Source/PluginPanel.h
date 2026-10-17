@@ -38,6 +38,12 @@ private:
     juce::TextButton instrumentEdit { "Edit" };
     juce::Array<juce::PluginDescription> instruments;
 
+    // Where the notes of a plugin sequencer (Stochas, ...) go: another MIDI track plays them.
+    juce::Label midiOutLabel { {}, "MIDI out" };
+    juce::ComboBox midiOutBox;
+    std::vector<Track*> midiTargets;
+    void chooseMidiOut();
+
     juce::Label insertsLabel { {}, "Effects (after the built-in chain)" };
     std::vector<std::unique_ptr<Row>> rows;
     juce::Label hint;

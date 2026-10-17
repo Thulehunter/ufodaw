@@ -17,12 +17,22 @@ PluginPanel::PluginPanel (Track& t, Engine& e, PluginHost& h, std::function<void
         addAndMakeVisible (instrumentLabel);
 
         instrumentBox.addItem (track.kit != nullptr ? "Built-in drum kit" : "Built-in synth", 1);
-        for (auto& d : host.getList().getTypes())
-            if (d.isInstrument)
-            {
-                instruments.add (d);
-                instrumentBox.addItem (d.name + "  (" + d.manufacturerName + ")", 100 + instruments.size() - 1);
-            }
+        for (int pass = 0; pass < 2; ++pass)   // instruments first, then everything else (MIDI sequencers like Stochas)
+        {
+            bool headingAdded = false;
+            for (auto& d : host.getList().getTypes())
+                if (d.isInstrument == (pass == 0))
+                {
+                    if (pass == 1 && ! headingAdded)
+                    {
+                        instrumentBox.addSeparator();
+                        instrumentBox.addSectionHeading ("Sequencers / MIDI effects / other");
+                        headingAdded = true;
+                    }
+                    instruments.add (d);
+                    instrumentBox.addItem (d.name + "  (" + d.manufacturerName + ")", 100 + instruments.size() - 1);
+                }
+        }
         int selected = 1;
         if (track.instrument != nullptr)
             for (int i = 0; i < instruments.size(); ++i)
@@ -39,6 +49,22 @@ PluginPanel::PluginPanel (Track& t, Engine& e, PluginHost& h, std::function<void
                 host.showEditor (*track.instrument);
         };
         addAndMakeVisible (instrumentEdit);
+
+        midiOutBox.addItem ("None - this track plays its own sound", 1);
+        int selectedOut = 1;
+        for (int i = 0; i < engine.getNumTracks(); ++i)
+            if (auto* other = engine.getTrack (i); other != &track && other->type == Track::Type::Midi)
+            {
+                midiTargets.push_back (other);
+                midiOutBox.addItem ("Send notes to: " + other->name, 100 + (int) midiTargets.size() - 1);
+                if (track.midiOut == other)
+                    selectedOut = 100 + (int) midiTargets.size() - 1;
+            }
+        midiOutBox.setSelectedId (selectedOut, juce::dontSendNotification);
+        midiOutBox.setTooltip ("For a sequencer plugin (e.g. Stochas): the track whose synth should play the notes it makes");
+        midiOutBox.onChange = [this] { chooseMidiOut(); };
+        addAndMakeVisible (midiOutLabel);
+        addAndMakeVisible (midiOutBox);
     }
 
     addAndMakeVisible (insertsLabel);
@@ -51,7 +77,7 @@ PluginPanel::PluginPanel (Track& t, Engine& e, PluginHost& h, std::function<void
     addAndMakeVisible (manageButton);
 
     rebuild();
-    setSize (panelWidth, (isMidi ? 50 : 0) + 40 + maxRows * rowH + 56);
+    setSize (panelWidth, (isMidi ? 90 : 0) + 40 + maxRows * rowH + 56);
 }
 
 void PluginPanel::alert (const juce::String& title, const juce::String& message)
@@ -84,6 +110,13 @@ void PluginPanel::chooseInstrument()
     }
     engine.setInstrument (track, slot);
     host.showEditor (*slot);   // so the sound can be set up right away
+}
+
+void PluginPanel::chooseMidiOut()
+{
+    const int id = midiOutBox.getSelectedId();
+    beginEdit();
+    engine.setMidiOut (track, id >= 100 ? midiTargets[(size_t) (id - 100)] : nullptr);
 }
 
 void PluginPanel::addEffectMenu()
@@ -171,7 +204,12 @@ void PluginPanel::resized()
         instrumentEdit.setBounds (line.removeFromRight (50));
         line.removeFromRight (6);
         instrumentBox.setBounds (line);
-        area.removeFromTop (20);
+        area.removeFromTop (6);
+
+        auto outLine = area.removeFromTop (30);
+        midiOutLabel.setBounds (outLine.removeFromLeft (74));
+        midiOutBox.setBounds (outLine);
+        area.removeFromTop (14);
     }
 
     insertsLabel.setBounds (area.removeFromTop (24));

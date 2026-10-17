@@ -127,6 +127,11 @@ struct Track
     juce::MidiBuffer liveMidi;                              // notes played live, waiting for the plugin instrument
     double pluginTailSamples = 0.0;                         // keep running the instrument this long after the transport stops
 
+    // MIDI routing: the notes a plugin instrument (a sequencer such as Stochas) sends out go to another
+    // MIDI track instead of being heard from this one.
+    Track* midiOut = nullptr;
+    juce::MidiBuffer routedMidi;                            // notes other tracks sent here during the current block
+
     std::atomic<float> gain { 0.8f };
     std::atomic<float> pan { 0.0f };
     std::atomic<bool> mute { false };
@@ -160,6 +165,7 @@ struct TrackState
         bool active = true;
     };
     std::vector<LaneState> autoLanes;   // includes "volume" and "pan"
+    int midiOutIndex = -1;              // index of the track this one sends MIDI to, or -1
     std::shared_ptr<DrumKit> kit;
     std::shared_ptr<PluginSlot> instrument;                 // plugins are shared with the live project,
     std::vector<std::shared_ptr<PluginSlot>> inserts;       // so undo restores which ones are present, not their settings
@@ -228,6 +234,7 @@ public:
     std::vector<juce::String> getAutomationIds (const Track&) const;         // lanes that have points
 
     // ---- Message thread: hosted plugins
+    void setMidiOut (Track& source, Track* target);             // null = this track plays its own sound; only MIDI tracks can be targets
     void preparePlugin (PluginSlot&);                           // layout + prepareToPlay for the current audio setup
     void setInstrument (Track&, std::shared_ptr<PluginSlot>);   // null = built-in synth
     void addInsert (Track&, std::shared_ptr<PluginSlot>);
@@ -299,6 +306,7 @@ private:
     void applyAutomation (Track&, double timeSeconds);
     void releaseAllNotes (Track&);                              // soft all-notes-off for the synth or plugin instrument
     void collectNoteEvents (Track&, int numSamples, juce::int64 pos, bool running);
+    void runMidiSource (Track&, int numSamples);                // plugin sequencer track: its MIDI output goes to Track::midiOut
     void renderDrumTrack (Track&, int numSamples, juce::int64 pos, bool running, float* scratch);
     void renderPluginInstrument (Track&, int numSamples, float* outL, float* outR);
     void processInsert (PluginSlot&, float* l, float* r, int numSamples);
@@ -307,6 +315,18 @@ private:
     const Clip* findClip (const Track&, int clipId) const;
     MidiClip* findMidiClip (Track&, int clipId);
     const MidiClip* findMidiClip (const Track&, int clipId) const;
+
+    // Tells hosted plugins the tempo, position and whether the transport runs (sequencers like Stochas need it).
+    // Declared before `tracks` so it outlives the plugins that point at it.
+    struct PlayHead : public juce::AudioPlayHead
+    {
+        explicit PlayHead (Engine& e) : engine (e) {}
+        juce::Optional<PositionInfo> getPosition() const override;
+        Engine& engine;
+        std::atomic<juce::int64> samples { 0 };
+        std::atomic<bool> playing { false };
+    };
+    PlayHead playHead { *this };
 
     juce::AudioFormatManager formats;
     mutable juce::CriticalSection lock;

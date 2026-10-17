@@ -1950,6 +1950,7 @@ void MainComponent::saveProject (const juce::File& file)
         t->fx.forEachBool ([fo] (const char* name, std::atomic<bool>& v) { fo->setProperty (name, v.load()); });
         o->setProperty ("fx", juce::var (fo));
         o->setProperty ("plugins", pluginsToVar (*t));
+        o->setProperty ("midiOut", t->midiOut != nullptr ? engine.indexOfTrack (t->midiOut) : -1);
 
         // automation, keyed by envelope id ("volume", "pan", "fx.reverbMix", "plugin:3:12", ...)
         auto* ao = new juce::DynamicObject();
@@ -2161,6 +2162,19 @@ void MainComponent::loadProject (const juce::File& file)
             }
 
         addTrackUI (*t);
+    }
+
+    // MIDI routes refer to other tracks by index, so they are set once every track exists
+    {
+        int index = 0;
+        for (auto& item : *root["tracks"].getArray())
+        {
+            const int target = (int) item.getProperty ("midiOut", -1);
+            if (target >= 0)
+                if (auto* from = engine.getTrack (index); auto* to = engine.getTrack (target))
+                    engine.setMidiOut (*from, to);
+            ++index;
+        }
     }
 
     currentProject = file;

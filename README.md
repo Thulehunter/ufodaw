@@ -11,6 +11,7 @@ A small digital audio workstation for Windows, written in C++17 with [JUCE](http
 - **MIDI input** - any connected keyboard plays the selected MIDI track and can be recorded; the computer keyboard works as a piano too ("Keys").
 - **Effects per track** - 3-band EQ, compressor, delay, reverb.
 - **VST3 hosting** - instruments and effects, with their own editor windows; plugin states are saved in the project.
+- **MIDI routing** - a sequencer plugin on one track can play the synth (built-in, drum kit or VST) of another track; plugins receive tempo, bar position and play state from the DAW.
 - **Automation** - breakpoint envelopes for volume, pan, every built-in effect parameter, the synth, and any parameter of a hosted VST3 plugin.
 - **Velocity editing** - velocity bars under the piano roll; Ctrl+drag a step in the drum sequencer.
 - **Mixer** - volume, pan, mute, solo, level meters, soft limiter on the master.
@@ -19,6 +20,14 @@ A small digital audio workstation for Windows, written in C++17 with [JUCE](http
 ## Running
 
 Download `MiniDAW-<version>-win64.zip` (see *Packaging*), unzip it and start `MiniDAW.exe`. No installation is needed.
+
+## Sequencer plugins (Stochas etc.) driving a synthesizer
+
+1. Add two MIDI tracks (**+ MIDI**): one for the sequencer, one for the synth.
+2. On the synth track, open **VST** and pick your synthesizer as its instrument.
+3. On the sequencer track, open **VST** and pick the sequencer plugin as its instrument (plugins that are not flagged as instruments are listed under *Sequencers / MIDI effects / other*).
+4. Still in the sequencer track's VST panel, set **MIDI out** to the synth track.
+5. Press play. The plugin gets the DAW's tempo and play position, and the notes it makes are played by the synth track. The sequencer track itself is silent.
 
 ## Keyboard and mouse
 
