@@ -2616,6 +2616,10 @@ void Engine::mixBlock (float* outL, float* outR, int n, juce::int64 pos, bool wi
                     processInsert (*p, bufL + s, bufR + s, len);
         }
 
+        if (t->fx.mono)   // a mono channel: left and right summed (after its effects and plugins)
+            for (int i = 0; i < nn; ++i)
+                bufL[i] = bufR[i] = 0.5f * (bufL[i] + bufR[i]);
+
         // plugin delay compensation: tracks without (or with less) plugin latency wait for the slowest one
         const int delay = maxLatency - trackLatency (*t);
         if (! t->bus && (delay > 0 || t->pdcDelay != 0))
@@ -2692,6 +2696,10 @@ void Engine::mixBlock (float* outL, float* outR, int n, juce::int64 pos, bool wi
                 if (! p->bypass)
                     processInsert (*p, outL + s, outR + s, len);
         }
+
+        if (m.fx.mono)   // master in mono: a way to check how the whole mix sounds on a mono speaker
+            for (int i = 0; i < n; ++i)
+                outL[i] = outR[i] = 0.5f * (outL[i] + outR[i]);
     }
 
     // master volume, possibly automated: evaluated at both ends of the block and ramped in between

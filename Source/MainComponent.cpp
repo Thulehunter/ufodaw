@@ -305,7 +305,7 @@ public:
                                 : juce::String());
         }
 
-        const bool fxActive = track.fx.anyOn();
+        const bool fxActive = track.fx.anyOn() || track.fx.mono.load();   // (mono counts: the button shows the channel is changed)
         if (fxActive != fxShownActive)
         {
             fxShownActive = fxActive;

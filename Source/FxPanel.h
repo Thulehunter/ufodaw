@@ -32,6 +32,7 @@ private:
     void addRow (Section&, const juce::String& name, double lo, double hi, double mid,
                  const juce::String& suffix, int decimals, std::atomic<float>& param);
 
+    juce::ToggleButton monoToggle;
     Track& track;
     std::function<void()> beginEdit;
     std::vector<std::unique_ptr<Section>> sections;

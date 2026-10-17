@@ -36,7 +36,19 @@ FxPanel::FxPanel (Track& t, std::function<void()> onBeginEdit) : track (t), begi
     addRow (reverb, "Damping", 0.0, 1.0, 0.0, "", 2, fx.reverbDamping);
     addRow (reverb, "Mix",     0.0, 1.0, 0.0, "", 2, fx.reverbMix);
 
-    setSize (740, 2 * (titleHeight + maxRows * rowHeight) + 3 * gap - 30);
+    // below the effects: the channel's width
+    monoToggle.setButtonText ("Mono: play this channel in mono (left and right summed)");
+    monoToggle.setTooltip ("Sums left and right after the effects and plugins. Handy to check how a mix or a source sounds in mono, "
+                           "or to centre a stereo recording. On the master it checks the whole mix.");
+    monoToggle.setToggleState (fx.mono, juce::dontSendNotification);
+    monoToggle.onClick = [this]
+    {
+        if (beginEdit) beginEdit();
+        track.fx.mono = monoToggle.getToggleState();
+    };
+    addAndMakeVisible (monoToggle);
+
+    setSize (740, 2 * (titleHeight + maxRows * rowHeight) + 3 * gap - 30 + 34);
 }
 
 FxPanel::Section& FxPanel::addSection (const juce::String& title, std::atomic<bool>& enabled)
@@ -100,6 +112,7 @@ void FxPanel::resized()
 {
     const auto b = getLocalBounds().reduced (gap / 2);
     const int colW = b.getWidth() / 2, rowGroupH = titleHeight + maxRows * rowHeight + gap;
+    monoToggle.setBounds (b.getX() + 12, b.getBottom() - 30, b.getWidth() - 24, 26);
 
     for (int i = 0; i < (int) sections.size(); ++i)
     {

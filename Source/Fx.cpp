@@ -13,7 +13,7 @@ void FxParams::forEachFloat (const std::function<void (const char*, std::atomic<
 
 void FxParams::forEachBool (const std::function<void (const char*, std::atomic<bool>&)>& f)
 {
-    f ("eqOn", eqOn);  f ("compOn", compOn);  f ("delayOn", delayOn);  f ("reverbOn", reverbOn);
+    f ("eqOn", eqOn);  f ("compOn", compOn);  f ("delayOn", delayOn);  f ("reverbOn", reverbOn);  f ("mono", mono);
 }
 
 std::atomic<float>* FxParams::findFloat (const juce::String& name)

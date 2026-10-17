@@ -22,6 +22,9 @@ struct FxParams
     std::atomic<bool> reverbOn { false };
     std::atomic<float> reverbSize { 0.5f }, reverbDamping { 0.5f }, reverbMix { 0.25f };
 
+    // Not an effect of the chain: the channel plays in mono (left and right summed) after its effects and plugins.
+    std::atomic<bool> mono { false };
+
     bool anyOn() const { return eqOn || compOn || delayOn || reverbOn; }
     bool hasTail() const { return delayOn || reverbOn; }
 
