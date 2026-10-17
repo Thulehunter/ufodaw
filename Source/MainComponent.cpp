@@ -329,14 +329,13 @@ private:
 //==============================================================================
 MainComponent::MainComponent()
 {
-    setSize (1250, 620);
+    ruler = std::make_unique<TimeRuler> (*this);   // must exist before setSize() triggers resized()
+
     setWantsKeyboardFocus (true);
 
     deviceManager.initialiseWithDefaultDevices (0, 2);
     player.setSource (&engine);
     deviceManager.addAudioCallback (&player);
-
-    ruler = std::make_unique<TimeRuler> (*this);
 
     for (auto* b : { &rewindButton, &playButton, &addButton, &openButton, &saveButton, &saveAsButton, &exportButton,
                      &zoomOutButton, &zoomInButton })
@@ -390,6 +389,7 @@ MainComponent::MainComponent()
     addAndMakeVisible (headerViewport);
     addAndMakeVisible (*ruler);
 
+    setSize (1250, 620);   // last: resized() touches all the children above
     startTimerHz (30);
 }
 
