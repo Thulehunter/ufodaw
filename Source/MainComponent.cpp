@@ -611,6 +611,16 @@ class TrackLane : public juce::Component, public juce::FileDragAndDropTarget
 public:
     TrackLane (MainComponent& m, Track& t) : main (m), track (t) {}
 
+    // an empty audio track says whether it is armed, so the lane is redrawn when that changes (from anywhere)
+    void checkArmed()
+    {
+        if (track.recordArmed != armedShown)
+        {
+            armedShown = track.recordArmed;
+            repaint();
+        }
+    }
+
     Track& getTrack() { return track; }
 
     void paint (juce::Graphics& g) override
@@ -1584,6 +1594,7 @@ private:
     AutoInfo cachedInfo;
     int autoDrag = -1;
     bool autoEdited = false;
+    bool armedShown = false;
     double rangeA = -1.0, rangeB = -1.0;   // the time range picked with Shift+drag in an automation lane (for comping)
     bool rangeDragging = false;
 
@@ -3839,6 +3850,8 @@ void MainComponent::timerCallback()
         engine.automationRecordTick();   // rides of armed automation lanes become takes
         if (engine.recordedTakeCounter != takesBefore)
             ++editCounter;                // (unsaved changes, autosave)
+        for (auto* lane : lanes)
+            lane->checkArmed();
         static int armedTicks = 0;
         if (engine.anyAutomationArmed() && (++armedTicks % 3 == 0 || engine.recordedTakeCounter != takesBefore))
             for (auto* lane : lanes)   // the REC mark and the new takes show up while riding
@@ -4405,6 +4418,8 @@ void MainComponent::addEmptyAudioTrack()
 void MainComponent::armAudioTrack (Track& t, bool armed)
 {
     t.recordArmed = armed && t.type == Track::Type::Audio;
+    for (auto* lane : lanes)   // (an empty armed track says so in its lane)
+        lane->repaint();
 }
 
 void MainComponent::armTrack (Track& t)
