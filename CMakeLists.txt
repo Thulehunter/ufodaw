@@ -15,7 +15,8 @@ FetchContent_Declare(JUCE
     GIT_SHALLOW ON)
 FetchContent_MakeAvailable(JUCE)
 
-juce_add_gui_app(MiniDAW PRODUCT_NAME "MiniDAW")
+juce_add_gui_app(MiniDAW PRODUCT_NAME "MiniDAW"
+    ICON_BIG "${CMAKE_CURRENT_SOURCE_DIR}/Resources/icon.png")
 
 target_sources(MiniDAW PRIVATE
     Source/Main.cpp

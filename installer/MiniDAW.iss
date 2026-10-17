@@ -7,6 +7,7 @@
 #define AppVersion "0.1.0"
 
 [Setup]
+SetupIconFile=..Resourcesicon.ico
 AppName={#AppName}
 AppVersion={#AppVersion}
 DefaultDirName={autopf}\{#AppName}
