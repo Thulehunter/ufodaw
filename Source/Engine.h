@@ -324,6 +324,7 @@ public:
     bool loadSamplerSample (Track&, const juce::File&);                      // reads an audio file into the track's sampler
     bool setSamplerSample (Track&, std::shared_ptr<const juce::AudioBuffer<float>>, double rate, const juce::String& name, const juce::File& file);   // e.g. from a clip
     bool loadDrumSample (Track&, int pad, const juce::File&);
+    bool setSamplerStretch (Sampler&, double timeRatio);                    // time-stretch the sampler's sample (pitch kept); 1 = as loaded
     void resetDrumPad (Track&, int pad);
 
     // ---- Message thread: audio clips (all return -1 / false when nothing was done)

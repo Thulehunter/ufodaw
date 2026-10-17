@@ -156,8 +156,8 @@ class SamplerPanel : public juce::Component
 public:
     // `loadFile` puts a file into this sampler (true if it worked). Drum pads use the panel with allowSlice = false.
     SamplerPanel (Sampler& s, std::function<bool (const juce::File&)> loadFile, std::function<void()> onChanged, std::function<void (bool)> onPlay,
-                  bool allowSlice = true)
-        : sampler (s), loader (std::move (loadFile)), changed (std::move (onChanged)), play (std::move (onPlay)), slicesAllowed (allowSlice),
+                  bool allowSlice = true, std::function<bool (double)> stretchFile = nullptr)
+        : sampler (s), loader (std::move (loadFile)), changed (std::move (onChanged)), play (std::move (onPlay)), slicesAllowed (allowSlice), stretcher (std::move (stretchFile)),
           waveform (s, [this] { changedFn(); }, [this] (const juce::File& f) { load (f); })
     {
         auto& p = sampler.params;
@@ -239,6 +239,10 @@ public:
         addSlider (sustain, sustainLabel, "Sustain", 0.0, 1.0, p.sustain, 0.0, "", 2, [this] (double v) { sampler.params.sustain = (float) v; });
         addSlider (release, releaseLabel, "Release", 0.002, 8.0, p.release, 0.3, " s", 3, [this] (double v) { sampler.params.release = (float) v; });
         addSlider (slices, slicesLabel, "Slices", 1.0, 32.0, p.slices, 0.0, "", 0, [this] (double v) { sampler.params.slices = (int) v; waveform.repaint(); });
+        addSlider (stretch, stretchLabel, "Stretch", 0.25, 4.0, sampler.getStretch(), 1.0, " x", 2, [] (double) {});
+        stretch.setTooltip ("Time-stretch: 2 = twice as long, 0.5 = twice as fast. The pitch stays the same (Rubber Band, applied when you let go)");
+        stretch.onValueChange = [this] { if (! stretch.isMouseButtonDown()) applyStretch(); };
+        stretch.onDragEnd = [this] { applyStretch(); };
         slices.setNumDecimalPlacesToDisplay (0);
         slices.setRange (1.0, 32.0, 1.0);
 
@@ -258,7 +262,7 @@ public:
 
         refreshName();
         refreshVisibility();
-        setSize (780, 452);
+        setSize (780, 482);
     }
 
     void paint (juce::Graphics& g) override { g.fillAll (Theme::panel); }
@@ -285,7 +289,7 @@ public:
         waveform.setBounds (r.removeFromTop (190));
         r.removeFromTop (10);
 
-        auto columns = r.removeFromTop (4 * 30);
+        auto columns = r.removeFromTop (5 * 30);
         auto left = columns.removeFromLeft (columns.getWidth() / 2 - 8);
         columns.removeFromLeft (16);
         auto row = [] (juce::Rectangle<int>& area, juce::Label& l, juce::Component& c)
@@ -298,6 +302,7 @@ public:
         row (left, volumeLabel, volume);
         row (left, velocityLabel, velocity);
         row (left, filterLabel, filter);
+        row (left, stretchLabel, stretch);
         row (columns, attackLabel, attack);
         row (columns, decayLabel, decay);
         row (columns, sustainLabel, sustain);
@@ -316,12 +321,28 @@ public:
 
     void refreshName()
     {
+        stretch.setValue (sampler.getStretch(), juce::dontSendNotification);
+        stretch.setEnabled (stretcher != nullptr && sampler.getSample() != nullptr);
         nameLabel.setText (sampler.getSample() == nullptr ? juce::String ("No sample") : sampler.getName(), juce::dontSendNotification);
         waveform.repaint();
     }
 
 private:
     void changedFn() { if (changed) changed(); }
+
+    void applyStretch()
+    {
+        if (stretcher == nullptr || std::abs (stretch.getValue() - sampler.getStretch()) < 0.001)
+            return;
+        juce::MouseCursor::showWaitCursor();
+        const bool ok = stretcher (stretch.getValue());
+        juce::MouseCursor::hideWaitCursor();
+        if (! ok)
+            juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Cannot stretch", "The sample could not be time-stretched.");
+        stretch.setValue (sampler.getStretch(), juce::dontSendNotification);
+        waveform.repaint();
+        changedFn();
+    }
 
     void refreshVisibility()
     {
@@ -405,6 +426,7 @@ private:
     std::function<void()> changed;
     std::function<void (bool)> play;
     bool slicesAllowed = true;
+    std::function<bool (double)> stretcher;
     bool playing = false;
     std::unique_ptr<juce::FileChooser> chooser;
 
@@ -412,8 +434,8 @@ private:
     juce::TextButton loadButton { "Load..." }, detectButton { "Detect pitch" }, playButton { "Play" };
     juce::Label nameLabel, rootLabel, hint;
     juce::ComboBox modeBox, rootBox;
-    juce::Label tuneLabel, volumeLabel, velocityLabel, filterLabel, attackLabel, decayLabel, sustainLabel, releaseLabel, slicesLabel;
-    juce::Slider tune, volume, velocity, filter, attack, decay, sustain, release, slices;
+    juce::Label stretchLabel, tuneLabel, volumeLabel, velocityLabel, filterLabel, attackLabel, decayLabel, sustainLabel, releaseLabel, slicesLabel;
+    juce::Slider stretch, tune, volume, velocity, filter, attack, decay, sustain, release, slices;
     juce::ToggleButton loopToggle { "Loop" }, reverseToggle { "Reverse" };
 };
 
@@ -422,11 +444,12 @@ class SamplerWindow : public juce::DocumentWindow
 {
 public:
     SamplerWindow (const juce::String& title, Sampler& s, std::function<bool (const juce::File&)> loadFile, std::function<void()> onChanged,
-                   std::function<void (bool)> onPlay, std::function<void()> onClosed, bool allowSlice = true)
+                   std::function<void (bool)> onPlay, std::function<void()> onClosed, bool allowSlice = true,
+                   std::function<bool (double)> stretchFile = nullptr)
         : juce::DocumentWindow (title, Theme::background, juce::DocumentWindow::closeButton), closed (std::move (onClosed))
     {
         setUsingNativeTitleBar (true);
-        setContentOwned (new SamplerPanel (s, std::move (loadFile), std::move (onChanged), std::move (onPlay), allowSlice), true);
+        setContentOwned (new SamplerPanel (s, std::move (loadFile), std::move (onChanged), std::move (onPlay), allowSlice, std::move (stretchFile)), true);
         setResizable (false, false);
         centreWithSize (getWidth(), getHeight());
         setVisible (true);

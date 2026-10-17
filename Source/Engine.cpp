@@ -3190,3 +3190,29 @@ bool Engine::renderToFile (const juce::File& file, double seconds, const RenderO
     }
     return ok;
 }
+
+// The sampler plays a time-stretched copy of the sample it was given (Rubber Band, offline); the original is kept, so any ratio can be tried.
+bool Engine::setSamplerStretch (Sampler& s, double timeRatio)
+{
+    const auto original = s.getOriginal();
+    if (original == nullptr)
+        return false;
+    timeRatio = juce::jlimit (0.1, 8.0, timeRatio);
+
+    std::shared_ptr<const juce::AudioBuffer<float>> result = original;
+    if (std::abs (timeRatio - 1.0) > 0.001)
+    {
+        auto processed = Stretch::process (*original, 0, original->getNumSamples(), s.getSampleRate(), timeRatio, 0.0, nullptr);
+        if (processed == nullptr || processed->getNumSamples() < 2)
+            return false;
+        result = processed;
+    }
+    else
+        timeRatio = 1.0;
+
+    const juce::ScopedLock sl (lock);
+    if (s.getOriginal() != original)
+        return false;   // another sample was loaded meanwhile
+    s.setStretched (std::move (result), timeRatio);
+    return true;
+}

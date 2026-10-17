@@ -1752,7 +1752,7 @@ MainComponent::MainComponent()
 }
 
 // How a sampler plays, as saved in the project (the sample itself is a file next to it)
-static void writeSamplerParams (juce::DynamicObject& so, const Sampler::Params& sp)
+static void writeSamplerParams (juce::DynamicObject& so, const Sampler::Params& sp, double stretch)
 {
     so.setProperty ("mode", sp.mode.load());
     so.setProperty ("root", sp.rootNote.load());
@@ -1771,6 +1771,8 @@ static void writeSamplerParams (juce::DynamicObject& so, const Sampler::Params& 
     so.setProperty ("volume", (double) sp.volume.load());
     so.setProperty ("velocity", (double) sp.velocitySens.load());
     so.setProperty ("slices", sp.slices.load());
+    if (std::abs (stretch - 1.0) > 0.001)
+        so.setProperty ("stretch", stretch);   // the time-stretch ratio (applied again to the sample when the project opens)
 }
 
 static void readSamplerParams (const juce::var& sv, Sampler::Params& sp)
@@ -2280,7 +2282,9 @@ void MainComponent::openSampler (Track& t)
             if (safe != nullptr && safe->engine.indexOfTrack (tr) >= 0 && tr->sampler != nullptr)
                 safe->engine.previewNote (*tr, tr->sampler->params.rootNote.load(), down, 0.9f);
         },
-        [safe] { juce::MessageManager::callAsync ([safe] { if (safe != nullptr) safe->samplerWindow.reset(); }); });
+        [safe] { juce::MessageManager::callAsync ([safe] { if (safe != nullptr) safe->samplerWindow.reset(); }); },
+        true,
+        [safe, tr] (double ratio) { return safe != nullptr && tr->sampler != nullptr && safe->engine.setSamplerStretch (*tr->sampler, ratio); });
 }
 
 void MainComponent::openPadSampler (Track& t, int pad)
@@ -2299,7 +2303,8 @@ void MainComponent::openPadSampler (Track& t, int pad)
                 safe->engine.previewNote (*tr, tr->kit->getPad (pad).note, down, 0.9f);
         },
         [safe] { juce::MessageManager::callAsync ([safe] { if (safe != nullptr) safe->padSamplerWindow.reset(); }); },
-        false);   // (no slice mode on a pad)
+        false,   // (no slice mode on a pad)
+        [safe, tr, pad] (double ratio) { return safe != nullptr && tr->kit != nullptr && safe->engine.setSamplerStretch (tr->kit->getPad (pad).sampler, ratio); });
 }
 
 void MainComponent::openDrumRack (Track& t, int selectPad)
@@ -4324,7 +4329,7 @@ void MainComponent::saveProject (const juce::File& file, SaveKind kind)
                     po->setProperty ("mute", pd.mute.load());
                     po->setProperty ("solo", pd.solo.load());
                     po->setProperty ("choke", pd.chokeGroup.load());
-                    writeSamplerParams (*po, pd.sampler.params);
+                    writeSamplerParams (*po, pd.sampler.params, pd.sampler.getStretch());
                     rack.add (juce::var (po));
                 }
                 o->setProperty ("drumRack", rack);
@@ -4335,7 +4340,7 @@ void MainComponent::saveProject (const juce::File& file, SaveKind kind)
                 auto* so = new juce::DynamicObject();
                 if (t->sampler->getFile() != juce::File())
                     so->setProperty ("file", projectFilePath ? projectFilePath (t->sampler->getFile()) : t->sampler->getFile().getRelativePathFrom (baseDir));
-                writeSamplerParams (*so, t->sampler->params);
+                writeSamplerParams (*so, t->sampler->params, t->sampler->getStretch());
                 o->setProperty ("sampler", juce::var (so));
             }
         }
@@ -4827,6 +4832,8 @@ void MainComponent::loadProject (const juce::File& file)
                 const auto sampleFile = baseDir.getChildFile (sv["file"].toString());
                 if (! engine.loadSamplerSample (*t, sampleFile))
                     missing.add (sampleFile.getFullPathName());
+                else if (const double st = sv.getProperty ("stretch", 1.0); st != 1.0)
+                    engine.setSamplerStretch (*t->sampler, st);
             }
         }
 
@@ -4853,6 +4860,8 @@ void MainComponent::loadProject (const juce::File& file)
                     pd.solo = (bool) pv.getProperty ("solo", false);
                     pd.chokeGroup = (int) pv.getProperty ("choke", 0);
                     readSamplerParams (pv, pd.sampler.params);
+                    if (const double st = pv.getProperty ("stretch", 1.0); st != 1.0 && pd.sampler.getSample() != nullptr)
+                        engine.setSamplerStretch (pd.sampler, st);
                 }
         t->gain = (float) (double) item.getProperty ("gain", 0.8);
         t->pan = (float) (double) item.getProperty ("pan", 0.0);

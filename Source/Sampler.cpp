@@ -4,6 +4,8 @@
 void Sampler::setSample (std::shared_ptr<const juce::AudioBuffer<float>> buffer, double rate, const juce::File& newFile, const juce::String& newName)
 {
     reset();
+    original = buffer;
+    stretchRatio = 1.0;
     sample = std::move (buffer);
     sampleRate = rate > 0.0 ? rate : 44100.0;
     file = newFile;

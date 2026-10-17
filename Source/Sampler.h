@@ -38,6 +38,9 @@ public:
     // Message thread (callers hold the engine lock while changing a sampler that is in use)
     void setSample (std::shared_ptr<const juce::AudioBuffer<float>> buffer, double rate, const juce::File& file, const juce::String& name);
     std::shared_ptr<const juce::AudioBuffer<float>> getSample() const { return sample; }
+    std::shared_ptr<const juce::AudioBuffer<float>> getOriginal() const { return original; }   // the sample as loaded (before time-stretch)
+    double getStretch() const { return stretchRatio; }                                          // 1 = as loaded; 2 = twice as long, same pitch
+    void setStretched (std::shared_ptr<const juce::AudioBuffer<float>> buffer, double ratio) { reset(); sample = std::move (buffer); stretchRatio = ratio; }
     double getSampleRate() const { return sampleRate; }
     const juce::File& getFile() const { return file; }
     const juce::String& getName() const { return name; }
@@ -72,7 +75,8 @@ private:
 
     void start (int note, float velocity);
 
-    std::shared_ptr<const juce::AudioBuffer<float>> sample;
+    std::shared_ptr<const juce::AudioBuffer<float>> sample, original;
+    double stretchRatio = 1.0;
     double sampleRate = 44100.0;
     juce::File file;
     juce::String name;
