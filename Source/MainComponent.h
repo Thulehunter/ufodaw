@@ -113,6 +113,7 @@ public:
     juce::Component& getLaneHolder() { return laneHolder; }
     Track* trackAtY (int yInLaneHolder) const;       // the track whose lane contains this y, or nullptr
     void setLoopRegion (double startSeconds, double endSeconds);   // also switches looping on
+    void openInstrumentEditor (Track&);   // the plugin window of the track's instrument (or first effect); the VST panel if none
     double getPixelsPerSecond() const { return pixelsPerSecond; }
     int getScrollX() const { return laneViewport.getViewPositionX(); }
     double beatSeconds() const;

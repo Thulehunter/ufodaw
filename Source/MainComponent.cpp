@@ -14,10 +14,12 @@ public:
     TrackHeader (Track& t, std::function<void (Track*)> onRemove, std::function<void()> onBeginEdit,
                  std::function<void (Track&, juce::Component&)> onOpenPlugins,
                  std::function<void (Track&, juce::Component&)> onOpenAutomation,
-                 std::function<double()> onPosition)
+                 std::function<double()> onPosition,
+                 std::function<void (Track&)> onOpenEditor)
         : track (t), remove (std::move (onRemove)), beginEdit (std::move (onBeginEdit)), openPlugins (std::move (onOpenPlugins)),
-          openAutomation (std::move (onOpenAutomation)), position (std::move (onPosition))
+          openAutomation (std::move (onOpenAutomation)), position (std::move (onPosition)), openEditor (std::move (onOpenEditor))
     {
+        nameLabel.setInterceptsMouseClicks (false, false);   // so double-clicking the name reaches the header
         nameLabel.setText (track.name, juce::dontSendNotification);
         nameLabel.setFont (juce::FontOptions (14.0f, juce::Font::bold));
         addAndMakeVisible (nameLabel);
@@ -71,6 +73,12 @@ public:
     }
 
     Track& getTrack() { return track; }
+
+    void mouseDoubleClick (const juce::MouseEvent& e) override
+    {
+        if (e.y < 30)   // the name row
+            openEditor (track);
+    }
 
     void paint (juce::Graphics& g) override
     {
@@ -164,6 +172,7 @@ private:
     std::function<void (Track&, juce::Component&)> openPlugins;
     std::function<void (Track&, juce::Component&)> openAutomation;
     std::function<double()> position;
+    std::function<void (Track&)> openEditor;
     float shown = 0.0f;
 
     juce::Label nameLabel;
@@ -413,13 +422,17 @@ public:
 
     void mouseDoubleClick (const juce::MouseEvent& e) override
     {
-        if (track.type != Track::Type::Midi)
+        if (track.type != Track::Type::Midi || track.autoEditId.isNotEmpty())
             return;
 
         const double pps = main.getPixelsPerSecond();
         for (auto& h : hits())
             if (rectFor (h.start, h.length, pps).contains (e.getPosition()))
+            {
+                if (h.midi && track.instrument != nullptr)   // double-click on a clip: open the instrument's own window
+                    main.openInstrumentEditor (track);
                 return;
+            }
 
         // empty spot on a MIDI track: new two-bar clip at the bar under the cursor
         const double bar = main.barSeconds();
@@ -1040,6 +1053,18 @@ void MainComponent::setLoopRegion (double a, double b)
     repaint();
 }
 
+void MainComponent::openInstrumentEditor (Track& t)
+{
+    if (t.instrument != nullptr)
+        pluginHost.showEditor (*t.instrument);
+    else if (! t.inserts.empty())
+        pluginHost.showEditor (*t.inserts.front());
+    else
+        for (auto* header : headers)   // no plugin yet: show the panel where one can be chosen
+            if (&header->getTrack() == &t)
+                openPlugins (t, *header);
+}
+
 void MainComponent::openPlugins (Track& t, juce::Component& anchor)
 {
     juce::CallOutBox::launchAsynchronously (std::make_unique<PluginPanel> (t, engine, pluginHost, [this] { beginEdit(); }),
@@ -1305,7 +1330,8 @@ void MainComponent::addTrackUI (Track& t)
     }, [this] { beginEdit(); },
        [this] (Track& tr, juce::Component& anchor) { openPlugins (tr, anchor); },
        [this] (Track& tr, juce::Component& anchor) { openAutomation (tr, anchor); },
-       [this] { return engine.getPositionSeconds(); }));
+       [this] { return engine.getPositionSeconds(); },
+       [this] (Track& tr) { openInstrumentEditor (tr); }));
     headerHolder.addAndMakeVisible (header);
 
     auto* lane = lanes.add (new TrackLane (*this, t));

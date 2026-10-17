@@ -499,6 +499,10 @@ PianoRoll::PianoRoll (MainComponent& m) : main (m)
     closeButton.onClick = [this] { if (onClose) onClose(); };
     addAndMakeVisible (closeButton);
 
+    pluginButton.setTooltip ("Open the VST instrument's own window");
+    pluginButton.onClick = [this] { if (track != nullptr) main.openInstrumentEditor (*track); };
+    addChildComponent (pluginButton);
+
     holder.addAndMakeVisible (*keys);
     holder.addAndMakeVisible (*grid);
     viewport.setViewedComponent (&holder, false);
@@ -515,6 +519,8 @@ void PianoRoll::showClip (Track* t, int id)
     clipId = id;
     grid->setClip (t, id);
     velocity->setClip (t, id);
+    toolbarShowsPlugin = ! (t != nullptr && t->instrument != nullptr);   // force updateToolbar() to apply
+    updateToolbar();
 
     if (t != nullptr)
     {
@@ -547,8 +553,21 @@ bool PianoRoll::stillValid() const
 
 bool PianoRoll::deleteSelectedNote() { return grid->deleteSelected(); }
 
+void PianoRoll::updateToolbar()
+{
+    const bool plugin = track != nullptr && track->instrument != nullptr;
+    if (plugin == toolbarShowsPlugin)
+        return;
+    toolbarShowsPlugin = plugin;
+
+    pluginButton.setVisible (plugin);
+    for (juce::Component* c : std::initializer_list<juce::Component*> { &waveform, &attackLabel, &attack, &releaseLabel, &release, &cutoffLabel, &cutoff })
+        c->setVisible (! plugin);
+}
+
 void PianoRoll::repaintGrid()
 {
+    updateToolbar();   // cheap; keeps the toolbar right when a plugin is loaded or removed while the roll is open
     grid->repaint();
     velocity->repaint();
 }
@@ -578,7 +597,9 @@ void PianoRoll::resized()
     auto bar = getLocalBounds().removeFromTop (toolbarHeight).reduced (8, 5);
     closeButton.setBounds (bar.removeFromRight (26));
     title.setBounds (bar.removeFromLeft (MainComponent::controlsWidth - 20));
-    waveform.setBounds (bar.removeFromLeft (100));
+    const auto waveArea = bar.removeFromLeft (100);
+    waveform.setBounds (waveArea);
+    pluginButton.setBounds (waveArea.withWidth (130));
     bar.removeFromLeft (14);
     attackLabel.setBounds (bar.removeFromLeft (46));
     attack.setBounds (bar.removeFromLeft (110));

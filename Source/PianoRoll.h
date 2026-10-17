@@ -35,6 +35,7 @@ public:
 
 private:
     void applySynthParams();
+    void updateToolbar();   // plugin-instrument tracks show a "Plugin window" button instead of the built-in synth controls
 
     MainComponent& main;
     Track* track = nullptr;
@@ -44,7 +45,8 @@ private:
     juce::ComboBox waveform;
     juce::Label attackLabel { {}, "Attack" }, releaseLabel { {}, "Release" }, cutoffLabel { {}, "Cutoff" };
     juce::Slider attack, release, cutoff;
-    juce::TextButton closeButton { "x" };
+    juce::TextButton closeButton { "x" }, pluginButton { "Plugin window" };
+    bool toolbarShowsPlugin = false;
 
     juce::Viewport viewport;
     juce::Component holder;

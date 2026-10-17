@@ -83,6 +83,7 @@ void PluginPanel::chooseInstrument()
         return;
     }
     engine.setInstrument (track, slot);
+    host.showEditor (*slot);   // so the sound can be set up right away
 }
 
 void PluginPanel::addEffectMenu()
@@ -113,6 +114,7 @@ void PluginPanel::addEffectMenu()
                                 return;
                             }
                             engine.addInsert (track, slot);
+                            host.showEditor (*slot);
                             rebuild();
                         });
 }

@@ -163,7 +163,8 @@ void PluginHost::showEditor (PluginSlot& slot)
             w->toFront (true);
             return;
         }
-    editors.add (new EditorWindow (*this, slot));
+    auto* window = editors.add (new EditorWindow (*this, slot));
+    window->toFront (true);   // make sure it isn't hidden behind the main window
 }
 
 void PluginHost::closeEditorsFor (const PluginSlot* slot)
