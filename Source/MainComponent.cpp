@@ -2268,8 +2268,9 @@ void MainComponent::showClipMenu (Track& track, int clipId, double at, juce::Com
 
     juce::Component::SafePointer<MainComponent> safe (this);
     Track* tr = &track;
-    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&source).withTargetScreenArea (
-                         juce::Rectangle<int> (juce::Desktop::getMousePosition(), juce::Point<int>()).expanded (1)),
+    juce::ignoreUnused (source);
+    m.showMenuAsync (juce::PopupMenu::Options().withTargetScreenArea (
+                         juce::Rectangle<int> (1, 1).withCentre (juce::Desktop::getMousePosition())),
                      [safe, tr, clipId, when] (int r)
     {
         if (safe == nullptr || r == 0)
