@@ -8,6 +8,8 @@ Engine::Engine()
     writerThread.startThread();
     noteEvents.reserve (2048);
     synthScratch.assign (16384, 0.0f);
+    trackL.assign (16384, 0.0f);
+    trackR.assign (16384, 0.0f);
 }
 
 Engine::~Engine()
@@ -21,10 +23,17 @@ void Engine::prepareToPlay (int samplesPerBlock, double newRate)
     const juce::ScopedLock sl (lock);
     sampleRate = newRate;
     if ((int) synthScratch.size() < samplesPerBlock * 2)
+    {
         synthScratch.assign ((size_t) samplesPerBlock * 2, 0.0f);
+        trackL.assign ((size_t) samplesPerBlock * 2, 0.0f);
+        trackR.assign ((size_t) samplesPerBlock * 2, 0.0f);
+    }
     for (auto& t : tracks)
+    {
         if (t->voices != nullptr)
             t->voices->prepare (newRate);
+        t->fxState->prepare (newRate);
+    }
 }
 
 //==============================================================================
@@ -72,6 +81,8 @@ Track* Engine::addTrack (const juce::String& name, Track::Type type)
     auto track = std::make_unique<Track>();
     track->name = name;
     track->type = type;
+    track->fxState = std::make_unique<TrackFx>();
+    track->fxState->prepare (sampleRate);
     if (type == Track::Type::Midi)
     {
         track->voices = std::make_unique<Synth>();
@@ -456,8 +467,20 @@ bool Engine::anySynthActive() const
 void Engine::silenceSynths()
 {
     for (auto& t : tracks)
+    {
         if (t->voices != nullptr)
             t->voices->reset();
+        t->fxState->reset();
+    }
+}
+
+double Engine::getRenderTailSeconds() const
+{
+    const juce::ScopedLock sl (lock);
+    for (auto& t : tracks)
+        if (t->fx.hasTail())
+            return 3.0;
+    return 0.5;
 }
 
 //==============================================================================
@@ -513,8 +536,12 @@ void Engine::getNextAudioBlock (const juce::AudioSourceChannelInfo& info)
     {
         if (! wasRunning || pos != lastBlockEnd)   // playback started or the playhead jumped
             for (auto& t : tracks)
+            {
                 if (t->voices != nullptr)
                     t->voices->allNotesOff();
+                if (t->fx.hasTail())
+                    t->fxState->reset();   // don't replay the tail of wherever we were before
+            }
         wasRunning = true;
     }
 
@@ -578,7 +605,6 @@ void Engine::mixBlock (float* outL, float* outR, int n, juce::int64 pos, bool wi
         anySolo = anySolo || t->solo;
 
     constexpr double fadeSamples = 48.0;   // tiny fade at clip edges to avoid clicks
-    const int synthN = juce::jmin (n, (int) synthScratch.size());
 
     for (auto& t : tracks)
     {
@@ -589,27 +615,23 @@ void Engine::mixBlock (float* outL, float* outR, int n, juce::int64 pos, bool wi
         const float gl = std::cos (angle) * juce::MathConstants<float>::sqrt2 * g;
         const float gr = std::sin (angle) * juce::MathConstants<float>::sqrt2 * g;
 
+        // Each track is built in its own stereo buffer, then goes through its effects
+        // and the fader/pan on the way into the master mix.
+        float* const bufL = trackL.data();
+        float* const bufR = trackR.data();
+        const int nn = juce::jmin (n, (int) trackL.size());
+        std::fill (bufL, bufL + nn, 0.0f);
+        std::fill (bufR, bufR + nn, 0.0f);
+
         if (t->type == Track::Type::Midi)
         {
             if (t->voices != nullptr)
             {
-                renderMidiTrack (*t, synthN, pos, running, synthScratch.data());
-                for (int i = 0; i < synthN; ++i)
-                {
-                    const float s = synthScratch[(size_t) i];
-                    peak = juce::jmax (peak, std::abs (s));
-                    if (audible)
-                    {
-                        outL[i] += s * gl;
-                        if (outR) outR[i] += s * gr;
-                    }
-                }
+                renderMidiTrack (*t, nn, pos, running, bufL);
+                std::copy (bufL, bufL + nn, bufR);
             }
-            t->level = peak * g;
-            continue;
         }
-
-        if (! running)
+        else if (! running)
         {
             t->level = 0.0f;
             continue;
@@ -628,7 +650,7 @@ void Engine::mixBlock (float* outL, float* outR, int n, juce::int64 pos, bool wi
             const auto* srcL = c.audio->getReadPointer (0);
             const auto* srcR = c.audio->getNumChannels() > 1 ? c.audio->getReadPointer (1) : srcL;
 
-            for (int i = 0; i < n; ++i)
+            for (int i = 0; i < nn; ++i)
             {
                 const double tl = (double) (pos + i);
                 if (tl < clipStart || tl >= clipEnd)
@@ -644,13 +666,21 @@ void Engine::mixBlock (float* outL, float* outR, int n, juce::int64 pos, bool wi
                                                                         (clipEnd - tl) / fadeSamples));
                 const float l = (srcL[i0] + frac * (srcL[i0 + 1] - srcL[i0])) * edge;
                 const float r = (srcR[i0] + frac * (srcR[i0 + 1] - srcR[i0])) * edge;
-                peak = juce::jmax (peak, std::abs (l), std::abs (r));
+                bufL[i] += l;
+                bufR[i] += r;
+            }
+        }
 
-                if (audible)
-                {
-                    outL[i] += l * gl;
-                    if (outR) outR[i] += r * gr;
-                }
+        if (t->fx.anyOn())
+            t->fxState->process (bufL, bufR, nn, t->fx);
+
+        for (int i = 0; i < nn; ++i)
+        {
+            peak = juce::jmax (peak, std::abs (bufL[i]), std::abs (bufR[i]));
+            if (audible)
+            {
+                outL[i] += bufL[i] * gl;
+                if (outR) outR[i] += bufR[i] * gr;
             }
         }
         t->level = peak * g;

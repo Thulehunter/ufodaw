@@ -1,5 +1,6 @@
 #include "MainComponent.h"
 #include "PianoRoll.h"
+#include "FxPanel.h"
 #include <algorithm>
 #include <map>
 
@@ -43,6 +44,13 @@ public:
 
         deleteButton.onClick = [this] { remove (&track); };
         addAndMakeVisible (deleteButton);
+
+        fxButton.setTooltip ("Effects: EQ, compressor, delay, reverb");
+        fxButton.onClick = [this]
+        {
+            juce::CallOutBox::launchAsynchronously (std::make_unique<FxPanel> (track), fxButton.getScreenBounds(), nullptr);
+        };
+        addAndMakeVisible (fxButton);
     }
 
     Track& getTrack() { return track; }
@@ -67,6 +75,8 @@ public:
         auto c = getLocalBounds().withTrimmedRight (14).reduced (8, 6);
         auto top = c.removeFromTop (20);
         deleteButton.setBounds (top.removeFromRight (22));
+        top.removeFromRight (4);
+        fxButton.setBounds (top.removeFromRight (32));
         nameLabel.setBounds (top);
         c.removeFromTop (4);
         auto buttons = c.removeFromRight (56);
@@ -81,17 +91,26 @@ public:
     {
         const float l = track.level;
         shown = l > shown ? l : shown * 0.85f;
+
+        const bool fxActive = track.fx.anyOn();
+        if (fxActive != fxShownActive)
+        {
+            fxShownActive = fxActive;
+            fxButton.setColour (juce::TextButton::buttonColourId, fxActive ? juce::Colour (0xff1f8a8a) : juce::Colour (0xff3a3d46));
+            fxButton.repaint();
+        }
         repaint();
     }
 
 private:
     Track& track;
+    bool fxShownActive = false;
     std::function<void (Track*)> remove;
     float shown = 0.0f;
 
     juce::Label nameLabel;
     juce::Slider volume, pan;
-    juce::TextButton muteButton { "M" }, soloButton { "S" }, deleteButton { "x" };
+    juce::TextButton muteButton { "M" }, soloButton { "S" }, deleteButton { "x" }, fxButton { "FX" };
 };
 
 //==============================================================================
@@ -1021,6 +1040,11 @@ void MainComponent::saveProject (const juce::File& file)
             }
             o->setProperty ("midiClips", midiList);
         }
+        auto* fo = new juce::DynamicObject();
+        t->fx.forEachFloat ([fo] (const char* name, std::atomic<float>& v) { fo->setProperty (name, (double) v.load()); });
+        t->fx.forEachBool ([fo] (const char* name, std::atomic<bool>& v) { fo->setProperty (name, v.load()); });
+        o->setProperty ("fx", juce::var (fo));
+
         trackList.add (juce::var (o));
     }
 
@@ -1104,6 +1128,15 @@ void MainComponent::loadProject (const juce::File& file)
         t->pan = (float) (double) item.getProperty ("pan", 0.0);
         t->mute = (bool) item.getProperty ("mute", false);
         t->solo = (bool) item.getProperty ("solo", false);
+
+        const auto fxv = item["fx"];
+        if (fxv.isObject())
+        {
+            t->fx.forEachFloat ([&fxv] (const char* name, std::atomic<float>& v)
+                                { if (fxv.hasProperty (name)) v = (float) (double) fxv.getProperty (name, 0.0); });
+            t->fx.forEachBool ([&fxv] (const char* name, std::atomic<bool>& v)
+                               { if (fxv.hasProperty (name)) v = (bool) fxv.getProperty (name, false); });
+        }
 
         auto loadClip = [&] (const juce::var& v)
         {
@@ -1195,7 +1228,7 @@ void MainComponent::exportDialog()
                               finishRecording();
                               engine.stop();
                               f = f.withFileExtension ("wav");
-                              const bool ok = engine.renderToFile (f, engine.getTotalLengthSeconds() + 0.5, false);
+                              const bool ok = engine.renderToFile (f, engine.getTotalLengthSeconds() + engine.getRenderTailSeconds(), false);
                               juce::AlertWindow::showMessageBoxAsync (ok ? juce::MessageBoxIconType::InfoIcon
                                                                          : juce::MessageBoxIconType::WarningIcon,
                                                                       ok ? "Export finished" : "Export failed",

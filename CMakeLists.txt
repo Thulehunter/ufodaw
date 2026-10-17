@@ -17,6 +17,8 @@ target_sources(MiniDAW PRIVATE
     Source/Main.cpp
     Source/Engine.cpp
     Source/Synth.cpp
+    Source/Fx.cpp
+    Source/FxPanel.cpp
     Source/PianoRoll.cpp
     Source/MainComponent.cpp)
 

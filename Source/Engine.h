@@ -6,6 +6,7 @@
 #include <memory>
 #include <vector>
 #include "Synth.h"
+#include "Fx.h"
 
 // A piece of audio placed on the timeline. The sample data is immutable and shared, so
 // splitting and duplicating clips is free; only start/offset/length differ.
@@ -53,6 +54,9 @@ struct Track
 
     SynthParams synth;                  // MIDI tracks
     std::unique_ptr<Synth> voices;      // audio-thread state, created for MIDI tracks
+
+    FxParams fx;                        // effect chain settings
+    std::unique_ptr<TrackFx> fxState;   // audio-thread state of the chain
 
     std::atomic<float> gain { 0.8f };
     std::atomic<float> pan { 0.0f };
@@ -106,6 +110,7 @@ public:
     void previewNote (const Track&, int pitch, bool on);
 
     double getTotalLengthSeconds() const;
+    double getRenderTailSeconds() const;   // extra time to render after the last clip (delay/reverb tails)
 
     // Mixes the whole project offline (faster than realtime) into a 24-bit stereo WAV.
     bool renderToFile (const juce::File&, double lengthSeconds, bool withMetronome);
@@ -172,7 +177,8 @@ private:
     std::array<PreviewEvent, previewQueueSize> previewQueue;
 
     std::vector<NoteEvent> noteEvents;     // reused every block, reserved up front
-    std::vector<float> synthScratch;
+    std::vector<float> synthScratch;       // mono synth output
+    std::vector<float> trackL, trackR;     // one track's stereo signal before fader/pan
     juce::int64 lastBlockEnd = -1;
     bool wasRunning = false;
 
