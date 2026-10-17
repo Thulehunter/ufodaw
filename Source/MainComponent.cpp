@@ -606,18 +606,29 @@ public:
 
         dragId = -1;
         resizing = false;
+        rightPending = rightDragging = false;
+
+        // Right button: a click opens the clip menu (on release), a drag sets the loop region (Shift: the punch region).
+        if (e.mods.isPopupMenu())
+        {
+            rightPending = true;
+            rightClipId = -1;
+            rightTime = t;
+            for (auto& h : hits())
+                if (rectFor (h.start, h.length, pps).contains (e.getPosition()))
+                {
+                    rightClipId = h.id;
+                    break;
+                }
+            main.selectClip (rightClipId >= 0 ? &track : nullptr, rightClipId);
+            return;
+        }
+
         for (auto& h : hits())   // topmost first
         {
             const auto r = rectFor (h.start, h.length, pps);
             if (! r.contains (e.getPosition()))
                 continue;
-
-            if (e.mods.isPopupMenu())
-            {
-                main.selectClip (&track, h.id);
-                main.showClipMenu (track, h.id, t, *this);
-                return;
-            }
 
             dragId = h.id;
             dragTrack = &track;
@@ -627,13 +638,6 @@ public:
             grabOffset = t - h.start;
             resizing = h.midi && r.getWidth() > 16 && e.x >= r.getRight() - 6;   // right edge of a MIDI clip
             main.selectClip (&track, dragId);
-            return;
-        }
-
-        if (e.mods.isPopupMenu())
-        {
-            main.selectClip (nullptr, -1);
-            main.showClipMenu (track, -1, t, *this);
             return;
         }
 
@@ -676,6 +680,20 @@ public:
         }
 
         const double t = juce::jmax (0.0, e.x / main.getPixelsPerSecond());
+
+        if (rightPending)
+        {
+            if (! rightDragging && e.getDistanceFromDragStart() < 5)
+                return;   // still a click
+            rightDragging = true;
+            const double a = main.snapTime (rightTime), b = main.snapTime (t);
+            if (e.mods.isShiftDown())
+                main.setPunchRegion (juce::jmin (a, b), juce::jmax (a, b));
+            else
+                main.setLoopRegion (juce::jmin (a, b), juce::jmax (a, b));
+            return;
+        }
+
         if (dragId < 0)
         {
             main.setPlayhead (t);   // scrub
@@ -728,7 +746,14 @@ public:
         main.clipsChanged();
     }
 
-    void mouseUp (const juce::MouseEvent&) override { dragId = -1; autoDrag = -1; }
+    void mouseUp (const juce::MouseEvent&) override
+    {
+        if (rightPending && ! rightDragging)
+            main.showClipMenu (track, rightClipId, rightTime, *this);
+        rightPending = rightDragging = false;
+        dragId = -1;
+        autoDrag = -1;
+    }
 
     void mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& w) override
     {
@@ -1003,6 +1028,9 @@ private:
     int dragId = -1;
     Track* dragTrack = nullptr;   // the track the dragged clip currently lives on
     bool resizing = false;
+    bool rightPending = false, rightDragging = false;   // right button: click = menu, drag = loop region
+    int rightClipId = -1;
+    double rightTime = 0.0;
     bool edited = false;   // true once this drag has taken its undo snapshot
     double grabOffset = 0.0;
     double dragStart = 0.0;

@@ -116,7 +116,7 @@ An arpeggiator or similar plugin that should change the notes of one track goes 
 | Rewind | `Enter` |
 | Record (audio, or MIDI when a MIDI track is armed) | `R` |
 | Loop on / off | `L` (`Shift+L` loops the selected clip) |
-| Set the loop region | right-drag on the ruler |
+| Set the loop region | right-drag on the ruler or in any track (a right-click without dragging opens the clip menu) |
 | Add an empty audio track | **+ Track** > *Empty audio track* (it starts armed for recording); drop audio files on it later, several files go one after the other |
 | Record into a specific audio track | click the red dot left of the track name to arm it, then **Record** (`R`). Arm several tracks to record them all at once. Without an armed track the recording becomes a new track from inputs 1+2 |
 | Punch in/out | turn on **Punch** (`P`); the region is the selected clip, or two bars at the playhead. Change it with **Shift + right-drag** on the ruler (red). Press Record: playback starts a bar before the region, records inside it, and the recording closes itself at the punch-out |
