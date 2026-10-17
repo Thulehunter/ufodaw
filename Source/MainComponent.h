@@ -152,6 +152,7 @@ private:
     void toggleLoop();
     void loopToSelection();
     void openPlugins (Track&, juce::Component& anchor);
+    void openAutomation (Track&, juce::Component& anchor);
     juce::var pluginsToVar (const Track&) const;
     void pluginsFromVar (Track&, const juce::var& trackVar, juce::StringArray& problems);
 

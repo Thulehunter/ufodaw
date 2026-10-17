@@ -44,6 +44,41 @@ struct MidiClip
     double end() const { return start + length; }
 };
 
+// A breakpoint envelope: linear between points, flat before the first and after the last.
+struct AutoPoint
+{
+    double time = 0.0;   // seconds on the timeline
+    float value = 0.0f;
+};
+
+enum AutoParam { AutoNone = 0, AutoVolume = 1, AutoPan = 2 };
+
+struct AutomationLane
+{
+    std::vector<AutoPoint> points;       // sorted by time, guarded by Engine::lock
+    std::atomic<bool> active { true };   // when false the fader/pan knob is used as usual
+};
+
+inline float evalAutomation (const std::vector<AutoPoint>& pts, double time, float fallback)
+{
+    if (pts.empty())
+        return fallback;
+    if (time <= pts.front().time)
+        return pts.front().value;
+    if (time >= pts.back().time)
+        return pts.back().value;
+
+    for (size_t i = 1; i < pts.size(); ++i)
+        if (time < pts[i].time)
+        {
+            const auto& a = pts[i - 1];
+            const auto& b = pts[i];
+            const double span = b.time - a.time;
+            return span <= 0.0 ? b.value : a.value + (float) ((time - a.time) / span) * (b.value - a.value);
+        }
+    return pts.back().value;
+}
+
 struct Track
 {
     enum class Type { Audio, Midi };
@@ -70,6 +105,10 @@ struct Track
     std::atomic<bool> mute { false };
     std::atomic<bool> solo { false };
     std::atomic<float> level { 0.0f };
+
+    AutomationLane autoVolume, autoPan;                   // fader range 0..1.5, pan -1..1
+    std::atomic<float> effGain { 0.8f }, effPan { 0.0f }; // what the mixer last used (differs from gain/pan when automated)
+    int autoEditParam = AutoNone;                         // UI only: which envelope the lane is currently editing
 };
 
 // A copy of everything the user can edit, used for undo/redo. Audio sample data is shared,
@@ -86,6 +125,8 @@ struct TrackState
     float synthValues[5] = {};          // attack, decay, sustain, release, cutoff
     std::vector<float> fxFloats;        // FxParams::forEachFloat order
     std::vector<char> fxBools;          // FxParams::forEachBool order
+    std::vector<AutoPoint> autoVolume, autoPan;
+    bool autoVolumeActive = true, autoPanActive = true;
     std::shared_ptr<PluginSlot> instrument;                 // plugins are shared with the live project,
     std::vector<std::shared_ptr<PluginSlot>> inserts;       // so undo restores which ones are present, not their settings
 };
@@ -137,6 +178,11 @@ public:
     int duplicateClip (Track&, int clipId);                                 // id of the copy, placed after the original
     bool deleteClip (Track&, int clipId);
     bool moveClipToTrack (Track& from, Track& to, int clipId);              // same type only, id is kept
+
+    // ---- Message thread: automation envelopes (param is AutoVolume or AutoPan)
+    std::vector<AutoPoint> getAutomation (const Track&, int param) const;
+    void setAutomation (Track&, int param, std::vector<AutoPoint> points);   // sorted for you
+    void setAutomationActive (Track&, int param, bool active);
 
     // ---- Message thread: hosted plugins
     void preparePlugin (PluginSlot&);                           // layout + prepareToPlay for the current audio setup

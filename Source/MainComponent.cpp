@@ -11,8 +11,11 @@ class TrackHeader : public juce::Component
 {
 public:
     TrackHeader (Track& t, std::function<void (Track*)> onRemove, std::function<void()> onBeginEdit,
-                 std::function<void (Track&, juce::Component&)> onOpenPlugins)
-        : track (t), remove (std::move (onRemove)), beginEdit (std::move (onBeginEdit)), openPlugins (std::move (onOpenPlugins))
+                 std::function<void (Track&, juce::Component&)> onOpenPlugins,
+                 std::function<void (Track&, juce::Component&)> onOpenAutomation,
+                 std::function<double()> onPosition)
+        : track (t), remove (std::move (onRemove)), beginEdit (std::move (onBeginEdit)), openPlugins (std::move (onOpenPlugins)),
+          openAutomation (std::move (onOpenAutomation)), position (std::move (onPosition))
     {
         nameLabel.setText (track.name, juce::dontSendNotification);
         nameLabel.setFont (juce::FontOptions (14.0f, juce::Font::bold));
@@ -60,6 +63,10 @@ public:
         vstButton.setTooltip ("VST3 plugins: instrument and effects");
         vstButton.onClick = [this] { openPlugins (track, vstButton); };
         addAndMakeVisible (vstButton);
+
+        autoButton.setTooltip ("Automation of volume and pan");
+        autoButton.onClick = [this] { openAutomation (track, autoButton); };
+        addAndMakeVisible (autoButton);
     }
 
     Track& getTrack() { return track; }
@@ -88,6 +95,8 @@ public:
         fxButton.setBounds (top.removeFromRight (32));
         top.removeFromRight (4);
         vstButton.setBounds (top.removeFromRight (38));
+        top.removeFromRight (4);
+        autoButton.setBounds (top.removeFromRight (26));
         nameLabel.setBounds (top);
         c.removeFromTop (4);
         auto buttons = c.removeFromRight (56);
@@ -111,6 +120,26 @@ public:
             fxButton.repaint();
         }
 
+        // Automated controls follow the envelope at the playhead and can't be dragged by hand.
+        const bool volAuto = track.autoVolume.active && ! track.autoVolume.points.empty();
+        const bool panAuto = track.autoPan.active && ! track.autoPan.points.empty();
+        volume.setEnabled (! volAuto);
+        pan.setEnabled (! panAuto);
+        if (volAuto && ! volume.isMouseButtonDown())
+            volume.setValue (evalAutomation (track.autoVolume.points, position(), track.gain), juce::dontSendNotification);
+        if (panAuto && ! pan.isMouseButtonDown())
+            pan.setValue (evalAutomation (track.autoPan.points, position(), track.pan), juce::dontSendNotification);
+
+        const int autoState = track.autoEditParam != AutoNone ? 2 : (volAuto || panAuto) ? 1 : 0;
+        if (autoState != autoShownState)
+        {
+            autoShownState = autoState;
+            autoButton.setColour (juce::TextButton::buttonColourId, autoState == 2 ? juce::Colour (0xffe0922f)
+                                                                  : autoState == 1 ? juce::Colour (0xff1f8a8a)
+                                                                                   : juce::Colour (0xff3a3d46));
+            autoButton.repaint();
+        }
+
         const bool hasPlugins = track.instrument != nullptr || ! track.inserts.empty();
         if (hasPlugins != vstShownActive)
         {
@@ -125,14 +154,17 @@ private:
     Track& track;
     bool fxShownActive = false;
     bool vstShownActive = false;
+    int autoShownState = -1;
     std::function<void (Track*)> remove;
     std::function<void()> beginEdit;
     std::function<void (Track&, juce::Component&)> openPlugins;
+    std::function<void (Track&, juce::Component&)> openAutomation;
+    std::function<double()> position;
     float shown = 0.0f;
 
     juce::Label nameLabel;
     juce::Slider volume, pan;
-    juce::TextButton muteButton { "M" }, soloButton { "S" }, deleteButton { "x" }, fxButton { "FX" }, vstButton { "VST" };
+    juce::TextButton muteButton { "M" }, soloButton { "S" }, deleteButton { "x" }, fxButton { "FX" }, vstButton { "VST" }, autoButton { "A" };
 };
 
 //==============================================================================
@@ -334,6 +366,8 @@ public:
             g.drawRoundedRectangle (r.toFloat(), 4.0f, sel ? 2.0f : 1.0f);
         }
 
+        paintAutomation (g, pps);
+
         g.setColour (juce::Colour (0xff0b0c0e));
         g.drawHorizontalLine (getHeight() - 1, 0.0f, (float) getWidth());
     }
@@ -341,6 +375,12 @@ public:
     void mouseDown (const juce::MouseEvent& e) override
     {
         main.grabKeyboardFocus();
+        if (track.autoEditParam != AutoNone)
+        {
+            autoMouseDown (e);
+            return;
+        }
+
         const double pps = main.getPixelsPerSecond();
         const double t = e.x / pps;
 
@@ -391,6 +431,12 @@ public:
 
     void mouseDrag (const juce::MouseEvent& e) override
     {
+        if (track.autoEditParam != AutoNone)
+        {
+            autoMouseDrag (e);
+            return;
+        }
+
         const double t = juce::jmax (0.0, e.x / main.getPixelsPerSecond());
         if (dragId < 0)
         {
@@ -444,7 +490,7 @@ public:
         main.clipsChanged();
     }
 
-    void mouseUp (const juce::MouseEvent&) override { dragId = -1; }
+    void mouseUp (const juce::MouseEvent&) override { dragId = -1; autoDrag = -1; }
 
     void mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& w) override
     {
@@ -466,6 +512,159 @@ private:
         double pps = 0.0, offset = -1.0, length = -1.0;
         std::vector<float> values;
     };
+
+    //==========================================================================
+    // Automation envelope editing (when the track's "A" menu selected volume or pan)
+
+    static constexpr int autoMargin = 10;
+
+    float autoLo() const { return track.autoEditParam == AutoVolume ? 0.0f : -1.0f; }
+    float autoHi() const { return track.autoEditParam == AutoVolume ? 1.5f : 1.0f; }
+
+    float valueToY (float v, int param) const
+    {
+        const float lo = param == AutoVolume ? 0.0f : -1.0f, hi = param == AutoVolume ? 1.5f : 1.0f;
+        return (float) autoMargin + (1.0f - (v - lo) / (hi - lo)) * (float) (getHeight() - 2 * autoMargin);
+    }
+
+    float yToValue (int y) const
+    {
+        const float f = 1.0f - ((float) y - (float) autoMargin) / (float) (getHeight() - 2 * autoMargin);
+        return juce::jlimit (autoLo(), autoHi(), autoLo() + f * (autoHi() - autoLo()));
+    }
+
+    void paintAutomation (juce::Graphics& g, double pps)
+    {
+        const int editing = track.autoEditParam;
+        auto& engine = main.getEngine();
+
+        if (editing != AutoNone)
+        {
+            g.setColour (juce::Colours::black.withAlpha (0.45f));   // dim the clips: they can't be edited right now
+            g.fillRect (getLocalBounds());
+        }
+
+        for (int param : { AutoVolume, AutoPan })
+        {
+            const auto& lane = param == AutoVolume ? track.autoVolume : track.autoPan;
+            const bool full = param == editing;
+            if (! full && (lane.points.empty() || ! lane.active))
+                continue;
+
+            const auto pts = engine.getAutomation (track, param);
+            const auto colour = param == AutoVolume ? juce::Colour (0xffe0922f) : juce::Colour (0xffb58cff);
+            g.setColour (colour.withAlpha (full ? 1.0f : 0.5f));
+
+            if (pts.empty())
+            {
+                // nothing yet: show where the fader currently sits and how to start
+                const float y = valueToY (param == AutoVolume ? track.gain.load() : track.pan.load(), param);
+                const float dashes[] = { 5.0f, 4.0f };
+                g.drawDashedLine (juce::Line<float> (0.0f, y, (float) getWidth(), y), dashes, 2, 1.0f);
+                g.setFont (12.0f);
+                g.drawText (juce::String (param == AutoVolume ? "Volume" : "Pan") + " automation: click to add points, right-click a point to remove it",
+                            8, 4, 600, 14, juce::Justification::left);
+                continue;
+            }
+
+            juce::Path path;
+            path.startNewSubPath (0.0f, valueToY (pts.front().value, param));
+            for (auto& p : pts)
+                path.lineTo ((float) (p.time * pps), valueToY (p.value, param));
+            path.lineTo ((float) getWidth(), valueToY (pts.back().value, param));
+            g.strokePath (path, juce::PathStrokeType (full ? 2.0f : 1.0f));
+
+            if (full)
+                for (int i = 0; i < (int) pts.size(); ++i)
+                {
+                    const float x = (float) (pts[(size_t) i].time * pps), y = valueToY (pts[(size_t) i].value, param);
+                    g.setColour (i == autoDrag ? juce::Colours::white : colour);
+                    g.fillEllipse (x - 4.5f, y - 4.5f, 9.0f, 9.0f);
+                    g.setColour (juce::Colours::black);
+                    g.drawEllipse (x - 4.5f, y - 4.5f, 9.0f, 9.0f, 1.0f);
+                }
+        }
+    }
+
+    int autoHit (const std::vector<AutoPoint>& pts, juce::Point<int> p) const
+    {
+        const double pps = main.getPixelsPerSecond();
+        for (int i = 0; i < (int) pts.size(); ++i)
+            if (std::abs (p.x - pts[(size_t) i].time * pps) <= 7.0 && std::abs ((float) p.y - valueToY (pts[(size_t) i].value, track.autoEditParam)) <= 7.0f)
+                return i;
+        return -1;
+    }
+
+    double autoTime (const juce::MouseEvent& e) const
+    {
+        const double t = juce::jmax (0.0, e.x / main.getPixelsPerSecond());
+        return e.mods.isAltDown() ? t : main.snapTime (t);
+    }
+
+    void autoMouseDown (const juce::MouseEvent& e)
+    {
+        auto& engine = main.getEngine();
+        const int param = track.autoEditParam;
+        autoPts = engine.getAutomation (track, param);
+        const int hit = autoHit (autoPts, e.getPosition());
+        autoEdited = false;
+        autoDrag = -1;
+
+        if (e.mods.isPopupMenu())   // right click removes a point
+        {
+            if (hit >= 0)
+            {
+                main.beginEdit();
+                autoPts.erase (autoPts.begin() + hit);
+                engine.setAutomation (track, param, autoPts);
+                main.clipsChanged();
+            }
+            return;
+        }
+
+        if (hit >= 0)
+        {
+            autoDrag = hit;
+            repaint();
+            return;
+        }
+
+        // empty spot: new point, which can be dragged straight away
+        main.beginEdit();
+        autoEdited = true;
+        const AutoPoint np { autoTime (e), yToValue (e.y) };
+        autoPts.push_back (np);
+        std::stable_sort (autoPts.begin(), autoPts.end(), [] (const AutoPoint& a, const AutoPoint& b) { return a.time < b.time; });
+        for (int i = 0; i < (int) autoPts.size(); ++i)
+            if (autoPts[(size_t) i].time == np.time && autoPts[(size_t) i].value == np.value)
+                autoDrag = i;
+        engine.setAutomation (track, param, autoPts);
+        main.clipsChanged();
+    }
+
+    void autoMouseDrag (const juce::MouseEvent& e)
+    {
+        if (autoDrag < 0 || autoDrag >= (int) autoPts.size())
+            return;
+
+        const size_t i = (size_t) autoDrag;
+        const double minT = i > 0 ? autoPts[i - 1].time + 0.001 : 0.0;
+        const double maxT = i + 1 < autoPts.size() ? autoPts[i + 1].time - 0.001 : 1.0e9;
+        const double t = juce::jlimit (minT, juce::jmax (minT, maxT), autoTime (e));
+        const float v = yToValue (e.y);
+
+        if (! autoEdited)
+        {
+            if (std::abs (t - autoPts[i].time) < 1.0e-9 && std::abs (v - autoPts[i].value) < 1.0e-6f)
+                return;
+            main.beginEdit();
+            autoEdited = true;
+        }
+        autoPts[i].time = t;
+        autoPts[i].value = v;
+        main.getEngine().setAutomation (track, track.autoEditParam, autoPts);
+        main.clipsChanged();
+    }
 
     static juce::Rectangle<int> rectFor (double start, double length, double pps)
     {
@@ -524,6 +723,10 @@ private:
     MainComponent& main;
     Track& track;
     std::map<int, Peaks> cache;
+    std::vector<AutoPoint> autoPts;   // working copy while an envelope point is being edited
+    int autoDrag = -1;
+    bool autoEdited = false;
+
     int dragId = -1;
     Track* dragTrack = nullptr;   // the track the dragged clip currently lives on
     bool resizing = false;
@@ -802,6 +1005,43 @@ void MainComponent::openPlugins (Track& t, juce::Component& anchor)
                                             anchor.getScreenBounds(), nullptr);
 }
 
+// The "A" menu of a track header: which envelope to edit in the lane, and housekeeping.
+void MainComponent::openAutomation (Track& t, juce::Component& anchor)
+{
+    juce::PopupMenu menu;
+    menu.addItem (1, "Edit volume automation", true, t.autoEditParam == AutoVolume);
+    menu.addItem (2, "Edit pan automation", true, t.autoEditParam == AutoPan);
+    menu.addItem (3, "Stop editing automation", t.autoEditParam != AutoNone);
+    menu.addSeparator();
+    menu.addItem (4, "Volume automation active", ! t.autoVolume.points.empty(), t.autoVolume.active);
+    menu.addItem (5, "Pan automation active", ! t.autoPan.points.empty(), t.autoPan.active);
+    menu.addSeparator();
+    menu.addItem (6, "Clear volume automation", ! t.autoVolume.points.empty());
+    menu.addItem (7, "Clear pan automation", ! t.autoPan.points.empty());
+
+    auto* track = &t;
+    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&anchor), [this, track] (int result)
+    {
+        if (result == 0 || engine.indexOfTrack (track) < 0)
+            return;
+
+        switch (result)
+        {
+            case 1: track->autoEditParam = AutoVolume; break;
+            case 2: track->autoEditParam = AutoPan; break;
+            case 3: track->autoEditParam = AutoNone; break;
+            case 4: beginEdit(); engine.setAutomationActive (*track, AutoVolume, ! track->autoVolume.active); break;
+            case 5: beginEdit(); engine.setAutomationActive (*track, AutoPan, ! track->autoPan.active); break;
+            case 6: beginEdit(); engine.setAutomation (*track, AutoVolume, {}); break;
+            case 7: beginEdit(); engine.setAutomation (*track, AutoPan, {}); break;
+            default: break;
+        }
+        if (result == 6 && track->autoEditParam == AutoVolume) track->autoEditParam = AutoNone;
+        if (result == 7 && track->autoEditParam == AutoPan) track->autoEditParam = AutoNone;
+        clipsChanged();
+    });
+}
+
 // Plugin instrument + inserts of a track, for the project file.
 juce::var MainComponent::pluginsToVar (const Track& t) const
 {
@@ -984,7 +1224,10 @@ void MainComponent::addTrackUI (Track& t)
     {
         // Deferred: this runs inside a button owned by the header being deleted.
         juce::MessageManager::callAsync ([this, tr] { removeTrackUI (tr); });
-    }, [this] { beginEdit(); }, [this] (Track& tr, juce::Component& anchor) { openPlugins (tr, anchor); }));
+    }, [this] { beginEdit(); },
+       [this] (Track& tr, juce::Component& anchor) { openPlugins (tr, anchor); },
+       [this] (Track& tr, juce::Component& anchor) { openAutomation (tr, anchor); },
+       [this] { return engine.getPositionSeconds(); }));
     headerHolder.addAndMakeVisible (header);
 
     auto* lane = lanes.add (new TrackLane (*this, t));
@@ -1588,6 +1831,24 @@ void MainComponent::saveProject (const juce::File& file)
         o->setProperty ("fx", juce::var (fo));
         o->setProperty ("plugins", pluginsToVar (*t));
 
+        auto* ao = new juce::DynamicObject();
+        for (int param : { AutoVolume, AutoPan })
+        {
+            juce::Array<juce::var> points;
+            for (auto& p : engine.getAutomation (*t, param))
+            {
+                juce::Array<juce::var> pair;
+                pair.add (p.time);
+                pair.add ((double) p.value);
+                points.add (juce::var (pair));
+            }
+            auto* lo = new juce::DynamicObject();
+            lo->setProperty ("active", (param == AutoVolume ? t->autoVolume : t->autoPan).active.load());
+            lo->setProperty ("points", points);
+            ao->setProperty (param == AutoVolume ? "volume" : "pan", juce::var (lo));
+        }
+        o->setProperty ("automation", juce::var (ao));
+
         trackList.add (juce::var (o));
     }
 
@@ -1748,6 +2009,23 @@ void MainComponent::loadProject (const juce::File& file)
         }
 
         pluginsFromVar (*t, item, pluginProblems);
+
+        const auto automation = item["automation"];
+        if (automation.isObject())
+            for (int param : { AutoVolume, AutoPan })
+            {
+                const auto laneVar = automation[param == AutoVolume ? "volume" : "pan"];
+                if (! laneVar.isObject())
+                    continue;
+
+                std::vector<AutoPoint> points;
+                if (auto* arr = laneVar["points"].getArray())
+                    for (auto& pv : *arr)
+                        if (auto* pair = pv.getArray(); pair != nullptr && pair->size() >= 2)
+                            points.push_back ({ (double) (*pair)[0], (float) (double) (*pair)[1] });
+                engine.setAutomation (*t, param, std::move (points));
+                engine.setAutomationActive (*t, param, (bool) laneVar.getProperty ("active", true));
+            }
 
         addTrackUI (*t);
     }

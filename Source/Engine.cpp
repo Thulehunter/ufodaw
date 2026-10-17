@@ -500,6 +500,27 @@ double Engine::getTotalLengthSeconds() const
 }
 
 //==============================================================================
+// Automation
+
+std::vector<AutoPoint> Engine::getAutomation (const Track& t, int param) const
+{
+    const juce::ScopedLock sl (lock);
+    return param == AutoVolume ? t.autoVolume.points : t.autoPan.points;
+}
+
+void Engine::setAutomation (Track& t, int param, std::vector<AutoPoint> points)
+{
+    std::stable_sort (points.begin(), points.end(), [] (const AutoPoint& a, const AutoPoint& b) { return a.time < b.time; });
+    const juce::ScopedLock sl (lock);
+    (param == AutoVolume ? t.autoVolume : t.autoPan).points = std::move (points);
+}
+
+void Engine::setAutomationActive (Track& t, int param, bool active)
+{
+    (param == AutoVolume ? t.autoVolume : t.autoPan).active = active;
+}
+
+//==============================================================================
 // Undo/redo snapshots
 
 ProjectState Engine::captureState() const
@@ -528,6 +549,10 @@ ProjectState Engine::captureState() const
         ts.synthValues[4] = t->synth.cutoff;
         ts.instrument = t->instrument;
         ts.inserts = t->inserts;
+        ts.autoVolume = t->autoVolume.points;
+        ts.autoPan = t->autoPan.points;
+        ts.autoVolumeActive = t->autoVolume.active;
+        ts.autoPanActive = t->autoPan.active;
         t->fx.forEachFloat ([&ts] (const char*, std::atomic<float>& v) { ts.fxFloats.push_back (v.load()); });
         t->fx.forEachBool ([&ts] (const char*, std::atomic<bool>& v) { ts.fxBools.push_back (v.load() ? 1 : 0); });
         s.tracks.push_back (std::move (ts));
@@ -562,6 +587,10 @@ void Engine::restoreState (const ProjectState& s)
 
         t->instrument = ts.instrument;
         t->inserts = ts.inserts;
+        t->autoVolume.points = ts.autoVolume;
+        t->autoPan.points = ts.autoPan;
+        t->autoVolume.active = ts.autoVolumeActive;
+        t->autoPan.active = ts.autoPanActive;
 
         t->fxState = std::make_unique<TrackFx>();
         t->fxState->prepare (sampleRate);
@@ -886,10 +915,28 @@ void Engine::mixBlock (float* outL, float* outR, int n, juce::int64 pos, bool wi
     {
         float peak = 0.0f;
         const bool audible = ! t->mute && (! anySolo || t->solo);
-        const float g = t->gain;
-        const float angle = (t->pan + 1.0f) * juce::MathConstants<float>::pi * 0.25f;
-        const float gl = std::cos (angle) * juce::MathConstants<float>::sqrt2 * g;
-        const float gr = std::sin (angle) * juce::MathConstants<float>::sqrt2 * g;
+
+        // Fader and pan, possibly automated: evaluated at both ends of the block and ramped in between.
+        const double t0 = (double) pos / sampleRate, t1 = (double) (pos + n) / sampleRate;
+        const bool autoVol = t->autoVolume.active && ! t->autoVolume.points.empty();
+        const bool autoPan = t->autoPan.active && ! t->autoPan.points.empty();
+        const float gain0 = autoVol ? evalAutomation (t->autoVolume.points, t0, t->gain) : t->gain.load();
+        const float gain1 = autoVol ? evalAutomation (t->autoVolume.points, t1, t->gain) : gain0;
+        const float pan0 = autoPan ? evalAutomation (t->autoPan.points, t0, t->pan) : t->pan.load();
+        const float pan1 = autoPan ? evalAutomation (t->autoPan.points, t1, t->pan) : pan0;
+        t->effGain = gain0;
+        t->effPan = pan0;
+
+        auto panGains = [] (float g, float p, float& l, float& r)
+        {
+            const float angle = (p + 1.0f) * juce::MathConstants<float>::pi * 0.25f;
+            l = std::cos (angle) * juce::MathConstants<float>::sqrt2 * g;
+            r = std::sin (angle) * juce::MathConstants<float>::sqrt2 * g;
+        };
+        float gl0, gr0, gl1, gr1;
+        panGains (gain0, pan0, gl0, gr0);
+        panGains (gain1, pan1, gl1, gr1);
+        const float g = gain1;
 
         // Each track is built in its own stereo buffer, then goes through its effects
         // and the fader/pan on the way into the master mix.
@@ -967,13 +1014,15 @@ void Engine::mixBlock (float* outL, float* outR, int n, juce::int64 pos, bool wi
             if (! p->bypass)
                 processInsert (*p, bufL, bufR, nn);
 
+        const float ramp = nn > 0 ? 1.0f / (float) nn : 0.0f;
         for (int i = 0; i < nn; ++i)
         {
             peak = juce::jmax (peak, std::abs (bufL[i]), std::abs (bufR[i]));
             if (audible)
             {
-                outL[i] += bufL[i] * gl;
-                if (outR) outR[i] += bufR[i] * gr;
+                const float f = (float) i * ramp;
+                outL[i] += bufL[i] * (gl0 + (gl1 - gl0) * f);
+                if (outR) outR[i] += bufR[i] * (gr0 + (gr1 - gr0) * f);
             }
         }
         t->level = peak * g;
