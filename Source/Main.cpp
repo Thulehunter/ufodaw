@@ -1,7 +1,7 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 #include "MainComponent.h"
 
-class MiniDAWApplication : public juce::JUCEApplication
+class UFODAWApplication : public juce::JUCEApplication
 {
 public:
     const juce::String getApplicationName() override    { return JUCE_APPLICATION_NAME_STRING; }
@@ -9,14 +9,31 @@ public:
 
     void initialise (const juce::String& commandLine) override
     {
+        migrateOldSettings();
         juce::LookAndFeel::setDefaultLookAndFeel (&lookAndFeel);   // the warm red/orange/yellow theme
         window = std::make_unique<MainWindow> (getApplicationName());
 
-        // "MiniDAW.exe project.mdaw" (or double-clicking a project file) opens that project
+        // "UFODAW.exe project.mdaw" (or double-clicking a project file) opens that project
         const juce::File project (commandLine.trim().unquoted().trim());
         if (project.existsAsFile())
             if (auto* main = dynamic_cast<MainComponent*> (window->getContentComponent()))
                 main->openProject (project);
+    }
+
+    // The program used to be called MiniDAW: take its settings (audio device, plugin list, UI options) along once.
+    static void migrateOldSettings()
+    {
+        const auto appData = juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory);
+        const auto oldDir = appData.getChildFile ("MiniDAW"), newDir = appData.getChildFile ("UFODAW");
+        if (! oldDir.isDirectory() || newDir.isDirectory())
+            return;
+
+        if (oldDir.copyDirectoryTo (newDir))
+        {
+            const auto oldSettings = newDir.getChildFile ("MiniDAW.settings");
+            if (oldSettings.existsAsFile() && ! newDir.getChildFile ("UFODAW.settings").existsAsFile())
+                oldSettings.moveFileTo (newDir.getChildFile ("UFODAW.settings"));
+        }
     }
 
     void shutdown() override
@@ -49,4 +66,4 @@ private:
     std::unique_ptr<MainWindow> window;
 };
 
-START_JUCE_APPLICATION (MiniDAWApplication)
+START_JUCE_APPLICATION (UFODAWApplication)

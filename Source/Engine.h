@@ -451,7 +451,7 @@ private:
     std::unique_ptr<Track> master;
     int nextClipId = 1;
 
-    juce::TimeSliceThread writerThread { "MiniDAW audio writer" };
+    juce::TimeSliceThread writerThread { "UFODAW audio writer" };
     struct Recorder
     {
         std::unique_ptr<juce::AudioFormatWriter::ThreadedWriter> writer;

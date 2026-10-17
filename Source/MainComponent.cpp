@@ -1402,7 +1402,7 @@ void MainComponent::updateArmedTrack()
 
 juce::File MainComponent::uiSettingsFile()
 {
-    auto dir = juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory).getChildFile ("MiniDAW");
+    auto dir = juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory).getChildFile ("UFODAW");
     dir.createDirectory();
     return dir.getChildFile ("ui-settings.xml");
 }
@@ -1425,7 +1425,7 @@ void MainComponent::saveUiSettings()
 
 juce::File MainComponent::audioSettingsFile()
 {
-    auto dir = juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory).getChildFile ("MiniDAW");
+    auto dir = juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory).getChildFile ("UFODAW");
     dir.createDirectory();
     return dir.getChildFile ("audio-device.xml");
 }
@@ -2698,7 +2698,7 @@ void MainComponent::toggleRecording()
     }
 
     // Every armed audio track records its own file from its own input; with none armed, inputs 1+2 go to a new track.
-    const auto folder = juce::File::getSpecialLocation (juce::File::userDocumentsDirectory).getChildFile ("MiniDAW Recordings");
+    const auto folder = juce::File::getSpecialLocation (juce::File::userDocumentsDirectory).getChildFile ("UFODAW Recordings");
     const auto stamp = juce::Time::getCurrentTime().formatted ("%Y-%m-%d %H-%M-%S");
 
     std::vector<Engine::RecordTarget> targets;
@@ -3148,7 +3148,7 @@ void MainComponent::saveProject (const juce::File& file)
     {
         currentProject = file;
         if (auto* w = getTopLevelComponent())
-            w->setName ("MiniDAW - " + file.getFileNameWithoutExtension());
+            w->setName ("UFODAW - " + file.getFileNameWithoutExtension());
     }
     else
     {
@@ -3370,7 +3370,7 @@ void MainComponent::loadProject (const juce::File& file)
 
     currentProject = file;
     if (auto* w = getTopLevelComponent())
-        w->setName ("MiniDAW - " + file.getFileNameWithoutExtension());
+        w->setName ("UFODAW - " + file.getFileNameWithoutExtension());
     clipsChanged();
 
     if (missing.size() > 0)

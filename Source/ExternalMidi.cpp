@@ -9,7 +9,7 @@
  }
 #endif
 
-ExternalMidiSender::ExternalMidiSender() : juce::Thread ("MiniDAW external MIDI")
+ExternalMidiSender::ExternalMidiSender() : juce::Thread ("UFODAW external MIDI")
 {
     startThread (juce::Thread::Priority::high);
 }

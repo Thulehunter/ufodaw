@@ -2,7 +2,7 @@
 
 #include <juce_gui_basics/juce_gui_basics.h>
 
-// MiniDAW's look: a warm dark brown base with red, orange and yellow accents.
+// UFODAW's look: a warm dark brown base with red, orange and yellow accents.
 // Change a colour here and it changes everywhere.
 namespace Theme
 {

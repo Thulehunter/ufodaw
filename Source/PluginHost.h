@@ -5,7 +5,7 @@
 #include "Engine.h"
 
 // Everything about finding, loading and showing VST3 plugins. The list of known plugins is
-// kept in %APPDATA%\MiniDAW\plugins.xml between runs.
+// kept in %APPDATA%\UFODAW\plugins.xml between runs.
 class PluginHost : private juce::ChangeListener
 {
 public:

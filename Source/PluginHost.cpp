@@ -5,7 +5,7 @@ namespace
 {
     juce::File appDataFolder()
     {
-        auto dir = juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory).getChildFile ("MiniDAW");
+        auto dir = juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory).getChildFile ("UFODAW");
         dir.createDirectory();
         return dir;
     }
@@ -77,10 +77,10 @@ PluginHost::PluginHost()
     formats.addDefaultFormats();   // VST3 (JUCE_PLUGINHOST_VST3)
 
     juce::PropertiesFile::Options options;
-    options.applicationName = "MiniDAW";
+    options.applicationName = "UFODAW";
     options.filenameSuffix = ".settings";
     options.osxLibrarySubFolder = "Application Support";
-    options.folderName = "MiniDAW";
+    options.folderName = "UFODAW";
     properties = std::make_unique<juce::PropertiesFile> (options);
 
     if (auto xml = juce::XmlDocument::parse (listFile()))

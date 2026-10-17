@@ -1,4 +1,4 @@
-# MiniDAW
+# UFODAW
 
 A small digital audio workstation for Windows, written in C++17 with [JUCE](https://juce.com).
 
@@ -36,8 +36,8 @@ A small digital audio workstation for Windows, written in C++17 with [JUCE](http
 
 ## Running
 
-Download `MiniDAW-<version>-win64.zip` (see *Packaging*), unzip it and start `MiniDAW.exe`. No installation is needed.
-`MiniDAW.exe project.mdaw` (or "Open with" on a `.mdaw` file) opens that project right away.
+Download `UFODAW-<version>-win64.zip` (see *Packaging*), unzip it and start `UFODAW.exe`. No installation is needed.
+`UFODAW.exe project.mdaw` (or "Open with" on a `.mdaw` file) opens that project right away.
 
 The interface uses a warm dark theme with red, orange and yellow accents; the colours live in `Source/Theme.h`. Track colours tell the types apart: orange = audio, red = MIDI synth, yellow = drums.
 
@@ -58,12 +58,12 @@ you can open the folder.
 ## Audio interfaces and ASIO
 
 Click **Audio...** (bottom right) to choose the driver type, the device, the sample rate, the buffer size and which
-channels are on. The choice is remembered. The status line at the bottom shows what is in use. MiniDAW plays through the
+channels are on. The choice is remembered. The status line at the bottom shows what is in use. UFODAW plays through the
 first two enabled output channels. Which input an audio track records from is chosen per track (see below); only inputs
 that are switched on in this window can be picked.
 
 Without extra steps you get *Windows Audio* (WASAPI), *Windows Audio (Exclusive Mode)* / *(Low Latency Mode)* and
-*DirectSound*. For **ASIO** drivers (PreSonus Quantum / Studio 192, Roland Rubix, AudioBox, ...) MiniDAW has to be built with
+*DirectSound*. For **ASIO** drivers (PreSonus Quantum / Studio 192, Roland Rubix, AudioBox, ...) UFODAW has to be built with
 Steinberg's ASIO SDK, which cannot be shipped with the sources:
 
 1. Download the ASIO SDK from <https://www.steinberg.net/asiosdk> (you accept Steinberg's license there).
@@ -151,7 +151,7 @@ Requirements: Windows 10/11, Visual Studio with the *Desktop development with C+
 ```
 cmake -S . -B build
 cmake --build build --config Release
-build\MiniDAW_artefacts\Release\MiniDAW.exe
+build\UFODAW_artefacts\Release\UFODAW.exe
 ```
 
 The first configure downloads JUCE 8.0.4 from GitHub. Use `Release` for real use: the Debug build is far too slow for audio and will crackle.
@@ -162,7 +162,7 @@ The first configure downloads JUCE 8.0.4 from GitHub. Use `Release` for real use
 powershell -ExecutionPolicy Bypass -File scripts\package.ps1
 ```
 
-builds Release and writes `dist\MiniDAW-<version>-win64.zip`. For a regular installer, install [Inno Setup](https://jrsoftware.org/isinfo.php) and compile `installer\MiniDAW.iss` (after running the script above).
+builds Release and writes `dist\UFODAW-<version>-win64.zip`. For a regular installer, install [Inno Setup](https://jrsoftware.org/isinfo.php) and compile `installer\UFODAW.iss` (after running the script above).
 
 ## Project layout
 
@@ -189,4 +189,4 @@ The audio thread never blocks: the UI edits the project under a lock that the au
 
 ## License
 
-MiniDAW uses JUCE, which is available under the AGPLv3 or a commercial license. If you distribute MiniDAW binaries, you must comply with one of them (for AGPLv3 that means offering the source under the same terms).
+UFODAW uses JUCE, which is available under the AGPLv3 or a commercial license. If you distribute UFODAW binaries, you must comply with one of them (for AGPLv3 that means offering the source under the same terms).

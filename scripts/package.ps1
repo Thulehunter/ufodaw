@@ -1,4 +1,4 @@
-# Builds MiniDAW in Release and packs it into dist\MiniDAW-<version>-win64.zip.
+# Builds UFODAW in Release and packs it into dist\UFODAW-<version>-win64.zip.
 # Run from anywhere:  powershell -ExecutionPolicy Bypass -File scripts\package.ps1
 #
 # The build must include ASIO (the SDK goes in third_party\, see the README). Without it the script stops, so a
@@ -16,7 +16,7 @@ if (-not $cmake) {
 }
 if (-not $cmake) { throw 'cmake not found. Install CMake or Visual Studio with the C++ workload.' }
 
-$version = (Select-String -Path "$root\CMakeLists.txt" -Pattern 'project\(MiniDAW VERSION ([0-9.]+)').Matches[0].Groups[1].Value
+$version = (Select-String -Path "$root\CMakeLists.txt" -Pattern 'project\(UFODAW VERSION ([0-9.]+)').Matches[0].Groups[1].Value
 
 # configure, and read back whether CMake found the ASIO SDK
 $configureLog = & $cmake -S $root -B "$root\build" 2>&1 | ForEach-Object { "$_" }
@@ -30,9 +30,9 @@ if (-not $NoAsio -and $asioLine -notmatch 'ASIO support: ON') {
 & $cmake --build "$root\build" --config Release --parallel
 if ($LASTEXITCODE -ne 0) { throw 'Build failed' }
 
-$exe = "$root\build\MiniDAW_artefacts\Release\MiniDAW.exe"
-$stage = "$root\dist\MiniDAW-$version"
-$zip = "$root\dist\MiniDAW-$version-win64.zip"
+$exe = "$root\build\UFODAW_artefacts\Release\UFODAW.exe"
+$stage = "$root\dist\UFODAW-$version"
+$zip = "$root\dist\UFODAW-$version-win64.zip"
 
 Remove-Item $stage, $zip -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $stage | Out-Null

@@ -1,9 +1,9 @@
 cmake_minimum_required(VERSION 3.22)
 
-# Link the C++ runtime statically so MiniDAW.exe runs on a PC without the Visual C++ Redistributable.
+# Link the C++ runtime statically so UFODAW.exe runs on a PC without the Visual C++ Redistributable.
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
-project(MiniDAW VERSION 0.1.0 LANGUAGES C CXX)
+project(UFODAW VERSION 0.1.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -15,10 +15,10 @@ FetchContent_Declare(JUCE
     GIT_SHALLOW ON)
 FetchContent_MakeAvailable(JUCE)
 
-juce_add_gui_app(MiniDAW PRODUCT_NAME "MiniDAW"
+juce_add_gui_app(UFODAW PRODUCT_NAME "UFODAW"
     ICON_BIG "${CMAKE_CURRENT_SOURCE_DIR}/Resources/icon.png")
 
-target_sources(MiniDAW PRIVATE
+target_sources(UFODAW PRIVATE
     Source/Main.cpp
     Source/Engine.cpp
     Source/Theme.cpp
@@ -34,12 +34,12 @@ target_sources(MiniDAW PRIVATE
     Source/PianoRoll.cpp
     Source/MainComponent.cpp)
 
-target_compile_definitions(MiniDAW PRIVATE
+target_compile_definitions(UFODAW PRIVATE
     JUCE_WEB_BROWSER=0
     JUCE_USE_CURL=0
     JUCE_PLUGINHOST_VST3=1
-    JUCE_APPLICATION_NAME_STRING="$<TARGET_PROPERTY:MiniDAW,JUCE_PRODUCT_NAME>"
-    JUCE_APPLICATION_VERSION_STRING="$<TARGET_PROPERTY:MiniDAW,JUCE_VERSION>")
+    JUCE_APPLICATION_NAME_STRING="$<TARGET_PROPERTY:UFODAW,JUCE_PRODUCT_NAME>"
+    JUCE_APPLICATION_VERSION_STRING="$<TARGET_PROPERTY:UFODAW,JUCE_VERSION>")
 
 # ASIO drivers need Steinberg's ASIO SDK, which can't be bundled with the sources. Either unzip it into
 # third_party/ (e.g. third_party/asiosdk_2.3.3_2019-06-14), or point ASIO_SDK_DIR (cmake -D or environment
@@ -57,13 +57,13 @@ endif()
 
 if(ASIO_SDK_DIR AND EXISTS "${ASIO_SDK_DIR}/common/iasiodrv.h")
     message(STATUS "ASIO support: ON (SDK in ${ASIO_SDK_DIR})")
-    target_compile_definitions(MiniDAW PRIVATE JUCE_ASIO=1)
-    target_include_directories(MiniDAW PRIVATE "${ASIO_SDK_DIR}/common")
+    target_compile_definitions(UFODAW PRIVATE JUCE_ASIO=1)
+    target_include_directories(UFODAW PRIVATE "${ASIO_SDK_DIR}/common")
 else()
     message(STATUS "ASIO support: off (set ASIO_SDK_DIR to the ASIO SDK folder to switch it on)")
 endif()
 
-target_link_libraries(MiniDAW
+target_link_libraries(UFODAW
     PRIVATE
         juce::juce_audio_utils
         juce::juce_audio_formats
