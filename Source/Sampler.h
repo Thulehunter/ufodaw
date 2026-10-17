@@ -47,6 +47,8 @@ public:
     void noteOn (int note, float velocity);
     void noteOff (int note);
     void allNotesOff();   // lets every voice release
+    void choke();         // every voice fades out fast (a drum pad that is cut off by another one)
+    bool hasSample() const { return sample != nullptr; }
     void reset();         // silences every voice at once
     bool isActive() const;
     void render (float* outL, float* outR, int numSamples);   // adds into outL / outR
@@ -54,7 +56,7 @@ public:
 private:
     struct Voice
     {
-        bool active = false, released = false, oneShotLike = false;
+        bool active = false, released = false, oneShotLike = false, choked = false;
         int note = 0;
         float velocity = 1.0f;
         double position = 0.0;            // in source frames

@@ -10,7 +10,10 @@ namespace
     // index 0 is drawn at the bottom of the step sequencer
     const PadInfo padInfo[DrumKit::numPads] = {
         { "Kick", 36 }, { "Snare", 38 }, { "Clap", 39 }, { "Closed hat", 42 },
-        { "Open hat", 46 }, { "Low tom", 41 }, { "High tom", 45 }, { "Crash", 49 }
+        { "Open hat", 46 }, { "Low tom", 41 }, { "High tom", 45 }, { "Crash", 49 },
+        // pads 9..16 start empty: load your own samples
+        { "Pad 9", 37 }, { "Pad 10", 40 }, { "Pad 11", 43 }, { "Pad 12", 44 },
+        { "Pad 13", 47 }, { "Pad 14", 48 }, { "Pad 15", 50 }, { "Pad 16", 51 }
     };
 
     using Buffer = juce::AudioBuffer<float>;
@@ -47,15 +50,6 @@ namespace
     }
 }
 
-DrumKit::DrumKit()
-{
-    for (int i = 0; i < numPads; ++i)
-    {
-        pads[(size_t) i].name = padInfo[i].name;
-        pads[(size_t) i].note = padInfo[i].note;
-        generateDefault (i);
-    }
-}
 
 void DrumKit::generateDefault (int pad)
 {
@@ -113,7 +107,7 @@ void DrumKit::generateDefault (int pad)
         }
         case 5:  b = sweep (0.5, 190.0, 95.0, 14.0, 7.0, 1.0); break;    // low tom
         case 6:  b = sweep (0.45, 260.0, 150.0, 14.0, 8.0, 1.0); break;  // high tom
-        default: // crash
+        case 7:  // crash
         {
             b = makeBuffer (1.6);
             auto* d = b->getWritePointer (0);
@@ -127,19 +121,60 @@ void DrumKit::generateDefault (int pad)
     p.sample = b;
     p.sampleRate = genRate;
     p.file = juce::File();
+    p.sampler.setSample (b, genRate, juce::File(), p.name);
+}
+
+DrumKit::DrumKit()
+{
+    scratchL.assign (16384, 0.0f);
+    scratchR.assign (16384, 0.0f);
+
+    for (int i = 0; i < numPads; ++i)
+    {
+        auto& p = pads[(size_t) i];
+        p.name = padInfo[i].name;
+        p.note = padInfo[i].note;
+        setupSampler (i);
+        generateDefault (i);
+    }
+    pads[3].chokeGroup = 1;   // closed hat cuts the open hat
+    pads[4].chokeGroup = 1;
+}
+
+// What a drum pad's Simpler starts as: one-shot, played at its own pitch when its own key is hit.
+void DrumKit::setupSampler (int pad)
+{
+    auto& sp = pads[(size_t) pad].sampler.params;
+    sp.mode = Sampler::OneShot;
+    sp.rootNote = pads[(size_t) pad].note;   // so the pad's own note plays the sample at its original pitch
+    sp.attack = 0.0005f;
+    sp.release = 0.08f;
+    sp.volume = 0.9f;
+    sp.velocitySens = 0.85f;
+}
+
+void DrumKit::prepare (double outputRate)
+{
+    for (auto& p : pads)
+        p.sampler.prepare (outputRate);
 }
 
 void DrumKit::setSample (int pad, std::shared_ptr<const juce::AudioBuffer<float>> buffer, double rate, const juce::File& file)
 {
     auto& p = pads[(size_t) pad];
-    p.sample = std::move (buffer);
+    p.sample = buffer;
     p.sampleRate = rate;
     p.file = file;
+    p.sampler.setSample (std::move (buffer), rate, file, file.getFileNameWithoutExtension());
+    p.sampler.params.start = 0.0f;   // a new sample plays from its start to its end
+    p.sampler.params.end = 1.0f;
 }
 
 void DrumKit::resetPad (int pad)
 {
     generateDefault (pad);
+    pads[(size_t) pad].sampler.params.start = 0.0f;
+    pads[(size_t) pad].sampler.params.end = 1.0f;
 }
 
 int DrumKit::padForNote (int note) const
@@ -156,91 +191,76 @@ void DrumKit::noteOn (int note, float velocity)
     if (pad < 0 || pads[(size_t) pad].sample == nullptr)
         return;
 
-    if (pad == 3)   // closed hat chokes the open hat
-        for (auto& v : voices)
-            if (v.active && v.pad == 4)
-                v.fading = true;
+    // a pad in a choke group cuts off the other pads of its group (closed hat chokes the open hat)
+    const int group = pads[(size_t) pad].chokeGroup.load();
+    if (group > 0)
+        for (int i = 0; i < numPads; ++i)
+            if (i != pad && pads[(size_t) i].chokeGroup.load() == group)
+                pads[(size_t) i].sampler.choke();
 
-    Voice* target = nullptr;
-    for (auto& v : voices)
-        if (! v.active) { target = &v; break; }
-    if (target == nullptr)   // steal the oldest
-    {
-        target = &voices[0];
-        for (auto& v : voices)
-            if (v.age < target->age)
-                target = &v;
-    }
+    pads[(size_t) pad].sampler.noteOn (note, velocity);
+}
 
-    *target = Voice();
-    target->active = true;
-    target->pad = pad;
-    target->velocity = velocity;
-    target->age = ++counter;
+void DrumKit::noteOff (int note)
+{
+    const int pad = padForNote (note);
+    if (pad >= 0)
+        pads[(size_t) pad].sampler.noteOff (note);   // (one-shot pads ignore it; a pad set to Classic releases)
 }
 
 void DrumKit::stopAll()
 {
-    for (auto& v : voices)
-        if (v.active)
-            v.fading = true;
+    for (auto& p : pads)
+        p.sampler.choke();
 }
 
 void DrumKit::reset()
 {
-    for (auto& v : voices)
-        v = Voice();
+    for (auto& p : pads)
+        p.sampler.reset();
 }
 
 bool DrumKit::isActive() const
 {
-    for (auto& v : voices)
-        if (v.active)
+    for (auto& p : pads)
+        if (p.sampler.isActive())
             return true;
     return false;
 }
 
-void DrumKit::render (float* out, int numSamples)
+void DrumKit::render (float* outL, float* outR, int numSamples)
 {
-    constexpr float fadeStep = 1.0f / 256.0f;   // ~6 ms fade-out when a voice is stopped or choked
+    bool anySolo = false;
+    for (auto& p : pads)
+        anySolo = anySolo || p.solo.load();
 
-    for (auto& v : voices)
+    for (int done = 0; done < numSamples;)
     {
-        if (! v.active)
-            continue;
+        const int n = juce::jmin ((int) scratchL.size(), numSamples - done);
 
-        const auto& pad = pads[(size_t) v.pad];
-        const auto& buf = *pad.sample;
-        const int len = buf.getNumSamples();
-        const double ratio = pad.sampleRate / sampleRate;
-        const float* left = buf.getReadPointer (0);
-        const float* right = buf.getNumChannels() > 1 ? buf.getReadPointer (1) : left;
-        const float gain = v.velocity * pad.gain * 0.9f;
-
-        for (int i = 0; i < numSamples; ++i)
+        for (auto& p : pads)
         {
-            const int i0 = (int) v.position;
-            if (i0 >= len - 1)
-            {
-                v.active = false;
-                break;
-            }
+            if (! p.sampler.isActive())
+                continue;
 
-            const float frac = (float) (v.position - i0);
-            const float s = 0.5f * ((left[i0] + frac * (left[i0 + 1] - left[i0]))
-                                    + (right[i0] + frac * (right[i0 + 1] - right[i0])));
-            out[i] += s * gain * v.fade;
+            std::fill (scratchL.begin(), scratchL.begin() + n, 0.0f);
+            std::fill (scratchR.begin(), scratchR.begin() + n, 0.0f);
+            p.sampler.render (scratchL.data(), scratchR.data(), n);   // (the pad keeps running when it is muted: unmuting is seamless)
 
-            if (v.fading)
+            const bool audible = ! p.mute.load() && (! anySolo || p.solo.load());
+            if (! audible)
+                continue;
+
+            // level and pan (the same law as a track's pan)
+            const float angle = (juce::jlimit (-1.0f, 1.0f, p.pan.load()) + 1.0f) * juce::MathConstants<float>::pi * 0.25f;
+            const float g = p.gain.load();
+            const float gl = std::cos (angle) * juce::MathConstants<float>::sqrt2 * g, gr = std::sin (angle) * juce::MathConstants<float>::sqrt2 * g;
+            for (int i = 0; i < n; ++i)
             {
-                v.fade -= fadeStep;
-                if (v.fade <= 0.0f)
-                {
-                    v.active = false;
-                    break;
-                }
+                outL[done + i] += scratchL[(size_t) i] * gl;
+                outR[done + i] += scratchR[(size_t) i] * gr;
             }
-            v.position += ratio;
         }
+        done += n;
     }
 }

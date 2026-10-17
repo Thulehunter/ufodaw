@@ -1921,7 +1921,7 @@ void Engine::drainPreviewEvents()
                 }
                 else if (t->kit != nullptr)
                 {
-                    if (e.on) t->kit->noteOn (e.pitch, e.velocity);   // one-shots: note-offs don't matter
+                    if (e.on) t->kit->noteOn (e.pitch, e.velocity); else t->kit->noteOff (e.pitch);
                 }
                 else if (t->sampler != nullptr)
                 {
@@ -2627,25 +2627,24 @@ void Engine::processInsert (PluginSlot& slot, float* l, float* r, int n)
     std::copy (buf.getReadPointer (1), buf.getReadPointer (1) + n, r);
 }
 
-void Engine::renderDrumTrack (Track& t, int n, juce::int64 pos, bool running, float* scratch)
+void Engine::renderDrumTrack (Track& t, int n, juce::int64 pos, bool running, float* outL, float* outR)
 {
-    std::fill (scratch, scratch + n, 0.0f);
+    std::fill (outL, outL + n, 0.0f);
+    std::fill (outR, outR + n, 0.0f);
     collectNoteEvents (t, n, pos, running);
 
     int done = 0;
     for (auto& e : noteEvents)
     {
-        if (! e.on)
-            continue;   // drum hits are one-shots
         if (e.offset > done)
         {
-            t.kit->render (scratch + done, e.offset - done);
+            t.kit->render (outL + done, outR + done, e.offset - done);
             done = e.offset;
         }
-        t.kit->noteOn (e.pitch, e.velocity);
+        if (e.on) t.kit->noteOn (e.pitch, e.velocity); else t.kit->noteOff (e.pitch);   // (pads set to Classic release on note-off)
     }
     if (done < n)
-        t.kit->render (scratch + done, n - done);
+        t.kit->render (outL + done, outR + done, n - done);
 }
 
 void Engine::renderSamplerTrack (Track& t, int n, juce::int64 pos, bool running, float* outL, float* outR)
@@ -2848,8 +2847,7 @@ void Engine::mixBlock (float* outL, float* outR, int n, juce::int64 pos, bool wi
             }
             else if (t->kit != nullptr)
             {
-                renderDrumTrack (*t, nn, pos, running, bufL);
-                std::copy (bufL, bufL + nn, bufR);
+                renderDrumTrack (*t, nn, pos, running, bufL, bufR);   // (stereo: pads have their own pan and stereo samples)
             }
             else if (t->voices != nullptr)
             {

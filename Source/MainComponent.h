@@ -9,6 +9,7 @@
 #include <map>
 
 class SamplerWindow;   // (SamplerPanel.h)
+class DrumRackWindow;  // (DrumRackPanel.h)
 
 // Settings shared by the track headers and the lanes
 namespace UiSettings
@@ -239,6 +240,12 @@ private:
     void openSampler (Track&);                               // the sampler's window: sample, markers, mode, envelope, filter
     void sampleClip (Track&, int clipId);                    // an audio clip's audio becomes the sample of a new sampler track
     std::unique_ptr<SamplerWindow> samplerWindow;
+public:
+    void openDrumRack (Track&, int selectPad = -1);          // the drum rack: 4 x 4 pads, level / pan / choke per pad, each pad a Simpler
+private:
+    void openPadSampler (Track&, int pad);
+    std::unique_ptr<SamplerWindow> padSamplerWindow;
+    std::unique_ptr<DrumRackWindow> drumRackWindow;
     void openRouting (Track&, juce::Component& anchor);      // output (master or a bus) and sends of a track
     void openQuantize (Track&, int clipId);                  // quantize / swing / humanize the notes of a MIDI clip
     void armAudioTrack (Track&, bool armed);   // several audio tracks can be armed: all of them record at once

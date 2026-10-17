@@ -154,9 +154,11 @@ private:
 class SamplerPanel : public juce::Component
 {
 public:
-    SamplerPanel (Engine& e, Track& t, std::function<void()> onChanged, std::function<void (bool)> onPlay)
-        : engine (e), track (t), sampler (*t.sampler), changed (std::move (onChanged)), play (std::move (onPlay)),
-          waveform (*t.sampler, [this] { changedFn(); }, [this] (const juce::File& f) { load (f); })
+    // `loadFile` puts a file into this sampler (true if it worked). Drum pads use the panel with allowSlice = false.
+    SamplerPanel (Sampler& s, std::function<bool (const juce::File&)> loadFile, std::function<void()> onChanged, std::function<void (bool)> onPlay,
+                  bool allowSlice = true)
+        : sampler (s), loader (std::move (loadFile)), changed (std::move (onChanged)), play (std::move (onPlay)), slicesAllowed (allowSlice),
+          waveform (s, [this] { changedFn(); }, [this] (const juce::File& f) { load (f); })
     {
         auto& p = sampler.params;
 
@@ -176,7 +178,8 @@ public:
 
         modeBox.addItem ("Classic (pitched by the key, loops)", 1);
         modeBox.addItem ("One-shot (plays out whatever the key does)", 2);
-        modeBox.addItem ("Slice (a key per slice)", 3);
+        if (slicesAllowed)
+            modeBox.addItem ("Slice (a key per slice)", 3);
         modeBox.setSelectedId (p.mode.load() + 1, juce::dontSendNotification);
         modeBox.onChange = [this] { sampler.params.mode = modeBox.getSelectedId() - 1; refreshVisibility(); changedFn(); waveform.repaint(); };
         addAndMakeVisible (modeBox);
@@ -332,7 +335,7 @@ private:
 
     void load (const juce::File& file)
     {
-        if (! engine.loadSamplerSample (track, file))
+        if (! loader (file))
         {
             juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Cannot load the sample", file.getFullPathName());
             return;
@@ -397,11 +400,11 @@ private:
         changedFn();
     }
 
-    Engine& engine;
-    Track& track;
     Sampler& sampler;
+    std::function<bool (const juce::File&)> loader;
     std::function<void()> changed;
     std::function<void (bool)> play;
+    bool slicesAllowed = true;
     bool playing = false;
     std::unique_ptr<juce::FileChooser> chooser;
 
@@ -418,11 +421,12 @@ private:
 class SamplerWindow : public juce::DocumentWindow
 {
 public:
-    SamplerWindow (Engine& e, Track& t, std::function<void()> onChanged, std::function<void (bool)> onPlay, std::function<void()> onClosed)
-        : juce::DocumentWindow ("Sampler - " + t.name, Theme::background, juce::DocumentWindow::closeButton), closed (std::move (onClosed))
+    SamplerWindow (const juce::String& title, Sampler& s, std::function<bool (const juce::File&)> loadFile, std::function<void()> onChanged,
+                   std::function<void (bool)> onPlay, std::function<void()> onClosed, bool allowSlice = true)
+        : juce::DocumentWindow (title, Theme::background, juce::DocumentWindow::closeButton), closed (std::move (onClosed))
     {
         setUsingNativeTitleBar (true);
-        setContentOwned (new SamplerPanel (e, t, std::move (onChanged), std::move (onPlay)), true);
+        setContentOwned (new SamplerPanel (s, std::move (loadFile), std::move (onChanged), std::move (onPlay), allowSlice), true);
         setResizable (false, false);
         centreWithSize (getWidth(), getHeight());
         setVisible (true);

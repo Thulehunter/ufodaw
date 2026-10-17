@@ -27,7 +27,7 @@ public:
     void resized() override;
 
     static constexpr int toolbarHeight = 34;
-    static constexpr int rowHeight = 28;
+    static constexpr int rowHeight = 18;
 
     class Pads;
     class Grid;

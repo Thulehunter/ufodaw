@@ -575,7 +575,7 @@ private:
     void applyMidiFx (Track&, int numSamples);                  // runs noteEvents through the track's MIDI plugins
     static int trackLatency (const Track&);                     // samples of delay its plugins add
     void applyDelay (Track&, float* l, float* r, int numSamples, int delaySamples);
-    void renderDrumTrack (Track&, int numSamples, juce::int64 pos, bool running, float* scratch);
+    void renderDrumTrack (Track&, int numSamples, juce::int64 pos, bool running, float* outL, float* outR);
     void renderSamplerTrack (Track&, int numSamples, juce::int64 pos, bool running, float* outL, float* outR);
     void renderPluginInstrument (Track&, int numSamples, float* outL, float* outR);
     void processInsert (PluginSlot&, float* l, float* r, int numSamples);

@@ -135,6 +135,7 @@ void Sampler::render (float* outL, float* outR, int n)
     const float attackInc = 1.0f / (attack * (float) outRate);
     const float decayDec = (1.0f - sustain) / (decay * (float) outRate);
     const float releaseDec = 1.0f / (release * (float) outRate);
+    const float chokeDec = 1.0f / (0.006f * (float) outRate);   // a choked voice is gone in about 6 ms
     const float volume = params.volume.load(), sens = juce::jlimit (0.0f, 1.0f, params.velocitySens.load());
 
     const float cutoff = juce::jlimit (40.0f, 20000.0f, params.cutoff.load());
@@ -171,7 +172,7 @@ void Sampler::render (float* outL, float* outR, int n)
                 case Voice::Attack:  v.level += attackInc;  if (v.level >= 1.0f) { v.level = 1.0f; v.stage = Voice::Decay; } break;
                 case Voice::Decay:   v.level -= decayDec;   if (v.level <= sustain) { v.level = sustain; v.stage = Voice::Sustain; } break;
                 case Voice::Sustain: v.level = sustain; break;
-                case Voice::Release: v.level -= releaseDec; if (v.level <= 0.0f) { v.level = 0.0f; v.active = false; } break;
+                case Voice::Release: v.level -= v.choked ? chokeDec : releaseDec; if (v.level <= 0.0f) { v.level = 0.0f; v.active = false; } break;
             }
             if (! v.active)
                 break;
@@ -200,4 +201,15 @@ void Sampler::render (float* outL, float* outR, int n)
             v.position += v.step;
         }
     }
+}
+
+void Sampler::choke()
+{
+    for (auto& v : voices)
+        if (v.active)
+        {
+            v.released = true;
+            v.choked = true;
+            v.stage = Voice::Release;
+        }
 }

@@ -9,6 +9,7 @@
 #include "SyncPanels.h"
 #include "ClipPanel.h"
 #include "SamplerPanel.h"
+#include "DrumRackPanel.h"
 #include <algorithm>
 #include <map>
 
@@ -71,6 +72,7 @@ public:
         {
             if (track.bus)                            return;
             if (track.type == Track::Type::Audio) openInput (track, rowButton);
+            else if (track.kit != nullptr && track.instrument == nullptr) openEditor (track);
             else                                  openPlugins (track, rowButton);
         };
         rowButton.setEnabled (! track.bus);
@@ -1749,10 +1751,55 @@ MainComponent::MainComponent()
     startTimerHz (30);
 }
 
+// How a sampler plays, as saved in the project (the sample itself is a file next to it)
+static void writeSamplerParams (juce::DynamicObject& so, const Sampler::Params& sp)
+{
+    so.setProperty ("mode", sp.mode.load());
+    so.setProperty ("root", sp.rootNote.load());
+    so.setProperty ("tune", (double) sp.tuneCents.load());
+    so.setProperty ("start", (double) sp.start.load());
+    so.setProperty ("end", (double) sp.end.load());
+    so.setProperty ("loop", sp.loop.load());
+    so.setProperty ("loopStart", (double) sp.loopStart.load());
+    so.setProperty ("loopEnd", (double) sp.loopEnd.load());
+    so.setProperty ("reverse", sp.reverse.load());
+    so.setProperty ("attack", (double) sp.attack.load());
+    so.setProperty ("decay", (double) sp.decay.load());
+    so.setProperty ("sustain", (double) sp.sustain.load());
+    so.setProperty ("release", (double) sp.release.load());
+    so.setProperty ("cutoff", (double) sp.cutoff.load());
+    so.setProperty ("volume", (double) sp.volume.load());
+    so.setProperty ("velocity", (double) sp.velocitySens.load());
+    so.setProperty ("slices", sp.slices.load());
+}
+
+static void readSamplerParams (const juce::var& sv, Sampler::Params& sp)
+{
+    sp.mode = juce::jlimit (0, 2, (int) sv.getProperty ("mode", sp.mode.load()));
+    sp.rootNote = (int) sv.getProperty ("root", sp.rootNote.load());
+    sp.tuneCents = (float) (double) sv.getProperty ("tune", (double) sp.tuneCents.load());
+    sp.start = (float) (double) sv.getProperty ("start", (double) sp.start.load());
+    sp.end = (float) (double) sv.getProperty ("end", (double) sp.end.load());
+    sp.loop = (bool) sv.getProperty ("loop", sp.loop.load());
+    sp.loopStart = (float) (double) sv.getProperty ("loopStart", (double) sp.loopStart.load());
+    sp.loopEnd = (float) (double) sv.getProperty ("loopEnd", (double) sp.loopEnd.load());
+    sp.reverse = (bool) sv.getProperty ("reverse", sp.reverse.load());
+    sp.attack = (float) (double) sv.getProperty ("attack", (double) sp.attack.load());
+    sp.decay = (float) (double) sv.getProperty ("decay", (double) sp.decay.load());
+    sp.sustain = (float) (double) sv.getProperty ("sustain", (double) sp.sustain.load());
+    sp.release = (float) (double) sv.getProperty ("release", (double) sp.release.load());
+    sp.cutoff = (float) (double) sv.getProperty ("cutoff", (double) sp.cutoff.load());
+    sp.volume = (float) (double) sv.getProperty ("volume", (double) sp.volume.load());
+    sp.velocitySens = (float) (double) sv.getProperty ("velocity", (double) sp.velocitySens.load());
+    sp.slices = (int) sv.getProperty ("slices", sp.slices.load());
+}
+
 MainComponent::~MainComponent()
 {
     stopTimer();
     samplerWindow.reset();   // (it points into the engine's tracks)
+    padSamplerWindow.reset();
+    drumRackWindow.reset();
     if (! isDirty())
         clearAutosave();   // a normal exit with everything saved leaves no recovery file
     else
@@ -2225,7 +2272,8 @@ void MainComponent::openSampler (Track& t)
     samplerWindow.reset();   // one at a time
     auto* tr = &t;
     juce::Component::SafePointer<MainComponent> safe (this);
-    samplerWindow = std::make_unique<SamplerWindow> (engine, t,
+    samplerWindow = std::make_unique<SamplerWindow> ("Sampler - " + t.name, *t.sampler,
+        [safe, tr] (const juce::File& f) { return safe != nullptr && safe->engine.loadSamplerSample (*tr, f); },
         [safe] { if (safe != nullptr) ++safe->editCounter; },   // a change counts as an edit of the project (autosave, unsaved changes)
         [safe, tr] (bool down)                                   // the Play button: the root note, held
         {
@@ -2233,6 +2281,56 @@ void MainComponent::openSampler (Track& t)
                 safe->engine.previewNote (*tr, tr->sampler->params.rootNote.load(), down, 0.9f);
         },
         [safe] { juce::MessageManager::callAsync ([safe] { if (safe != nullptr) safe->samplerWindow.reset(); }); });
+}
+
+void MainComponent::openPadSampler (Track& t, int pad)
+{
+    if (t.kit == nullptr || ! juce::isPositiveAndBelow (pad, DrumKit::numPads) || ! t.kit->hasSample (pad))
+        return;
+    padSamplerWindow.reset();
+    auto* tr = &t;
+    juce::Component::SafePointer<MainComponent> safe (this);
+    padSamplerWindow = std::make_unique<SamplerWindow> (t.name + " - " + t.kit->getPad (pad).name, t.kit->getPad (pad).sampler,
+        [safe, tr, pad] (const juce::File& f) { return safe != nullptr && safe->engine.loadDrumSample (*tr, pad, f); },
+        [safe] { if (safe != nullptr) ++safe->editCounter; },
+        [safe, tr, pad] (bool down)
+        {
+            if (safe != nullptr && safe->engine.indexOfTrack (tr) >= 0 && tr->kit != nullptr)
+                safe->engine.previewNote (*tr, tr->kit->getPad (pad).note, down, 0.9f);
+        },
+        [safe] { juce::MessageManager::callAsync ([safe] { if (safe != nullptr) safe->padSamplerWindow.reset(); }); },
+        false);   // (no slice mode on a pad)
+}
+
+void MainComponent::openDrumRack (Track& t, int selectPad)
+{
+    if (t.kit == nullptr)
+        return;
+    if (drumRackWindow != nullptr && drumRackWindow->getTitle() == t.name + " - drum rack")
+    {
+        if (selectPad >= 0)
+            drumRackWindow->getPanel().select (selectPad);
+        drumRackWindow->toFront (true);
+        return;
+    }
+    padSamplerWindow.reset();
+    drumRackWindow.reset();
+    auto* tr = &t;
+    juce::Component::SafePointer<MainComponent> safe (this);
+    DrumRackPanel::Hooks hooks;
+    hooks.preview = [safe, tr] (int note, bool down)
+    {
+        if (safe != nullptr && safe->engine.indexOfTrack (tr) >= 0)
+            safe->engine.previewNote (*tr, note, down, 0.9f);
+    };
+    hooks.load = [safe, tr] (int pad, const juce::File& f) { return safe != nullptr && safe->engine.loadDrumSample (*tr, pad, f); };
+    hooks.reset = [safe, tr] (int pad) { if (safe != nullptr) safe->engine.resetDrumPad (*tr, pad); };
+    hooks.editSampler = [safe, tr] (int pad) { if (safe != nullptr) safe->openPadSampler (*tr, pad); };
+    hooks.changed = [safe] { if (safe != nullptr) { ++safe->editCounter; if (safe->drumRoll != nullptr) safe->drumRoll->repaint(); } };
+    drumRackWindow = std::make_unique<DrumRackWindow> (t.name + " - drum rack", *t.kit, std::move (hooks),
+        [safe] { juce::MessageManager::callAsync ([safe] { if (safe != nullptr) { safe->padSamplerWindow.reset(); safe->drumRackWindow.reset(); } }); });
+    if (selectPad >= 0)
+        drumRackWindow->getPanel().select (selectPad);
 }
 
 // "Sample this clip": the part of an audio clip that plays becomes the sample of a new sampler track, with one note that plays it.
@@ -2292,6 +2390,8 @@ void MainComponent::openInstrumentEditor (Track& t)
 {
     if (t.sampler != nullptr)
         openSampler (t);
+    else if (t.kit != nullptr)
+        openDrumRack (t);
     else if (t.instrument != nullptr)
         pluginHost.showEditor (*t.instrument);
     else if (! t.inserts.empty())
@@ -2744,6 +2844,9 @@ void MainComponent::addTrackUI (Track& t)
 
 void MainComponent::removeTrackUI (Track* t)
 {
+    samplerWindow.reset();   // (they point into the track)
+    padSamplerWindow.reset();
+    drumRackWindow.reset();
     for (int i = 0; i < lanes.size(); ++i)
         if (&lanes[i]->getTrack() == t)
         {
@@ -2768,6 +2871,9 @@ void MainComponent::removeTrackUI (Track* t)
 
 void MainComponent::clearTracksUI()
 {
+    samplerWindow.reset();
+    padSamplerWindow.reset();
+    drumRackWindow.reset();
     pluginHost.closeAllEditors();
     hideRoll();
     selectClip (nullptr, -1);
@@ -4207,31 +4313,29 @@ void MainComponent::saveProject (const juce::File& file, SaveKind kind)
                     padFiles.add (f == juce::File() ? juce::String() : (projectFilePath ? projectFilePath (f) : f.getRelativePathFrom (baseDir)));
                 }
                 o->setProperty ("drumPads", padFiles);
+
+                juce::Array<juce::var> rack;   // how each pad plays: level, pan, mute, solo, choke group and its Simpler settings
+                for (int pad = 0; pad < DrumKit::numPads; ++pad)
+                {
+                    auto& pd = t->kit->getPad (pad);
+                    auto* po = new juce::DynamicObject();
+                    po->setProperty ("gain", (double) pd.gain.load());
+                    po->setProperty ("pan", (double) pd.pan.load());
+                    po->setProperty ("mute", pd.mute.load());
+                    po->setProperty ("solo", pd.solo.load());
+                    po->setProperty ("choke", pd.chokeGroup.load());
+                    writeSamplerParams (*po, pd.sampler.params);
+                    rack.add (juce::var (po));
+                }
+                o->setProperty ("drumRack", rack);
             }
 
             if (t->sampler != nullptr)   // the sampler: which sample (a file) and how it plays
             {
-                auto& sp = t->sampler->params;
                 auto* so = new juce::DynamicObject();
                 if (t->sampler->getFile() != juce::File())
                     so->setProperty ("file", projectFilePath ? projectFilePath (t->sampler->getFile()) : t->sampler->getFile().getRelativePathFrom (baseDir));
-                so->setProperty ("mode", sp.mode.load());
-                so->setProperty ("root", sp.rootNote.load());
-                so->setProperty ("tune", (double) sp.tuneCents.load());
-                so->setProperty ("start", (double) sp.start.load());
-                so->setProperty ("end", (double) sp.end.load());
-                so->setProperty ("loop", sp.loop.load());
-                so->setProperty ("loopStart", (double) sp.loopStart.load());
-                so->setProperty ("loopEnd", (double) sp.loopEnd.load());
-                so->setProperty ("reverse", sp.reverse.load());
-                so->setProperty ("attack", (double) sp.attack.load());
-                so->setProperty ("decay", (double) sp.decay.load());
-                so->setProperty ("sustain", (double) sp.sustain.load());
-                so->setProperty ("release", (double) sp.release.load());
-                so->setProperty ("cutoff", (double) sp.cutoff.load());
-                so->setProperty ("volume", (double) sp.volume.load());
-                so->setProperty ("velocity", (double) sp.velocitySens.load());
-                so->setProperty ("slices", sp.slices.load());
+                writeSamplerParams (*so, t->sampler->params);
                 o->setProperty ("sampler", juce::var (so));
             }
         }
@@ -4717,24 +4821,7 @@ void MainComponent::loadProject (const juce::File& file)
         if (isSampler)   // the sample and how it plays
         {
             const auto sv = item["sampler"];
-            auto& sp = t->sampler->params;
-            sp.mode = juce::jlimit (0, 2, (int) sv.getProperty ("mode", 0));
-            sp.rootNote = (int) sv.getProperty ("root", 60);
-            sp.tuneCents = (float) (double) sv.getProperty ("tune", 0.0);
-            sp.start = (float) (double) sv.getProperty ("start", 0.0);
-            sp.end = (float) (double) sv.getProperty ("end", 1.0);
-            sp.loop = (bool) sv.getProperty ("loop", false);
-            sp.loopStart = (float) (double) sv.getProperty ("loopStart", 0.0);
-            sp.loopEnd = (float) (double) sv.getProperty ("loopEnd", 1.0);
-            sp.reverse = (bool) sv.getProperty ("reverse", false);
-            sp.attack = (float) (double) sv.getProperty ("attack", 0.002);
-            sp.decay = (float) (double) sv.getProperty ("decay", 0.3);
-            sp.sustain = (float) (double) sv.getProperty ("sustain", 1.0);
-            sp.release = (float) (double) sv.getProperty ("release", 0.15);
-            sp.cutoff = (float) (double) sv.getProperty ("cutoff", 20000.0);
-            sp.volume = (float) (double) sv.getProperty ("volume", 0.8);
-            sp.velocitySens = (float) (double) sv.getProperty ("velocity", 0.7);
-            sp.slices = (int) sv.getProperty ("slices", 8);
+            readSamplerParams (sv, t->sampler->params);   // (a fresh sampler's own values are the defaults of anything missing)
             if (sv.hasProperty ("file"))
             {
                 const auto sampleFile = baseDir.getChildFile (sv["file"].toString());
@@ -4753,6 +4840,19 @@ void MainComponent::loadProject (const juce::File& file)
                     const auto sample = baseDir.getChildFile (rel);
                     if (! engine.loadDrumSample (*t, pad, sample))
                         missing.add (sample.getFullPathName());
+                }
+        if (isDrums)   // (after the samples: loading a sample resets that pad's start / end)
+            if (auto* rack = item["drumRack"].getArray())
+                for (int pad = 0; pad < rack->size() && pad < DrumKit::numPads; ++pad)
+                {
+                    const auto& pv = (*rack)[pad];
+                    auto& pd = t->kit->getPad (pad);
+                    pd.gain = (float) (double) pv.getProperty ("gain", 1.0);
+                    pd.pan = (float) (double) pv.getProperty ("pan", 0.0);
+                    pd.mute = (bool) pv.getProperty ("mute", false);
+                    pd.solo = (bool) pv.getProperty ("solo", false);
+                    pd.chokeGroup = (int) pv.getProperty ("choke", 0);
+                    readSamplerParams (pv, pd.sampler.params);
                 }
         t->gain = (float) (double) item.getProperty ("gain", 0.8);
         t->pan = (float) (double) item.getProperty ("pan", 0.0);

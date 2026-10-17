@@ -35,12 +35,12 @@ public:
             g.setColour (padColour (pad).withAlpha (pad == pressed ? 0.9f : 0.25f));
             g.fillRect (r.withTrimmedRight (getWidth() - 8).reduced (0, 1));
             g.setColour (Theme::text.withAlpha (0.9f));
-            g.setFont (juce::FontOptions (13.0f, juce::Font::bold));
+            g.setFont (juce::FontOptions (12.0f, juce::Font::bold));
             g.drawText (info.name, r.withTrimmedLeft (16).withWidth (110), juce::Justification::centredLeft);
 
             g.setColour (Theme::text.withAlpha (0.45f));
-            g.setFont (11.0f);
-            g.drawText (info.file == juce::File() ? juce::String ("built-in sound") : info.file.getFileName(),
+            g.setFont (10.0f);
+            g.drawText (info.file != juce::File() ? info.file.getFileName() : track->kit->hasSample (pad) ? juce::String ("built-in sound") : juce::String ("empty"),
                         r.withTrimmedLeft (126).withTrimmedRight (6), juce::Justification::centredLeft, true);
 
             g.setColour (Theme::laneBg);
@@ -60,8 +60,11 @@ public:
             juce::PopupMenu menu;
             menu.addItem (1, "Load sample...");
             menu.addItem (2, "Use built-in sound", track->kit->getPad (pad).file != juce::File());
+            menu.addSeparator();
+            menu.addItem (3, "Open drum rack (levels, choke, sampler)...");
             menu.showMenuAsync ({}, [this, pad] (int result)
             {
+                if (result == 3 && owner.getTrack() != nullptr) owner.main.openDrumRack (*owner.getTrack(), pad);
                 if (result == 1) chooseSample (pad);
                 if (result == 2) { owner.main.beginEdit(); owner.main.getEngine().resetDrumPad (*owner.getTrack(), pad); repaint(); }
             });
@@ -77,6 +80,12 @@ public:
     {
         pressed = -1;
         repaint();
+    }
+
+    void mouseDoubleClick (const juce::MouseEvent& e) override
+    {
+        if (owner.getTrack() != nullptr && owner.getTrack()->kit != nullptr && ! e.mods.isPopupMenu())
+            owner.main.openDrumRack (*owner.getTrack(), yToPad (e.y));
     }
 
 private:
