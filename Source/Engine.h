@@ -399,8 +399,14 @@ public:
     bool readTunerSamples (float* dest, int n) const;   // the newest n samples, oldest first; false when the tuner is off
 
     void play()  { playing = true; }
-    void stop()  { playing = false; }
+    void stop()  { playing = false; countInRemaining = 0; }
     bool isPlaying() const { return playing; }
+
+    // Count-in: call before play(). The transport then waits at the playhead while the metronome clicks `bars` bars (in the
+    // meter and tempo at the playhead, always audible), and only then starts to run. Nothing is recorded during the count-in.
+    void startCountIn (int bars);
+    bool isCountingIn() const { return playing && countInRemaining.load() > 0; }
+    int countInBeatsLeft() const;   // counted beats still to come (for the display)
     void setPositionSeconds (double s) { positionSamples = (juce::int64) juce::jmax (0.0, s * sampleRate); }
     double getPositionSeconds() const { return (double) positionSamples / sampleRate; }
     double getSampleRate() const { return sampleRate; }
@@ -500,6 +506,12 @@ private:
     };
     std::vector<Recorder> recorders;                // guarded by recLock; the audio thread only try-locks it
     std::atomic<bool> recordingActive { false };
+    std::atomic<juce::int64> countInRemaining { 0 };   // samples of count-in still to play
+    juce::int64 countInTotal = 0;
+    double countInUnitSamples = 1.0;                   // one counted beat
+    int countInNumerator = 4;                          // beats per bar (the first of each is the high click)
+    void addCountInClicks (float* outL, float* outR, int n);
+
     std::atomic<bool> punchDone { false };
     std::atomic<juce::int64> recFirstSample { -1 };
     int nextTakeGroup = 1;

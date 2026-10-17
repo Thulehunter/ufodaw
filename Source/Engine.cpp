@@ -1625,7 +1625,7 @@ void Engine::getNextAudioBlock (const juce::AudioSourceChannelInfo& info)
     // The buffer still holds the device input here, so take it before clearing it for output: record it, and keep
     // a copy of every input channel for tracks that monitor.
     const int bufferChannels = info.buffer->getNumChannels();
-    if (playing && recordingActive)
+    if (playing && recordingActive && countInRemaining.load() <= 0)   // (nothing is recorded during a count-in)
     {
         // With punch on, only the part of this block inside [punchIn, punchOut) is written.
         const auto blockPos = positionSamples.load();
@@ -1694,7 +1694,8 @@ void Engine::getNextAudioBlock (const juce::AudioSourceChannelInfo& info)
 
     drainPreviewEvents();
 
-    const bool running = playing;
+    const bool counting = playing && countInRemaining.load() > 0;   // the count-in plays: the transport waits
+    const bool running = playing && ! counting;
     const auto pos = positionSamples.load();
 
     if (! running)
@@ -1705,7 +1706,7 @@ void Engine::getNextAudioBlock (const juce::AudioSourceChannelInfo& info)
                 releaseAllNotes (*t);
             wasRunning = false;
         }
-        if (! anySynthActive() && ! anyMonitoring())   // (monitoring keeps the mixer running while stopped)
+        if (! anySynthActive() && ! anyMonitoring() && ! counting)   // (monitoring keeps the mixer running while stopped)
         {
             for (auto& t : tracks) t->level = 0.0f;
             setMasterLevel (0.0f);
@@ -1778,11 +1779,58 @@ void Engine::getNextAudioBlock (const juce::AudioSourceChannelInfo& info)
 
     mixBlock (outL, outR, info.numSamples, pos, withClick, running);
 
+    if (counting)
+        addCountInClicks (outL, outR, info.numSamples);
+
     if (running)
     {
         positionSamples += info.numSamples;
         lastBlockEnd = pos + info.numSamples;
     }
+}
+
+void Engine::startCountIn (int bars)
+{
+    if (bars <= 0)
+    {
+        countInRemaining = 0;
+        return;
+    }
+
+    const juce::ScopedLock sl (lock);
+    const double position = (double) positionSamples.load() / sampleRate;
+    const auto& section = tempoMap.sectionAt (position);
+    countInUnitSamples = section.beatUnit() * 60.0 / section.bpm * sampleRate;
+    countInNumerator = section.numerator;
+    countInTotal = (juce::int64) std::llround ((double) (bars * section.numerator) * countInUnitSamples);
+    countInRemaining = countInTotal;
+}
+
+int Engine::countInBeatsLeft() const
+{
+    const auto left = countInRemaining.load();
+    return left <= 0 ? 0 : (int) std::ceil ((double) left / juce::jmax (1.0, countInUnitSamples));
+}
+
+void Engine::addCountInClicks (float* outL, float* outR, int n)
+{
+    const auto remaining = countInRemaining.load();
+    for (int i = 0; i < n; ++i)
+    {
+        const auto elapsed = countInTotal - remaining + i;
+        if (elapsed >= countInTotal)
+            break;
+        const double k = std::floor ((double) elapsed / countInUnitSamples);
+        const double t = ((double) elapsed - k * countInUnitSamples) / sampleRate;   // seconds since this click began
+        if (t > 0.05)
+            continue;
+        const double freq = std::fmod (k, (double) countInNumerator) < 0.5 ? 1500.0 : 1000.0;
+        const auto s = (float) (std::sin (juce::MathConstants<double>::twoPi * freq * t) * std::exp (-t * 80.0) * 0.5);
+        outL[i] += s;
+        if (outR != nullptr)
+            outR[i] += s;
+    }
+    countInRemaining = juce::jmax<juce::int64> (0, remaining - n);
 }
 
 // Fills noteEvents with the note-ons/offs of a track's MIDI clips that fall inside [pos, pos + n).

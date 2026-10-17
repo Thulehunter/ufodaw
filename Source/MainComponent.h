@@ -11,6 +11,7 @@
 namespace UiSettings
 {
     inline bool panSnap = true;        // pan sliders and pan envelopes snap to panStep (Alt while dragging flips it)
+    inline int countInBars = 0;        // bars of metronome clicks before a recording starts (0 = none)
     constexpr double panStep = 0.05;   // 5 % towards left or right
 }
 
@@ -301,7 +302,9 @@ private:
     juce::ToggleButton snapButton { "Snap" };
     juce::ToggleButton panSnapButton { "Pan snap 5%" };
     juce::File currentProject;
-    juce::ToggleButton metroButton { "Metronome" };
+    juce::TextButton metroButton { "Click" };       // the metronome on / off: in the transport bar, works while playing and recording
+    juce::TextButton countInButton { "Count-in" };   // top bar: how many bars of clicks come before a recording
+    void updateCountInButton();
     TempoMap tempoMap;   // the same as the engine's; only the message thread changes either, always together
     juce::TextButton tempoButton { "Tempo" };
     juce::Label bpmLabel { {}, "BPM" }, timeLabel;

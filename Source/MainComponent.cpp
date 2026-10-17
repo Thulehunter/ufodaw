@@ -1404,7 +1404,30 @@ MainComponent::MainComponent()
     addMidiButton.onClick = [this] { addMidiTrack (false); };
     addDrumButton.onClick = [this] { addMidiTrack (true); };
     addAndMakeVisible (addDrumButton);
-    metroButton.onClick = [this] { engine.metronome = metroButton.getToggleState(); };
+    metroButton.setClickingTogglesState (true);
+    metroButton.setColour (juce::TextButton::buttonOnColourId, Theme::orange);
+    metroButton.setWantsKeyboardFocus (false);
+    metroButton.onClick = [this] { engine.metronome = metroButton.getToggleState(); grabKeyboardFocus(); };
+
+    countInButton.setWantsKeyboardFocus (false);
+    countInButton.onClick = [this]
+    {
+        juce::PopupMenu menu;
+        menu.addItem (1, "No count-in", true, UiSettings::countInBars == 0);
+        for (int bars = 1; bars <= 4; ++bars)
+            menu.addItem (bars + 1, juce::String (bars) + (bars == 1 ? " bar" : " bars"), true, UiSettings::countInBars == bars);
+        menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&countInButton), [this] (int result)
+        {
+            if (result == 0)
+                return;
+            UiSettings::countInBars = result - 1;
+            saveUiSettings();
+            updateCountInButton();
+        });
+    };
+    countInButton.setTooltip ("Count-in: this many bars of metronome clicks play before a recording starts (in the tempo and time signature "
+                              "at the playhead, also when the metronome is off). Nothing is recorded during the count-in.");
+    addAndMakeVisible (countInButton);
     snapButton.setToggleState (true, juce::dontSendNotification);
 
     loadUiSettings();
@@ -1463,7 +1486,7 @@ MainComponent::MainComponent()
     exportButton.setTooltip ("Render the whole project to a WAV file");
     undoButton.setTooltip ("Undo (Ctrl+Z)");
     redoButton.setTooltip ("Redo (Ctrl+Y)");
-    metroButton.setTooltip ("Click track while playing");
+    metroButton.setTooltip ("Metronome on / off (M), also while playing or recording. One click per beat, the first of each bar higher.");
     snapButton.setTooltip ("Snap moves and notes to a 16th-note grid (hold Alt while dragging to ignore it)");
     zoomInButton.setTooltip ("Zoom in (Ctrl + mouse wheel)");
     zoomOutButton.setTooltip ("Zoom out (Ctrl + mouse wheel)");
@@ -1593,14 +1616,26 @@ juce::File MainComponent::uiSettingsFile()
 void MainComponent::loadUiSettings()
 {
     if (auto xml = juce::XmlDocument::parse (uiSettingsFile()))
+    {
         UiSettings::panSnap = xml->getBoolAttribute ("panSnap", true);
+        UiSettings::countInBars = juce::jlimit (0, 4, xml->getIntAttribute ("countInBars", 0));
+    }
+    updateCountInButton();
 }
 
 void MainComponent::saveUiSettings()
 {
     juce::XmlElement xml ("UISETTINGS");
     xml.setAttribute ("panSnap", UiSettings::panSnap);
+    xml.setAttribute ("countInBars", UiSettings::countInBars);
     xml.writeTo (uiSettingsFile());
+}
+
+void MainComponent::updateCountInButton()
+{
+    countInButton.setButtonText (UiSettings::countInBars == 0 ? juce::String ("Count-in: off")
+                                                              : "Count-in: " + juce::String (UiSettings::countInBars) + (UiSettings::countInBars == 1 ? " bar" : " bars"));
+    countInButton.setColour (juce::TextButton::buttonColourId, UiSettings::countInBars > 0 ? Theme::orangeDim : Theme::buttonOff);
 }
 
 //==============================================================================
@@ -1676,7 +1711,7 @@ void MainComponent::liveNote (int pitch, bool on, float velocity)
         return;
 
     engine.previewNote (*t, pitch, on, velocity);
-    if (! midiRecording)
+    if (! midiRecording || engine.isCountingIn())   // (notes played during the count-in are heard, not recorded)
         return;
 
     const double now = engine.getPositionSeconds();
@@ -2321,7 +2356,7 @@ void MainComponent::resized()
     top.removeFromLeft (4);
     tempoButton.setBounds (top.removeFromLeft (58));
     top.removeFromLeft (10);
-    metroButton.setBounds (top.removeFromLeft (110));
+    countInButton.setBounds (top.removeFromLeft (124));
     separator();
     openButton.setBounds (top.removeFromLeft (56));
     top.removeFromLeft (4);
@@ -2356,6 +2391,7 @@ void MainComponent::resized()
     }
     loopButton.setBounds (bx + 6, by + 8, 60, tb - 16);
     punchButton.setBounds (bx + 6 + 60 + 6, by + 8, 60, tb - 16);
+    metroButton.setBounds (bx + 6 + 60 + 6 + 60 + 6, by + 8, 56, tb - 16);
 
     // snap + zoom live in the corner above the track headers
     auto corner = juce::Rectangle<int> (0, topBarHeight, controlsWidth, rulerHeight).reduced (6, 2);
@@ -2816,6 +2852,12 @@ bool MainComponent::keyPressed (const juce::KeyPress& k)
     if (k == juce::KeyPress::spaceKey)  { if (engine.isPlaying()) pausePlayback(); else startPlayback(); return true; }
     if (k == juce::KeyPress::returnKey) { rewindButton.triggerClick(); return true; }
     if (k.getKeyCode() == 'R' && ! mods.isAnyModifierKeyDown()) { toggleRecording(); return true; }
+    if (k.getKeyCode() == 'M' && ! mods.isAnyModifierKeyDown())   // metronome on / off, also during playback and recording
+    {
+        metroButton.setToggleState (! metroButton.getToggleState(), juce::dontSendNotification);
+        engine.metronome = metroButton.getToggleState();
+        return true;
+    }
     if (k.getKeyCode() == 'Q' && ! mods.isAnyModifierKeyDown())
     {
         if (selTrack != nullptr && selClip >= 0 && engine.isMidiClip (*selTrack, selClip))
@@ -2837,7 +2879,10 @@ void MainComponent::timerCallback()
 {
     const double p = engine.getPositionSeconds();
     const int mins = (int) (p / 60.0);
-    timeLabel.setText (juce::String::formatted ("%02d:%06.3f", mins, p - mins * 60.0), juce::dontSendNotification);
+    if (engine.isCountingIn())
+        timeLabel.setText ("COUNT  " + juce::String (engine.countInBeatsLeft()), juce::dontSendNotification);
+    else
+        timeLabel.setText (juce::String::formatted ("%02d:%06.3f", mins, p - mins * 60.0), juce::dontSendNotification);
 
     if (engine.isRecording() && engine.punchEnabled && engine.punchFinished())
         finishRecording();   // the punch-out has passed: close the recording, playback carries on
@@ -2921,6 +2966,8 @@ void MainComponent::toggleRecording()
         recMidiTrack = armed;
         recStartSeconds = engine.getPositionSeconds();
         midiRecording = true;
+        if (! engine.isPlaying())
+            engine.startCountIn (UiSettings::countInBars);   // clicks first; the notes are recorded once the transport runs
         startPlayback();
         return;
     }
@@ -2981,6 +3028,8 @@ void MainComponent::toggleRecording()
     recLoopEnd = engine.loopEnd;
     recLoopTakes = ! engine.punchEnabled && engine.loopEnabled && recLoopEnd > recLoopStart + 0.05 && recStartSeconds < recLoopEnd;
 
+    if (! engine.isPlaying())
+        engine.startCountIn (UiSettings::countInBars);   // the clicks come first, then the recording starts at the playhead
     startPlayback();   // recording only captures while the transport runs
 }
 

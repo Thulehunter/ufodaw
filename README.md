@@ -10,6 +10,9 @@ A small digital audio workstation for Windows, written in C++17 with [JUCE](http
   effects, volume and pan.
 - **Tuner** - **Tuner** (bottom right) opens a chromatic tuner for any input of your interface: note, cents sharp/flat, a needle and
   the frequency (A = 430-450 Hz). It starts on the input of the armed track and works down to a low bass B.
+- **Metronome and count-in** - the **Click** button in the transport bar (or `M`) switches the metronome on and off, also while playing
+  or recording. **Count-in** (top bar) sets 0-4 bars of clicks before a recording starts; they follow the tempo and time signature at
+  the playhead, play even when the metronome is off, and nothing is recorded during them (the display counts the beats down).
 - **Loop recording with takes** - record with **Loop** on: every pass becomes a take. The newest plays; right-click the clip to
   *Choose take*. Split (`S`) cuts all takes at the playhead, so each part can use a different take (comping); *Keep this take*
   flattens the result.
@@ -139,6 +142,8 @@ An arpeggiator or similar plugin that should change the notes of one track goes 
 | Tempo / time signature changes | **Tempo** button next to BPM: add sections that start at a bar, each with a BPM and a time signature |
 | Send a track to a bus / choose its output | **Out** button (bottom right of the track header, e.g. *→ Master*): pick the output and set a send level per bus |
 | Quantize / swing / humanize a MIDI clip | select the clip and press `Q`, or right-click it |
+| Metronome on / off | **Click** next to Punch, or `M` (works during playback and recording) |
+| Count-in before recording | **Count-in** in the top bar: off, 1, 2, 3 or 4 bars; applies when you press Record from a stop |
 | Punch in/out | turn on **Punch** (`P`); the region is the selected clip, or two bars at the playhead. Change it with **Shift + right-drag** on the ruler (red). Press Record: playback starts a bar before the region, records inside it, and the recording closes itself at the punch-out |
 | Record several takes | turn on **Loop** (set the loop with right-drag on the ruler) and press Record; stop when you have enough. Pick takes with right-click > *Choose take*; `S` splits all takes of a clip at the playhead for comping |
 | Tune an instrument | **Tuner** at the bottom right; pick the input (defaults to the armed track's input) |
