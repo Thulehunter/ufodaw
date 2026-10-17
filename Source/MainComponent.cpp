@@ -6,6 +6,7 @@
 #include "RoutingPanel.h"
 #include "MidiTools.h"
 #include "TempoPanel.h"
+#include "SyncPanels.h"
 #include <algorithm>
 #include <map>
 
@@ -1194,10 +1195,10 @@ private:
 //==============================================================================
 // The audio settings window: JUCE's device selector (driver, device, sample rate, buffer size, channels),
 // plus a note on ASIO when no ASIO driver type is available in this build.
-class AudioSettingsPanel : public juce::Component
+class AudioDeviceTab : public juce::Component
 {
 public:
-    explicit AudioSettingsPanel (juce::AudioDeviceManager& dm)
+    explicit AudioDeviceTab (juce::AudioDeviceManager& dm)
         : selector (dm, 0, 256, 1, 256, false, false, true, false)
     {
         addAndMakeVisible (selector);
@@ -1233,6 +1234,27 @@ private:
     juce::AudioDeviceSelectorComponent selector;
     juce::Label hint;
     bool showsHint = false;
+};
+
+// The audio settings window has three tabs: the device, the recording latency compensation, and MIDI clock to hardware.
+class AudioSettingsPanel : public juce::TabbedComponent
+{
+public:
+    AudioSettingsPanel (juce::AudioDeviceManager& dm, Engine& engine, std::function<void()> onSettingsChanged)
+        : juce::TabbedComponent (juce::TabbedButtonBar::TabsAtTop)
+    {
+        setTabBarDepth (32);
+        setOutline (0);
+        auto* device = new AudioDeviceTab (dm);
+        auto* latency = new LatencyPanel (dm, engine, onSettingsChanged);
+        auto* clock = new ClockPanel (engine, onSettingsChanged);
+        const int width = juce::jmax (device->getWidth(), latency->getWidth(), clock->getWidth());   // (adding a tab resizes it)
+        const int height = juce::jmax (device->getHeight(), latency->getHeight(), clock->getHeight());
+        addTab ("Audio device", Theme::panel, device, true);
+        addTab ("Recording latency", Theme::panel, latency, true);
+        addTab ("MIDI clock", Theme::panel, clock, true);
+        setSize (width, height + getTabBarDepth());
+    }
 };
 
 // Renders every stem on a background thread behind a progress window (with a cancel button), then reports.
@@ -1619,8 +1641,17 @@ void MainComponent::loadUiSettings()
     {
         UiSettings::panSnap = xml->getBoolAttribute ("panSnap", true);
         UiSettings::countInBars = juce::jlimit (0, 4, xml->getIntAttribute ("countInBars", 0));
+        UiSettings::latencyMode = juce::jlimit (0, 2, xml->getIntAttribute ("latencyMode", 0));
+        UiSettings::latencyMeasuredMs = xml->getDoubleAttribute ("latencyMeasuredMs", 0.0);
+        UiSettings::latencyExtraMs = xml->getDoubleAttribute ("latencyExtraMs", 0.0);
+        UiSettings::clockOffsetMs = xml->getDoubleAttribute ("clockOffsetMs", 0.0);
+        UiSettings::clockDevices.clear();
+        for (auto* e : xml->getChildWithTagNameIterator ("CLOCKOUT"))
+            UiSettings::clockDevices.add (e->getStringAttribute ("id"));
     }
     updateCountInButton();
+    engine.setClockOffsetMs (UiSettings::clockOffsetMs);
+    engine.setClockOutputs (UiSettings::clockDevices);   // the hardware that follows UFODAW's tempo
 }
 
 void MainComponent::saveUiSettings()
@@ -1628,7 +1659,30 @@ void MainComponent::saveUiSettings()
     juce::XmlElement xml ("UISETTINGS");
     xml.setAttribute ("panSnap", UiSettings::panSnap);
     xml.setAttribute ("countInBars", UiSettings::countInBars);
+    xml.setAttribute ("latencyMode", UiSettings::latencyMode);
+    xml.setAttribute ("latencyMeasuredMs", UiSettings::latencyMeasuredMs);
+    xml.setAttribute ("latencyExtraMs", UiSettings::latencyExtraMs);
+    xml.setAttribute ("clockOffsetMs", UiSettings::clockOffsetMs);
+    for (auto& id : UiSettings::clockDevices)
+        xml.createNewChildElement ("CLOCKOUT")->setAttribute ("id", id);
     xml.writeTo (uiSettingsFile());
+}
+
+// How much earlier a recording is placed on the timeline: the round trip through the interface, plus the extra offset.
+double MainComponent::recordLatencySeconds() const
+{
+    double ms = 0.0;
+    if (UiSettings::latencyMode == 0)
+    {
+        if (auto* device = deviceManager.getCurrentAudioDevice())
+            ms = (double) (device->getInputLatencyInSamples() + device->getOutputLatencyInSamples()) * 1000.0
+                 / juce::jmax (1.0, device->getCurrentSampleRate());
+    }
+    else if (UiSettings::latencyMode == 1)
+    {
+        ms = UiSettings::latencyMeasuredMs;
+    }
+    return (ms + UiSettings::latencyExtraMs) / 1000.0;
 }
 
 void MainComponent::updateCountInButton()
@@ -1680,7 +1734,7 @@ void MainComponent::updateAudioInfo()
 void MainComponent::openAudioSettings()
 {
     juce::DialogWindow::LaunchOptions options;
-    options.content.setOwned (new AudioSettingsPanel (deviceManager));
+    options.content.setOwned (new AudioSettingsPanel (deviceManager, engine, [this] { saveUiSettings(); }));
     options.dialogTitle = "Audio settings";
     options.dialogBackgroundColour = Theme::panel;
     options.componentToCentreAround = this;
@@ -3097,7 +3151,13 @@ void MainComponent::finishRecording()
 
     // the first recorded sample is where the clip starts (with punch that is the punch-in, or later)
     const double recordedStart = engine.recordedStartSeconds();
-    const double clipStartSeconds = recordedStart >= 0.0 ? recordedStart : recStartSeconds;
+    const double sampleRate = engine.getSampleRate();
+
+    // Latency compensation: what was recorded came back through the interface later than it was played, so the clip is
+    // placed earlier by that round trip. At the very start of the project the part that would lie before 0 is trimmed.
+    const double rawStart = (recordedStart >= 0.0 ? recordedStart : recStartSeconds) - recordLatencySeconds();
+    const double clipStartSeconds = juce::jmax (0.0, rawStart);
+    const auto trimSamples = (juce::int64) std::llround (juce::jmax (0.0, -rawStart) * sampleRate);
     engine.stopRecording();
 
     // each recorded file becomes a clip where recording began: on its armed track, or on a new track
@@ -3119,21 +3179,27 @@ void MainComponent::finishRecording()
             continue;
         }
 
-        // A loop recording is cut at the loop end into one take per pass; the newest plays, the others can be chosen.
         Clip whole;
+        if (trimSamples > 0 && engine.getClip (*t, id, whole))   // the start of the file lies before the beginning of the project
+        {
+            const double trim = (double) trimSamples / sampleRate;
+            engine.setClipRegion (*t, id, 0.0, trim, juce::jmax (0.01, whole.sourceLength() - trim));
+        }
+
+        // A loop recording is cut at the loop end into one take per pass; the newest plays, the others can be chosen.
         if (recLoopTakes && engine.getClip (*t, id, whole) && whole.audio != nullptr)
         {
-            const double sr = engine.getSampleRate();
+            const double sr = sampleRate;
             const auto loopStartS = (juce::int64) (recLoopStart * sr), loopEndS = (juce::int64) (recLoopEnd * sr);
             const auto passS = loopEndS - loopStartS;
-            const auto firstS = loopEndS - (juce::int64) std::llround (clipStartSeconds * sr);
+            const auto firstS = loopEndS - (juce::int64) std::llround (rawStart * sr);   // file sample where the first pass ends
             const auto totalS = (juce::int64) whole.audio->getNumSamples();
 
-            if (passS > 0 && firstS > 0 && totalS > firstS + (juce::int64) (0.05 * sr))
+            if (passS > 0 && firstS > trimSamples && totalS > firstS + (juce::int64) (0.05 * sr))
             {
                 std::vector<Clip> takes;
                 auto take = whole;
-                take.length = (double) firstS / sr;   // the first pass: from where recording began to the loop end
+                take.length = (double) (firstS - trimSamples) / sr;   // the first pass: from where recording began to the loop end
                 takes.push_back (take);
                 for (juce::int64 off = firstS; off < totalS; off += passS)
                 {

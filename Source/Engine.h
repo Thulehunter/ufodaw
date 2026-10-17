@@ -333,6 +333,26 @@ public:
     void setExternalOuts (Track&, std::vector<ExternalRoute>);
     ExternalMidiSender& getExternalMidi() { return externalMidi; }
     void setOutputLatencyMs (double ms) { outputLatencyMs = ms; }   // MIDI to hardware leaves this much later, to line up with the audio
+
+    // MIDI clock to hardware: while the transport runs, 24 clock ticks per quarter note (following the tempo map) go to these
+    // outputs, with Start / Continue + Song Position when playback begins or jumps (a loop, a click on the ruler) and Stop when it
+    // ends. `deviceIds` are MIDI output identifiers; an empty list switches the clock off.
+    void setClockOutputs (const juce::StringArray& deviceIds);
+    void setClockOffsetMs (double ms) { clockOffsetMs = ms; }       // shifts the clock earlier (-) or later (+) to line up with hardware
+    void setClockPorts (std::vector<int> ports)                      // for tests: use these port numbers directly (see ExternalMidiSender::testSink)
+    {
+        const juce::ScopedLock sl (lock);
+        clockPorts = std::move (ports);
+        clockRunning = false;
+    }
+
+    // Round-trip latency measurement: plays a short burst on the first two outputs and listens on one input channel (the
+    // enabled inputs are numbered from 0, as for recording). Connect an output to that input with a cable, or point a
+    // microphone at the speakers. Poll latencyTestState(): 1 = running, 2 = recorded and ready for analyseLatencyTest().
+    bool startLatencyTest (int inputChannel);
+    int latencyTestState() const { return latencyState.load(); }
+    int analyseLatencyTest();                                       // delay in samples; -1 if the burst was not heard. Ends the test.
+    void cancelLatencyTest() { latencyState = 0; }
     void addMidiFx (Track&, std::shared_ptr<PluginSlot>);
     void removeMidiFx (Track&, int index);
     void preparePlugin (PluginSlot&);                           // layout + prepareToPlay for the current audio setup
@@ -506,6 +526,22 @@ private:
     };
     std::vector<Recorder> recorders;                // guarded by recLock; the audio thread only try-locks it
     std::atomic<bool> recordingActive { false };
+    // MIDI clock (guarded by `lock`; the audio thread reads it while it holds it)
+    std::vector<int> clockPorts;
+    std::atomic<double> clockOffsetMs { 0.0 };
+    bool clockRunning = false;
+    juce::int64 clockLastEnd = 0;
+    void emitClock (juce::int64 pos, int n, bool running);
+
+    // latency test
+    std::atomic<int> latencyState { 0 };               // 0 idle, 1 running, 2 recorded
+    std::vector<float> latencyCapture;
+    juce::int64 latencyPos = 0, latencyTotal = 0, latencyBurstStart = 0;
+    int latencyChannel = 0;
+    static constexpr int latencyBurstLength = 192;
+    static float latencyBurstSample (int i);
+    void runLatencyTest (const juce::AudioSourceChannelInfo&);
+
     std::atomic<juce::int64> countInRemaining { 0 };   // samples of count-in still to play
     juce::int64 countInTotal = 0;
     double countInUnitSamples = 1.0;                   // one counted beat

@@ -1676,6 +1676,13 @@ void Engine::getNextAudioBlock (const juce::AudioSourceChannelInfo& info)
 
     info.clearActiveBufferRegion();
 
+    if (latencyState.load() == 1)   // measuring the round trip: only the test burst plays
+    {
+        runLatencyTest (info);
+        setMasterLevel (0.0f);
+        return;
+    }
+
     if (offlineRendering)   // an export is using the mixer: stay silent and out of its way
     {
         setMasterLevel (0.0f);
@@ -1705,6 +1712,7 @@ void Engine::getNextAudioBlock (const juce::AudioSourceChannelInfo& info)
             for (auto& t : tracks)
                 releaseAllNotes (*t);
             wasRunning = false;
+            emitClock (0, 0, false);   // playback ended: hardware gets a MIDI Stop
         }
         if (! anySynthActive() && ! anyMonitoring() && ! counting)   // (monitoring keeps the mixer running while stopped)
         {
@@ -1787,6 +1795,169 @@ void Engine::getNextAudioBlock (const juce::AudioSourceChannelInfo& info)
         positionSamples += info.numSamples;
         lastBlockEnd = pos + info.numSamples;
     }
+}
+
+//==============================================================================
+// MIDI clock
+
+void Engine::setClockOutputs (const juce::StringArray& deviceIds)
+{
+    std::vector<int> ports;
+    for (auto& id : deviceIds)   // opens the devices (message thread, before the lock: this can take a moment)
+        if (const int port = externalMidi.openDevice (id); port >= 0 && std::find (ports.begin(), ports.end(), port) == ports.end())
+            ports.push_back (port);
+
+    const juce::ScopedLock sl (lock);
+    if (clockRunning)   // switching off (or changing) while the transport runs: the old outputs are told to stop
+        for (int p : clockPorts)
+            externalMidi.send (p, juce::MidiMessage::midiStop(), juce::Time::getMillisecondCounterHiRes());
+    clockPorts = std::move (ports);
+    clockRunning = false;
+}
+
+// Called for every block that plays (and with running == false once when playback ends). Clock ticks are 1/24 of a quarter note
+// on the tempo map, each stamped with the moment it should leave, like notes to hardware.
+void Engine::emitClock (juce::int64 pos, int n, bool running)
+{
+    if (clockPorts.empty() || offlineRendering)
+    {
+        clockRunning = false;
+        return;
+    }
+
+    const double shiftMs = outputLatencyMs.load() + clockOffsetMs.load();
+    auto stamp = [&] (double sampleOffset) { return blockStartMs + 1000.0 * sampleOffset / sampleRate + shiftMs; };
+    auto sendAll = [&] (const juce::MidiMessage& m, double at) { for (int p : clockPorts) externalMidi.send (p, m, at); };
+
+    if (! running)
+    {
+        if (clockRunning)
+        {
+            sendAll (juce::MidiMessage::midiStop(), stamp (0.0));
+            clockRunning = false;
+        }
+        return;
+    }
+
+    const double b0 = tempoMap.secondsToBeats ((double) pos / sampleRate);
+    const double b1 = tempoMap.secondsToBeats ((double) (pos + n) / sampleRate);
+    auto tickOffset = [&] (juce::int64 k)   // samples into this block at which tick k falls
+    {
+        return juce::jmax (0.0, tempoMap.beatsToSeconds ((double) k / 24.0) * sampleRate - (double) pos);
+    };
+    const juce::int64 firstTick = (juce::int64) std::ceil (b0 * 24.0 - 1.0e-6);
+
+    if (! clockRunning || pos != clockLastEnd)   // playback began, or the position jumped (loop, a click on the ruler)
+    {
+        const double first = stamp (tickOffset (firstTick));
+        if (clockRunning)
+            sendAll (juce::MidiMessage::midiStop(), first - 3.0);
+
+        const int sixteenths = juce::jlimit (0, 16383, (int) std::llround (b0 * 4.0));
+        if (sixteenths > 0)
+        {
+            sendAll (juce::MidiMessage::songPositionPointer (sixteenths), first - 2.0);
+            sendAll (juce::MidiMessage::midiContinue(), first - 1.0);
+        }
+        else
+        {
+            sendAll (juce::MidiMessage::midiStart(), first - 1.0);
+        }
+        clockRunning = true;
+    }
+
+    for (juce::int64 k = firstTick; (double) k < b1 * 24.0 - 1.0e-6; ++k)
+        sendAll (juce::MidiMessage::midiClock(), stamp (tickOffset (k)));
+
+    clockLastEnd = pos + n;
+}
+
+//==============================================================================
+// Round-trip latency test
+
+float Engine::latencyBurstSample (int i)
+{
+    // a burst of deterministic noise under a Hann window: it correlates sharply, also after the interface's filters
+    juce::uint32 state = 12345u;
+    float v = 0.0f;
+    for (int k = 0; k <= i; ++k)
+    {
+        state = state * 1664525u + 1013904223u;
+        v = (float) (state >> 8) / (float) (1u << 24) * 2.0f - 1.0f;
+    }
+    const float window = 0.5f - 0.5f * std::cos (juce::MathConstants<float>::twoPi * (float) i / (float) (latencyBurstLength - 1));
+    return 0.6f * v * window;
+}
+
+bool Engine::startLatencyTest (int inputChannel)
+{
+    if (latencyState.load() == 1 || playing)
+        return false;
+
+    const juce::ScopedLock sl (lock);
+    latencyTotal = (juce::int64) (1.5 * sampleRate);
+    latencyBurstStart = (juce::int64) (0.25 * sampleRate);
+    latencyCapture.assign ((size_t) latencyTotal, 0.0f);
+    latencyPos = 0;
+    latencyChannel = juce::jlimit (0, 63, inputChannel);
+    latencyState = 1;
+    return true;
+}
+
+void Engine::runLatencyTest (const juce::AudioSourceChannelInfo& info)
+{
+    auto* outL = info.buffer->getWritePointer (0, info.startSample);
+    auto* outR = info.buffer->getNumChannels() > 1 ? info.buffer->getWritePointer (1, info.startSample) : nullptr;
+    const bool haveInput = latencyChannel < inputChannelsCopied;
+
+    for (int i = 0; i < info.numSamples && latencyPos < latencyTotal; ++i, ++latencyPos)
+    {
+        latencyCapture[(size_t) latencyPos] = haveInput ? inputBuf.getReadPointer (latencyChannel)[i] : 0.0f;
+        const auto into = latencyPos - latencyBurstStart;
+        if (into >= 0 && into < latencyBurstLength)
+        {
+            const float s = latencyBurstSample ((int) into);
+            outL[i] = s;
+            if (outR != nullptr)
+                outR[i] = s;
+        }
+    }
+
+    if (latencyPos >= latencyTotal)
+        latencyState = 2;
+}
+
+int Engine::analyseLatencyTest()
+{
+    if (latencyState.load() != 2)
+        return -1;
+
+    std::vector<float> burst ((size_t) latencyBurstLength);
+    for (int i = 0; i < latencyBurstLength; ++i)
+        burst[(size_t) i] = latencyBurstSample (i);
+
+    // cross-correlation of what was heard with the burst: the lag of the peak is the round-trip delay
+    const auto n = (juce::int64) latencyCapture.size();
+    double best = 0.0, sumAbs = 0.0;
+    juce::int64 bestLag = -1, lags = 0;
+    for (juce::int64 d = latencyBurstStart; d + latencyBurstLength < n; ++d, ++lags)
+    {
+        double c = 0.0;
+        for (int j = 0; j < latencyBurstLength; ++j)
+            c += (double) burst[(size_t) j] * (double) latencyCapture[(size_t) (d + j)];
+        sumAbs += std::abs (c);
+        if (c > best)
+        {
+            best = c;
+            bestLag = d;
+        }
+    }
+    latencyState = 0;
+
+    const double mean = lags > 0 ? sumAbs / (double) lags : 0.0;
+    if (bestLag < 0 || best < 8.0 * mean || best < 0.05)
+        return -1;   // nothing that looks like the burst
+    return (int) (bestLag - latencyBurstStart);
 }
 
 void Engine::startCountIn (int bars)
@@ -2094,6 +2265,9 @@ void Engine::mixBlock (float* outL, float* outR, int n, juce::int64 pos, bool wi
 
     playHead.samples = pos;
     playHead.playing = running;
+
+    if (running)
+        emitClock (pos, n, true);   // MIDI clock to hardware (only when outputs are chosen)
 
     int maxLatency = 0;
     for (auto& t : tracks)

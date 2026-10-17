@@ -12,6 +12,16 @@ namespace UiSettings
 {
     inline bool panSnap = true;        // pan sliders and pan envelopes snap to panStep (Alt while dragging flips it)
     inline int countInBars = 0;        // bars of metronome clicks before a recording starts (0 = none)
+
+    // Recorded audio is placed this much earlier, to undo the round trip through the interface: 0 = the latency the driver
+    // reports, 1 = what the latency test measured, 2 = none. Plus a manual extra offset.
+    inline int latencyMode = 0;
+    inline double latencyMeasuredMs = 0.0;
+    inline double latencyExtraMs = 0.0;
+
+    // MIDI outputs (identifiers) that get MIDI clock / start / stop, and a shift for the clock in milliseconds
+    inline juce::StringArray clockDevices;
+    inline double clockOffsetMs = 0.0;
     constexpr double panStep = 0.05;   // 5 % towards left or right
 }
 
@@ -305,6 +315,7 @@ private:
     juce::TextButton metroButton { "Click" };       // the metronome on / off: in the transport bar, works while playing and recording
     juce::TextButton countInButton { "Count-in" };   // top bar: how many bars of clicks come before a recording
     void updateCountInButton();
+    double recordLatencySeconds() const;   // how much earlier a recording is placed on the timeline (the round trip through the interface)
     TempoMap tempoMap;   // the same as the engine's; only the message thread changes either, always together
     juce::TextButton tempoButton { "Tempo" };
     juce::Label bpmLabel { {}, "BPM" }, timeLabel;

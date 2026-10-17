@@ -113,6 +113,24 @@ under *External MIDI instruments (hardware)*, for example your interface's "... 
 You can combine outputs: a Stochas sequencer track can drive internal synths and several hardware synths at once, each with its own
 channel. Exports never play the hardware.
 
+## Recording latency and MIDI clock
+
+**Audio...** has three tabs. *Audio device* is the usual driver / device / buffer choice.
+
+**Recording latency.** Sound takes time to go out to your headphones and back in through the interface, so a recording arrives
+late. UFODAW places a recording on the timeline *earlier* by that round trip, so it lines up with what you played along to.
+- *Automatic* uses what the driver reports (input + output latency). *Measured* uses the **Measure** button: it plays a short
+  click through the first two outputs and listens for it on the input you pick. Connect an output of your interface to that input with
+  a cable (or point a microphone at the speakers), turn the monitors down, and press Measure; the result is kept. *None* switches it off.
+- *Extra offset* fine-tunes in milliseconds (positive = earlier). Record a click or a clap and check it lands on the grid; adjust if not.
+- This also applies to loop takes and punch recordings; at the very start of a project the part that would lie before 0 is trimmed.
+
+**MIDI clock.** Tick the MIDI output(s) of your drum machine, sequencer or synth under *MIDI clock*: while the transport runs they get
+24 clock ticks per quarter note (following the tempo map, so tempo changes carry over), a Start (or Continue with the song position
+when you start somewhere else), a new position when you jump (a loop, a click on the ruler), and a Stop when playback ends.
+*Clock shift* moves the clock a few milliseconds earlier or later to line the hardware up with the audio. Exports never send clock.
+Notes to hardware are set up separately, in a track's VST panel (*External MIDI instruments*).
+
 ## Sequencer plugins (Stochas etc.) driving a synthesizer
 
 1. Add two MIDI tracks (**+ MIDI**): one for the sequencer, one for the synth.
@@ -144,6 +162,8 @@ An arpeggiator or similar plugin that should change the notes of one track goes 
 | Quantize / swing / humanize a MIDI clip | select the clip and press `Q`, or right-click it |
 | Metronome on / off | **Click** next to Punch, or `M` (works during playback and recording) |
 | Count-in before recording | **Count-in** in the top bar: off, 1, 2, 3 or 4 bars; applies when you press Record from a stop |
+| Latency compensation | **Audio...** > *Recording latency*: automatic, measured with a cable from an output to an input, plus a manual offset |
+| MIDI clock to hardware | **Audio...** > *MIDI clock*: tick the outputs that should follow the tempo |
 | Punch in/out | turn on **Punch** (`P`); the region is the selected clip, or two bars at the playhead. Change it with **Shift + right-drag** on the ruler (red). Press Record: playback starts a bar before the region, records inside it, and the recording closes itself at the punch-out |
 | Record several takes | turn on **Loop** (set the loop with right-drag on the ruler) and press Record; stop when you have enough. Pick takes with right-click > *Choose take*; `S` splits all takes of a clip at the playhead for comping |
 | Tune an instrument | **Tuner** at the bottom right; pick the input (defaults to the armed track's input) |
@@ -201,6 +221,7 @@ builds Release and writes `dist\UFODAW-<version>-win64.zip`. For a regular insta
 | `Source/PianoRoll.*`, `Source/DrumSequencer.*` | Note editors below the arrangement |
 | `Source/Tuner.*` | Pitch detection (YIN) and the tuner window |
 | `Source/TempoMap.h`, `Source/TempoPanel.h` | Tempo and time signature sections: seconds / beats / bars, and the list to edit them |
+| `Source/SyncPanels.h` | The latency and MIDI clock tabs of the audio settings |
 | `Source/RoutingPanel.h`, `Source/MidiTools.h` | Output and sends of a track; quantize / swing / humanize |
 | `Source/FxPanel.*`, `Source/PluginPanel.*` | Per-track effect and plugin panels |
 
