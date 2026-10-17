@@ -71,6 +71,18 @@ private:
     juce::Label routeHeading, routeHint;
     std::vector<std::unique_ptr<RouteRow>> routeRows;
 
+    // Hardware: the MIDI outputs of the computer (interface MIDI OUT, USB MIDI), with the channel to take and the channel to send.
+    struct ExternalRow
+    {
+        juce::String id, name;
+        juce::ToggleButton use;
+        juce::ComboBox from, to;
+    };
+    juce::Label externalHeading, externalHint;
+    std::vector<std::unique_ptr<ExternalRow>> externalRows;
+    void rebuildExternal();
+    void externalChanged();
+
     PluginList midiFxList, insertList;
     juce::TextButton manageButton { "Manage plugins..." };
 

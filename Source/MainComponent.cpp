@@ -1297,6 +1297,8 @@ void MainComponent::updateAudioInfo()
     {
         const double rate = device->getCurrentSampleRate();
         const int buffer = device->getCurrentBufferSizeSamples();
+        // MIDI to hardware leaves this much later, so the analog synth plays in time with what is heard from the speakers
+        engine.setOutputLatencyMs ((double) device->getOutputLatencyInSamples() * 1000.0 / juce::jmax (1.0, rate));
         audioInfoText = "Audio: " + device->getTypeName() + " - " + device->getName() + "  |  "
                         + juce::String (rate / 1000.0, 1) + " kHz, " + juce::String (buffer) + " smp ("
                         + juce::String (buffer * 1000.0 / juce::jmax (1.0, rate), 1) + " ms), "
@@ -2563,6 +2565,18 @@ void MainComponent::saveProject (const juce::File& file)
         }
         o->setProperty ("midiOuts", outs);
 
+        juce::Array<juce::var> hardware;   // hardware MIDI outputs
+        for (auto& route : t->externalOuts)
+        {
+            auto* ho = new juce::DynamicObject();
+            ho->setProperty ("device", route.deviceId);
+            ho->setProperty ("name", route.deviceName);
+            ho->setProperty ("channel", route.channel);
+            ho->setProperty ("outChannel", route.outChannel);
+            hardware.add (juce::var (ho));
+        }
+        o->setProperty ("externalOuts", hardware);
+
         trackList.add (juce::var (o));
     }
 
@@ -2745,6 +2759,24 @@ void MainComponent::loadProject (const juce::File& file)
         }
 
         readEffectsAndAutomation (*t, item, pluginProblems);
+
+        if (auto* hardware = item["externalOuts"].getArray())   // hardware MIDI outputs (opened here)
+        {
+            std::vector<ExternalRoute> routes;
+            for (auto& hv : *hardware)
+            {
+                ExternalRoute r;
+                r.deviceId = hv["device"].toString();
+                r.deviceName = hv["name"].toString();
+                r.channel = (int) hv["channel"];
+                r.outChannel = hv.hasProperty ("outChannel") ? (int) hv["outChannel"] : 1;
+                routes.push_back (r);
+            }
+            engine.setExternalOuts (*t, routes);
+            for (auto& r : t->externalOuts)
+                if (r.port < 0)
+                    pluginProblems.add (t->name + ": MIDI output \"" + r.deviceName + "\" is not available");
+        }
 
         addTrackUI (*t);
     }

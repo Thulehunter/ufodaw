@@ -14,6 +14,7 @@ A small digital audio workstation for Windows, written in C++17 with [JUCE](http
 - **Effects per track** - 3-band EQ, compressor, delay, reverb.
 - **VST3 hosting** - instruments and effects, with their own editor windows; plugin states are saved in the project.
 - **MIDI routing** - a sequencer plugin on one track can play the synth (built-in, drum kit or VST) of one or more other tracks; plugins receive tempo, bar position and play state from the DAW.
+- **External hardware** - the MIDI notes of a track or sequencer plugin can play analog/hardware synths through any MIDI output, with channel selection.
 - **MIDI effects** - arpeggiators, chord tools and other MIDI plugins can sit in front of a track's instrument.
 - **Plugin delay compensation** - tracks are delayed to line up with plugins that report latency (up to half a second).
 - **Automation** - breakpoint envelopes for volume, pan, every built-in effect parameter, the synth, and any parameter of a hosted VST3 plugin.
@@ -67,6 +68,23 @@ Release alike), and `scripts\package.ps1` refuses to make a package without it (
 Notes: Windows lets a program use one ASIO driver at a time. To use two interfaces together, use *Windows Audio*
 (input and output can be different devices there) or an aggregate driver from the interface maker. Distributing a build
 that includes ASIO means following Steinberg's ASIO license (the SDK is also offered under the GPLv3).
+
+## Playing an external (analog) synth
+
+Any MIDI track, and any sequencer track (Stochas...), can play **hardware**: open the track's **VST** panel and tick the MIDI output
+under *External MIDI instruments (hardware)*, for example your interface's "... MIDI" output, or a USB MIDI device.
+
+1. Connect the interface's (or USB) MIDI OUT to the synth's MIDI IN, and set the synth to the channel you send on.
+2. In the panel pick the output. **From channel** chooses which of the sequencer's channels goes there (All, or one channel -
+   e.g. one Stochas track per synth); **Send as channel** is the channel the hardware gets (1 by default, or "Keep channel").
+3. Press play. The notes leave at the right moment, shifted by the audio device's output latency so the synth stays in time with
+   the rest. When playback stops, "all notes off" is sent so nothing hangs.
+4. A track that sends to hardware makes no sound itself (and gives no stem). To hear the synth in the DAW, record its audio:
+   connect it to an interface input and record it on an audio track. Until you do, you can listen to it through the interface's
+   direct monitoring.
+
+You can combine outputs: a Stochas sequencer track can drive internal synths and several hardware synths at once, each with its own
+channel. Exports never play the hardware.
 
 ## Sequencer plugins (Stochas etc.) driving a synthesizer
 

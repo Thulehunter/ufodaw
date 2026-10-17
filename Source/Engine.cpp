@@ -131,6 +131,59 @@ void Engine::setMidiOuts (Track& source, std::vector<MidiRoute> routes)
     source.routedMidi.clear();
 }
 
+//==============================================================================
+// Hardware MIDI outputs
+
+void Engine::setExternalOuts (Track& t, std::vector<ExternalRoute> routes)
+{
+    for (auto& r : routes)   // open the devices (message thread, before the lock: this can take a moment)
+    {
+        r.port = externalMidi.openDevice (r.deviceId);
+        if (r.port < 0 && r.deviceName.isNotEmpty())
+            r.port = externalMidi.openDeviceByName (r.deviceName);
+        r.channel = juce::jlimit (0, 16, r.channel);
+        r.outChannel = juce::jlimit (0, 16, r.outChannel);
+    }
+
+    const juce::ScopedLock sl (lock);
+    externalAllNotesOff (t);   // anything still sounding on the old routes is released
+    t.externalOuts = std::move (routes);
+}
+
+// Sends one note message (or any short message) to the track's hardware routes, `sampleOffset` samples into the current block.
+void Engine::forwardExternal (const Track& t, const juce::MidiMessage& m, int sampleOffset)
+{
+    if (t.externalOuts.empty() || offlineRendering)   // exports never play the hardware
+        return;
+
+    const double at = blockStartMs + 1000.0 * (double) sampleOffset / sampleRate + outputLatencyMs;
+    for (auto& route : t.externalOuts)
+    {
+        if (route.port < 0 || (route.channel != 0 && m.getChannel() != route.channel))
+            continue;
+
+        auto copy = m;
+        if (route.outChannel > 0)
+            copy.setChannel (route.outChannel);
+        externalMidi.send (route.port, copy, at);
+    }
+}
+
+// "All notes off" on the channels a track sends to, so a stopped sequencer never leaves a hardware note hanging.
+void Engine::externalAllNotesOff (const Track& t)
+{
+    // Stamped just before the current block starts, so at the start of playback it goes out ahead of the first note
+    // of that block (a later stamp would cut that note off again).
+    const double now = juce::jmin (juce::Time::getMillisecondCounterHiRes(), blockStartMs) - 0.5;
+    for (auto& route : t.externalOuts)
+    {
+        if (route.port < 0)
+            continue;
+        for (int ch = route.outChannel > 0 ? route.outChannel : 1; ch <= (route.outChannel > 0 ? route.outChannel : 16); ++ch)
+            externalMidi.send (route.port, juce::MidiMessage::allNotesOff (ch), now);
+    }
+}
+
 void Engine::addMidiFx (Track& t, std::shared_ptr<PluginSlot> slot)
 {
     const juce::ScopedLock sl (lock);
@@ -906,6 +959,7 @@ TrackState Engine::captureTrack (const Track& t) const
     ts.midiFx = t.midiFx;
     ts.sequencer = t.sequencer;
     ts.recordArmed = t.recordArmed;
+    ts.externalOuts = t.externalOuts;
     ts.autoLanes.push_back ({ "volume", t.autoVolume.points, t.autoVolume.active.load() });
     ts.autoLanes.push_back ({ "pan", t.autoPan.points, t.autoPan.active.load() });
     for (auto& lane : t.autoLanes)
@@ -943,6 +997,7 @@ void Engine::applyTrackState (Track& t, const TrackState& ts)
     t.kit = ts.kit;
     t.sequencer = ts.sequencer;
     t.recordArmed = ts.recordArmed;
+    t.externalOuts = ts.externalOuts;
 
     // lanes last: they bind to the effect/synth parameters and plugins assigned above
     t.autoLanes.clear();
@@ -1053,6 +1108,13 @@ void Engine::drainPreviewEvents()
         for (auto& t : tracks)
             if (t.get() == e.track)
             {
+                if (! t->externalOuts.empty() && t->instrument == nullptr)   // notes played live go to the hardware
+                {
+                    forwardExternal (*t, e.on ? juce::MidiMessage::noteOn (1, e.pitch, e.velocity)
+                                              : juce::MidiMessage::noteOff (1, e.pitch), 0);
+                    return;   // (a track that sends to hardware makes no sound of its own)
+                }
+
                 if (t->instrument != nullptr)   // hosted instrument: queue a MIDI message for its next block
                 {
                     t->liveMidi.addEvent (e.on ? juce::MidiMessage::noteOn (1, e.pitch, e.velocity)
@@ -1127,6 +1189,7 @@ double Engine::getRenderTailSeconds() const
 // All notes of a track's synth or hosted instrument fade out (used when playback starts, stops or jumps).
 void Engine::releaseAllNotes (Track& t)
 {
+    externalAllNotesOff (t);
     if (t.voices != nullptr)
         t.voices->allNotesOff();
     if (t.kit != nullptr)
@@ -1164,6 +1227,9 @@ void Engine::getNextAudioBlock (const juce::AudioSourceChannelInfo& info)
         setMasterLevel (0.0f);
         return;
     }
+
+    const double callbackMs = juce::Time::getMillisecondCounterHiRes();   // when this block started: MIDI to hardware is timed from it
+    blockStartMs = callbackMs;
 
     const juce::ScopedTryLock sl (lock);
     if (! sl.isLocked())
@@ -1236,7 +1302,10 @@ void Engine::getNextAudioBlock (const juce::AudioSourceChannelInfo& info)
             }
 
             if (len > 0)
+            {
+                blockStartMs = callbackMs + 1000.0 * (double) done / sampleRate;
                 mixBlock (outL + done, outR != nullptr ? outR + done : nullptr, len, p, withClick, true);
+            }
             done += len;
             p += len;
 
@@ -1299,13 +1368,20 @@ void Engine::collectNoteEvents (Track& t, int n, juce::int64 pos, bool running)
 
     if (! t.midiFx.empty() && (running || ! noteEvents.empty()))
         applyMidiFx (t, n);
+
+    // A track without a plugin instrument that sends to hardware: its notes (after the MIDI effects) go out here.
+    // (With a plugin instrument it is the plugin's output that goes out, see runMidiSource.)
+    if (t.instrument == nullptr && ! t.externalOuts.empty())
+        for (auto& e : noteEvents)
+            forwardExternal (t, e.on ? juce::MidiMessage::noteOn (e.channel, e.pitch, e.velocity)
+                                     : juce::MidiMessage::noteOff (e.channel, e.pitch), e.offset);
 }
 
 // Samples of delay the plugins in a track add (reported by the plugins themselves).
 int Engine::trackLatency (const Track& t)
 {
     int latency = 0;
-    if (t.instrument != nullptr && t.midiOuts.empty())
+    if (t.instrument != nullptr && ! t.routesElsewhere())
         latency += t.instrument->instance->getLatencySamples();
     for (auto& p : t.inserts)
         if (! p->bypass)
@@ -1428,6 +1504,7 @@ void Engine::runMidiSource (Track& t, int n)
             continue;
 
         const int position = juce::jlimit (0, juce::jmax (0, n - 1), meta.samplePosition);
+        forwardExternal (t, m, position);   // hardware first: the analog synth is the point of an external sequencer
         for (auto& route : t.midiOuts)
         {
             if (route.channel == 0)                    // everything, channels untouched
@@ -1525,7 +1602,7 @@ void Engine::mixBlock (float* outL, float* outR, int n, juce::int64 pos, bool wi
         t->routedMidi.clear();
     const int routeN = juce::jmin (n, (int) trackL.size());
     for (auto& t : tracks)
-        if (t->type == Track::Type::Midi && t->instrument != nullptr && ! t->midiOuts.empty())
+        if (t->type == Track::Type::Midi && t->instrument != nullptr && t->routesElsewhere())
         {
             if (running)
                 t->pluginTailSamples = 3.0 * sampleRate;
@@ -1583,7 +1660,7 @@ void Engine::mixBlock (float* outL, float* outR, int n, juce::int64 pos, bool wi
 
         if (t->type == Track::Type::Midi)
         {
-            if (t->instrument != nullptr && ! t->midiOuts.empty())
+            if (t->instrument != nullptr && t->routesElsewhere())
             {
                 // sequencer track: it makes no sound itself, its notes were routed to another track above
             }
@@ -1599,6 +1676,11 @@ void Engine::mixBlock (float* outL, float* outR, int n, juce::int64 pos, bool wi
                     if (! running)
                         t->pluginTailSamples -= nn;
                 }
+            }
+            else if (! t->externalOuts.empty())
+            {
+                // plays hardware instead of the built-in sound: just send this block's notes out
+                collectNoteEvents (*t, nn, pos, running);
             }
             else if (t->kit != nullptr)
             {
@@ -1770,8 +1852,10 @@ void Engine::mixBlock (float* outL, float* outR, int n, juce::int64 pos, bool wi
 bool Engine::trackHasOutput (const Track& t) const
 {
     const juce::ScopedLock sl (lock);
-    if (t.type == Track::Type::Midi && t.instrument != nullptr && ! t.midiOuts.empty())
-        return false;   // a sequencer track: silent itself, its notes sound on other tracks
+    if (t.type == Track::Type::Midi && t.instrument != nullptr && t.routesElsewhere())
+        return false;   // a sequencer track: silent itself, its notes sound on other tracks or on hardware
+    if (t.type == Track::Type::Midi && t.instrument == nullptr && ! t.externalOuts.empty())
+        return false;   // plays hardware instead of the built-in sound: nothing to put in a stem
     if (! t.clips.empty() || ! t.midiClips.empty())
         return true;
     for (auto& other : tracks)

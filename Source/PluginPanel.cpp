@@ -72,6 +72,18 @@ PluginPanel::PluginPanel (Track& t, Engine& e, PluginHost& h, std::function<void
         addChildComponent (routeHint);
         rebuildRoutes();
 
+        externalHeading.setText ("External MIDI instruments (hardware)", juce::dontSendNotification);
+        externalHeading.setFont (juce::FontOptions (13.0f, juce::Font::bold));
+        externalHint.setText ("Plays this track's notes (or those of its sequencer plugin) on hardware: connect the interface's MIDI OUT "
+                              "to the synth's MIDI IN. The track then makes no sound itself; record the synth's audio through an audio input.",
+                              juce::dontSendNotification);
+        externalHint.setFont (juce::FontOptions (11.5f));
+        externalHint.setMinimumHorizontalScale (1.0f);
+        externalHint.setColour (juce::Label::textColourId, Theme::text.withAlpha (0.55f));
+        addAndMakeVisible (externalHeading);
+        addAndMakeVisible (externalHint);
+        rebuildExternal();
+
         setupList (midiFxList, "MIDI effects (before the instrument)", "+ Add MIDI effect...", true, 3);
     }
 
@@ -193,6 +205,85 @@ void PluginPanel::rebuildRoutes()
         addAndMakeVisible (row->channel);
         routeRows.push_back (std::move (row));
     }
+}
+
+// One row per MIDI output device of this computer: a tick to play on it, the channel to take, the channel to send.
+void PluginPanel::rebuildExternal()
+{
+    externalRows.clear();
+
+    for (auto& device : juce::MidiOutput::getAvailableDevices())
+    {
+        auto row = std::make_unique<ExternalRow>();
+        row->id = device.identifier;
+        row->name = device.name;
+        row->use.setButtonText (device.name);
+
+        row->from.addItem ("All channels", 1);
+        for (int ch = 1; ch <= 16; ++ch)
+            row->from.addItem ("From channel " + juce::String (ch), ch + 1);
+        row->from.setSelectedId (1, juce::dontSendNotification);
+
+        row->to.addItem ("Keep channel", 1);
+        for (int ch = 1; ch <= 16; ++ch)
+            row->to.addItem ("Send as channel " + juce::String (ch), ch + 1);
+        row->to.setSelectedId (2, juce::dontSendNotification);   // channel 1: what most synths listen to
+
+        for (auto& route : track.externalOuts)
+            if (route.deviceId == device.identifier || route.deviceName == device.name)
+            {
+                row->use.setToggleState (true, juce::dontSendNotification);
+                row->from.setSelectedId (route.channel + 1, juce::dontSendNotification);
+                row->to.setSelectedId (route.outChannel + 1, juce::dontSendNotification);
+            }
+
+        row->use.onClick = [this] { externalChanged(); };
+        row->from.onChange = [this] { externalChanged(); };
+        row->to.onChange = [this] { externalChanged(); };
+        addAndMakeVisible (row->use);
+        addAndMakeVisible (row->from);
+        addAndMakeVisible (row->to);
+        externalRows.push_back (std::move (row));
+    }
+
+    if (externalRows.empty())
+        externalHint.setText ("No MIDI output devices found. Connect your interface or synth (and install its driver), then open this panel again.",
+                              juce::dontSendNotification);
+}
+
+void PluginPanel::externalChanged()
+{
+    std::vector<ExternalRoute> routes;
+    for (auto& row : externalRows)
+        if (row->use.getToggleState())
+        {
+            ExternalRoute r;
+            r.deviceId = row->id;
+            r.deviceName = row->name;
+            r.channel = row->from.getSelectedId() - 1;      // id 1 = every channel = 0
+            r.outChannel = row->to.getSelectedId() - 1;     // id 1 = keep the channel = 0
+            routes.push_back (r);
+        }
+
+    beginEdit();
+    engine.setExternalOuts (track, routes);
+
+    // a device that could not be opened (unplugged, or another program has it) is switched off again, with an explanation
+    for (auto& route : track.externalOuts)
+        if (route.port < 0)
+            for (auto& row : externalRows)
+                if (row->id == route.deviceId)
+                {
+                    row->use.setToggleState (false, juce::dontSendNotification);
+                    alert ("Cannot open " + row->name, "The MIDI output could not be opened. It may be unplugged, or in use by another program.");
+                }
+
+    std::vector<ExternalRoute> working;
+    for (auto& route : track.externalOuts)
+        if (route.port >= 0)
+            working.push_back (route);
+    if (working.size() != track.externalOuts.size())
+        engine.setExternalOuts (track, working);
 }
 
 void PluginPanel::routesChanged()
@@ -338,6 +429,20 @@ int PluginPanel::layoutAll (bool apply)
                 // nothing to route to yet
                 routeHint.setText ("Add another MIDI track (+ MIDI or + Drums) to send these notes to.", juce::dontSendNotification);
             }
+        }
+        area.removeFromTop (sectionGap);
+
+        // hardware MIDI outputs
+        place (externalHeading, area.removeFromTop (22));
+        place (externalHint, area.removeFromTop (48));
+        for (auto& row : externalRows)
+        {
+            auto r = area.removeFromTop (rowH).reduced (0, 2);
+            const int third = r.getWidth() / 3;
+            place (row->use, r.removeFromLeft (third + 20));
+            place (row->from, r.removeFromLeft ((r.getWidth() - 4) / 2));
+            r.removeFromLeft (4);
+            place (row->to, r);
         }
         area.removeFromTop (sectionGap);
 

@@ -9,6 +9,7 @@
 #include "Fx.h"
 #include "Plugin.h"
 #include "DrumKit.h"
+#include "ExternalMidi.h"
 
 // A piece of audio placed on the timeline. The sample data is immutable and shared, so
 // splitting and duplicating clips is free; only start/offset/length differ.
@@ -53,6 +54,17 @@ struct MidiRoute
 {
     Track* target = nullptr;
     int channel = 0;
+};
+
+// Notes go to a hardware MIDI output (an analog synth on the interface's MIDI OUT, a USB MIDI device).
+// channel: which channel of the source to send (0 = every channel); outChannel: the channel the hardware gets
+// (1..16), or 0 to keep each note's own channel.
+struct ExternalRoute
+{
+    juce::String deviceId, deviceName;   // identifier of the output; the name is the fallback when the identifier changes
+    int channel = 0;
+    int outChannel = 1;
+    int port = -1;                       // resolved by Engine::setExternalOuts; -1 while the device isn't available
 };
 
 // A breakpoint envelope: linear between points, flat before the first and after the last.
@@ -142,6 +154,8 @@ struct Track
     bool recordArmed = false;                               // audio tracks: the next audio recording goes into this track
     bool sequencer = false;                                 // UI role: this track's plugin is a note source (Stochas...), not a sound
     std::vector<MidiRoute> midiOuts;                        // tracks that play the notes this track's plugin sends
+    std::vector<ExternalRoute> externalOuts;                // hardware that plays them (or the track's own notes: it then makes no sound itself)
+    bool routesElsewhere() const { return ! midiOuts.empty() || ! externalOuts.empty(); }
     juce::MidiBuffer routedMidi;                            // notes other tracks sent here during the current block
 
     // MIDI plugins (arpeggiators, chord tools...) that rework the notes before they reach the instrument
@@ -187,6 +201,7 @@ struct TrackState
     bool sequencer = false;
     bool recordArmed = false;
     std::vector<std::pair<int, int>> midiOuts;   // (index of the target track, channel) of each MIDI route
+    std::vector<ExternalRoute> externalOuts;
     std::vector<std::shared_ptr<PluginSlot>> midiFx;
     std::shared_ptr<DrumKit> kit;
     std::shared_ptr<PluginSlot> instrument;                 // plugins are shared with the live project,
@@ -258,6 +273,11 @@ public:
 
     // ---- Message thread: hosted plugins
     void setMidiOuts (Track& source, std::vector<MidiRoute> routes);   // empty = this track plays its own sound; only other MIDI tracks count
+    // Hardware MIDI outputs: opens the devices and replaces the track's external routes. A route whose device
+    // cannot be opened keeps port -1 (the caller can tell the user).
+    void setExternalOuts (Track&, std::vector<ExternalRoute>);
+    ExternalMidiSender& getExternalMidi() { return externalMidi; }
+    void setOutputLatencyMs (double ms) { outputLatencyMs = ms; }   // MIDI to hardware leaves this much later, to line up with the audio
     void addMidiFx (Track&, std::shared_ptr<PluginSlot>);
     void removeMidiFx (Track&, int index);
     void preparePlugin (PluginSlot&);                           // layout + prepareToPlay for the current audio setup
@@ -351,6 +371,8 @@ private:
     void applyAutomation (Track&, double timeSeconds);
     TrackState captureTrack (const Track&) const;               // everything the user can edit on one track
     void applyTrackState (Track&, const TrackState&);           // ...and the way back (also used for the master channel)
+    void forwardExternal (const Track&, const juce::MidiMessage&, int sampleOffset);   // to the track's hardware outputs
+    void externalAllNotesOff (const Track&);
     void releaseAllNotes (Track&);                              // soft all-notes-off for the synth or plugin instrument
     void collectNoteEvents (Track&, int numSamples, juce::int64 pos, bool running);
     void runMidiSource (Track&, int numSamples);                // plugin sequencer track: its MIDI output goes to Track::midiOuts
@@ -403,6 +425,10 @@ private:
     std::vector<float> trackL, trackR;     // one track's stereo signal before fader/pan
     juce::int64 lastBlockEnd = -1;
     bool wasRunning = false;
+
+    ExternalMidiSender externalMidi;
+    std::atomic<double> outputLatencyMs { 0.0 };
+    double blockStartMs = 0.0;                      // the millisecond clock at the start of the block being mixed
 
     std::atomic<bool> offlineRendering { false };   // an export owns the mixer; the audio callback stays silent
     const Track* renderOnly = nullptr;              // set during an offline render of a single track
