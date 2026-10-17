@@ -1746,7 +1746,7 @@ private:
 };
 
 //==============================================================================
-MainComponent::MainComponent()
+MainComponent::MainComponent (int slot) : tabSlot (slot)
 {
     // These must exist before setSize() triggers resized()
     ruler = std::make_unique<TimeRuler> (*this);
@@ -3781,6 +3781,7 @@ bool MainComponent::keyPressed (const juce::KeyPress& k)
         if (ch == 's' || k.getKeyCode() == 'S') { saveButton.triggerClick(); return true; }
         if (ch == 'o' || k.getKeyCode() == 'O') { openButton.triggerClick(); return true; }
         if (k.getKeyCode() == 'N')              { newProject(); return true; }
+        if (k.getKeyCode() == 'W' && requestCloseTab) { requestCloseTab(); return true; }
         if (k.getKeyCode() == juce::KeyPress::spaceKey && mods.isShiftDown()) { stopAllButton.triggerClick(); return true; }
         if (k.getKeyCode() == 'D')              { duplicateSelected(); return true; }
         if (k.getKeyCode() == 'X')              { copySelected (true); return true; }
@@ -4785,8 +4786,8 @@ void MainComponent::saveProject (const juce::File& file, SaveKind kind)
         currentProject = file;
         savedEdit = editCounter;
         clearAutosave();
-        if (auto* w = getTopLevelComponent())
-            w->setName ("UFODAW - " + file.getFileNameWithoutExtension());
+        if (onTitleChanged)
+            onTitleChanged();
         writeBackup (file);
         addRecentProject (file);
     }
@@ -4990,13 +4991,14 @@ void MainComponent::saveMenu()
 //==============================================================================
 // Autosave and recovery
 
-juce::File MainComponent::autosaveFile()
+juce::File MainComponent::autosaveFile() const
 {
     return juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory).getChildFile ("UFODAW").getChildFile ("autosave")
-                                                                                    .getChildFile ("recovery.mdaw");
+                                                                                    .getChildFile (tabSlot == 0 ? juce::String ("recovery.mdaw")
+                                                                                                                : "recovery-" + juce::String (tabSlot) + ".mdaw");
 }
 
-juce::File MainComponent::autosaveInfoFile() { return autosaveFile().withFileExtension ("json"); }
+juce::File MainComponent::autosaveInfoFile() const { return autosaveFile().withFileExtension ("json"); }
 
 void MainComponent::autosaveNow()
 {
@@ -5020,10 +5022,10 @@ void MainComponent::offerRecovery()
     juce::Component::SafePointer<MainComponent> safe (this);
     juce::MessageManager::callAsync ([safe]
     {
-        if (safe == nullptr || ! autosaveFile().existsAsFile())
+        if (safe == nullptr || ! safe->autosaveFile().existsAsFile())
             return;
 
-        const auto info = juce::JSON::parse (autosaveInfoFile());
+        const auto info = juce::JSON::parse (safe->autosaveInfoFile());
         const auto name = info["name"].toString().isNotEmpty() ? info["name"].toString() : juce::String ("Untitled");
         const auto when = juce::Time::fromISO8601 (info["time"].toString());
         const auto original = info["original"].toString();
@@ -5042,11 +5044,11 @@ void MainComponent::offerRecovery()
                 return;
             }
 
-            safe->loadProject (autosaveFile());
+            safe->loadProject (safe->autosaveFile());
             safe->currentProject = original.isNotEmpty() ? juce::File (original) : juce::File();   // saving goes back to where it belongs
             ++safe->editCounter;                                                                   // still unsaved
-            if (auto* w = safe->getTopLevelComponent())
-                w->setName ("UFODAW - " + name + " (restored)");
+            if (safe->onTitleChanged)
+                safe->onTitleChanged();
         });
     });
 }
@@ -5125,12 +5127,23 @@ void MainComponent::fileMenu()
         else if (result == 8) exportDialog();
         else if (result == 9) exportStemsDialog();
         else if (result >= 100 && result - 100 < recent.size())
-            loadProject (juce::File (recent[result - 100]));
+        {
+            const juce::File chosen (recent[result - 100]);
+            if (requestOpenInTab && ! isEmptyUntitled())
+                requestOpenInTab (chosen);
+            else
+                loadProject (chosen);
+        }
     });
 }
 
 void MainComponent::newProject()
 {
+    if (requestNewTab)   // projects live in tabs: a new project is a new tab
+    {
+        requestNewTab();
+        return;
+    }
     if (! isDirty())
     {
         resetToEmptyProject();
@@ -5185,8 +5198,8 @@ void MainComponent::resetToEmptyProject()
     currentProject = juce::File();
     savedEdit = editCounter;
     clearAutosave();
-    if (auto* w = getTopLevelComponent())
-        w->setName ("UFODAW");
+    if (onTitleChanged)
+        onTitleChanged();
     clipsChanged();
     resized();
     repaint();
@@ -5200,7 +5213,12 @@ void MainComponent::openProjectDialog()
                           {
                               auto f = fc.getResult();
                               if (f.existsAsFile())
-                                  loadProject (f);
+                              {
+                                  if (requestOpenInTab && ! isEmptyUntitled())
+                                      requestOpenInTab (f);
+                                  else
+                                      loadProject (f);
+                              }
                           });
 }
 
@@ -5493,8 +5511,8 @@ void MainComponent::loadProject (const juce::File& file)
     currentProject = file;
     savedEdit = editCounter;   // freshly opened: nothing unsaved
     addRecentProject (file);
-    if (auto* w = getTopLevelComponent())
-        w->setName ("UFODAW - " + file.getFileNameWithoutExtension());
+    if (onTitleChanged)
+        onTitleChanged();
     clipsChanged();
 
     if (missing.size() > 0)
@@ -5609,4 +5627,54 @@ void MainComponent::exportDialog()
                                                                       ok ? "Export finished" : "Export failed",
                                                                       f.getFullPathName());
                           });
+}
+
+//==============================================================================
+// Project tabs: only the shown project has the audio device
+
+void MainComponent::suspendAudio()
+{
+    finishRecording();
+    engine.silenceEverything();
+    stopTimer();
+    if (isDirty())
+        autosaveNow();   // (an inactive project's unsaved work is kept as well)
+    samplerWindow.reset();
+    padSamplerWindow.reset();
+    drumRackWindow.reset();
+    pluginHost.closeAllEditors();   // plugin windows belong to the tab that is shown
+
+    deviceManager.removeChangeListener (this);
+    deviceManager.removeMidiInputDeviceCallback ({}, &midiForwarder);
+    deviceManager.removeAudioCallback (&player);
+    deviceManager.closeAudioDevice();
+}
+
+void MainComponent::resumeAudio()
+{
+    const std::unique_ptr<juce::XmlElement> saved = juce::XmlDocument::parse (audioSettingsFile());   // (the last setup, from whichever tab changed it)
+    const auto error = deviceManager.initialise (2, 2, saved.get(), true);
+    if (error.isNotEmpty())
+        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Audio device", error);
+    deviceManager.addChangeListener (this);
+    deviceManager.addAudioCallback (&player);
+    deviceManager.addMidiInputDeviceCallback ({}, &midiForwarder);
+    enableAllMidiInputs();
+    updateAudioInfo();
+    startTimerHz (30);
+    resized();
+    grabKeyboardFocus();
+}
+
+bool MainComponent::saveForClose()
+{
+    if (! isDirty())
+        return true;
+    if (currentProject == juce::File())
+    {
+        saveProjectAs();
+        return false;
+    }
+    saveProject (currentProject);
+    return ! isDirty();
 }

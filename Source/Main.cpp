@@ -1,5 +1,5 @@
 #include <juce_gui_basics/juce_gui_basics.h>
-#include "MainComponent.h"
+#include "ProjectTabs.h"
 
 class UFODAWApplication : public juce::JUCEApplication
 {
@@ -13,15 +13,10 @@ public:
         juce::LookAndFeel::setDefaultLookAndFeel (&lookAndFeel);   // the warm red/orange/yellow theme
         window = std::make_unique<MainWindow> (getApplicationName());
 
-        // "UFODAW.exe project.mdaw" (or double-clicking a project file) opens that project
+        // "UFODAW.exe project.mdaw" (or double-clicking a project file) opens that project in a tab
         const juce::File project (commandLine.trim().unquoted().trim());
-        if (auto* main = dynamic_cast<MainComponent*> (window->getContentComponent()))
-        {
-            if (project.existsAsFile())
-                main->openProject (project);
-            else
-                main->offerRecovery();   // work from a session that did not end properly
-        }
+        if (auto* tabs = dynamic_cast<ProjectTabs*> (window->getContentComponent()))
+            tabs->start (project);
     }
 
     // The program used to be called MiniDAW: take its settings (audio device, plugin list, UI options) along once.
@@ -58,7 +53,7 @@ private:
             : DocumentWindow (name, Theme::background, DocumentWindow::allButtons)
         {
             setUsingNativeTitleBar (true);
-            setContentOwned (new MainComponent(), true);
+            setContentOwned (new ProjectTabs(), true);
             setResizable (true, true);
             centreWithSize (getWidth(), getHeight());
             setVisible (true);

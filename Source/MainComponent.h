@@ -161,7 +161,7 @@ class MainComponent : public juce::Component,
 {
     friend class CollectJob;   // reports back when the audio has been copied
 public:
-    MainComponent();
+    explicit MainComponent (int tabSlot = 0);   // each open project is one MainComponent (see ProjectTabs.h); the slot names its recovery file
     ~MainComponent() override;
 
     void paint (juce::Graphics&) override;
@@ -192,6 +192,19 @@ public:
     void setPunchRegion (double startSeconds, double endSeconds);  // also switches punch on
     void openProject (const juce::File& file) { loadProject (file); }
     void offerRecovery();   // at start-up: if an autosave from an unfinished session exists, ask whether to restore it
+
+    // ---- Project tabs
+    void suspendAudio();     // another tab takes the audio device: stop, close editors, let go of the device and the MIDI inputs
+    void resumeAudio();      // this tab is shown again and takes the device back
+    juce::String getTitle() const { return currentProject != juce::File() ? currentProject.getFileNameWithoutExtension() : juce::String ("Untitled"); }
+    bool hasUnsavedChanges() const { return editCounter != savedEdit; }
+    int getTabSlot() const { return tabSlot; }
+    void markClean() { savedEdit = editCounter; }   // closing a project without saving: it leaves no recovery file behind
+    bool isEmptyUntitled() const { return currentProject == juce::File() && engine.getNumTracks() == 0 && ! isDirty(); }
+    bool saveForClose();     // true when saved (or nothing to save); an untitled project opens the Save As dialog and returns false
+    std::function<void()> requestNewTab, requestCloseTab, onTitleChanged;
+    std::function<void (const juce::File&)> requestOpenInTab;
+    void openFileHere (const juce::File& f) { loadProject (f); }
     void openInstrumentEditor (Track&);   // the plugin window of the track's instrument (or first effect); the VST panel if none
     double getPixelsPerSecond() const { return pixelsPerSecond; }
     int getScrollX() const { return laneViewport.getViewPositionX(); }
@@ -328,8 +341,9 @@ private:
     int editCounter = 0, savedEdit = 0, autosavedEdit = 0;   // bumped by every undoable edit; compared to what was saved / autosaved
     juce::uint32 lastAutosaveMs = 0;
     bool isDirty() const { return editCounter != savedEdit; }
-    static juce::File autosaveFile();
-    static juce::File autosaveInfoFile();
+    juce::File autosaveFile() const;
+    int tabSlot = 0;
+    juce::File autosaveInfoFile() const;
     void autosaveNow();
     void clearAutosave();
     void loadProject (const juce::File&);
