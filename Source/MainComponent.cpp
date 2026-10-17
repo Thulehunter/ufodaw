@@ -9,7 +9,8 @@
 class TrackHeader : public juce::Component
 {
 public:
-    TrackHeader (Track& t, std::function<void (Track*)> onRemove) : track (t), remove (std::move (onRemove))
+    TrackHeader (Track& t, std::function<void (Track*)> onRemove, std::function<void()> onBeginEdit)
+        : track (t), remove (std::move (onRemove)), beginEdit (std::move (onBeginEdit))
     {
         nameLabel.setText (track.name, juce::dontSendNotification);
         nameLabel.setFont (juce::FontOptions (14.0f, juce::Font::bold));
@@ -19,6 +20,7 @@ public:
         volume.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
         volume.setRange (0.0, 1.5, 0.001);
         volume.setValue (track.gain, juce::dontSendNotification);
+        volume.onDragStart = [this] { beginEdit(); };
         volume.onValueChange = [this] { track.gain = (float) volume.getValue(); };
         addAndMakeVisible (volume);
 
@@ -27,19 +29,20 @@ public:
         pan.setRange (-1.0, 1.0, 0.01);
         pan.setValue (track.pan, juce::dontSendNotification);
         pan.setDoubleClickReturnValue (true, 0.0);
+        pan.onDragStart = [this] { beginEdit(); };
         pan.onValueChange = [this] { track.pan = (float) pan.getValue(); };
         addAndMakeVisible (pan);
 
         muteButton.setClickingTogglesState (true);
         muteButton.setToggleState (track.mute, juce::dontSendNotification);
         muteButton.setColour (juce::TextButton::buttonOnColourId, juce::Colours::orangered);
-        muteButton.onClick = [this] { track.mute = muteButton.getToggleState(); };
+        muteButton.onClick = [this] { beginEdit(); track.mute = muteButton.getToggleState(); };
         addAndMakeVisible (muteButton);
 
         soloButton.setClickingTogglesState (true);
         soloButton.setToggleState (track.solo, juce::dontSendNotification);
         soloButton.setColour (juce::TextButton::buttonOnColourId, juce::Colours::gold);
-        soloButton.onClick = [this] { track.solo = soloButton.getToggleState(); };
+        soloButton.onClick = [this] { beginEdit(); track.solo = soloButton.getToggleState(); };
         addAndMakeVisible (soloButton);
 
         deleteButton.onClick = [this] { remove (&track); };
@@ -48,7 +51,7 @@ public:
         fxButton.setTooltip ("Effects: EQ, compressor, delay, reverb");
         fxButton.onClick = [this]
         {
-            juce::CallOutBox::launchAsynchronously (std::make_unique<FxPanel> (track), fxButton.getScreenBounds(), nullptr);
+            juce::CallOutBox::launchAsynchronously (std::make_unique<FxPanel> (track, beginEdit), fxButton.getScreenBounds(), nullptr);
         };
         addAndMakeVisible (fxButton);
     }
@@ -106,6 +109,7 @@ private:
     Track& track;
     bool fxShownActive = false;
     std::function<void (Track*)> remove;
+    std::function<void()> beginEdit;
     float shown = 0.0f;
 
     juce::Label nameLabel;
@@ -297,6 +301,8 @@ public:
 
             dragId = h.id;
             dragStart = h.start;
+            dragLength = h.length;
+            edited = false;
             grabOffset = t - h.start;
             resizing = h.midi && r.getWidth() > 16 && e.x >= r.getRight() - 6;   // right edge of a MIDI clip
             main.selectClip (&track, dragId);
@@ -320,6 +326,7 @@ public:
         // empty spot on a MIDI track: new two-bar clip at the bar under the cursor
         const double bar = main.barSeconds();
         const double start = std::floor ((e.x / pps) / bar) * bar;
+        main.beginEdit();
         const int id = main.getEngine().addMidiClip (track, start, bar * 2.0);
         if (id >= 0)
         {
@@ -340,7 +347,15 @@ public:
         if (resizing)
         {
             const double end = e.mods.isAltDown() ? t : main.snapTime (t);
-            main.getEngine().setMidiClipLength (track, dragId, juce::jmax (main.beatSeconds(), end - dragStart));
+            const double newLength = juce::jmax (main.beatSeconds(), end - dragStart);
+            if (! edited)
+            {
+                if (std::abs (newLength - dragLength) < 1.0e-6)
+                    return;
+                main.beginEdit();
+                edited = true;
+            }
+            main.getEngine().setMidiClipLength (track, dragId, newLength);
             main.clipsChanged();
             return;
         }
@@ -348,6 +363,13 @@ public:
         double newStart = t - grabOffset;
         if (! e.mods.isAltDown())
             newStart = main.snapTime (newStart);
+        if (! edited)
+        {
+            if (std::abs (newStart - dragStart) < 1.0e-6)
+                return;
+            main.beginEdit();
+            edited = true;
+        }
         main.getEngine().moveClip (track, dragId, newStart);
         main.clipsChanged();
     }
@@ -434,8 +456,10 @@ private:
     std::map<int, Peaks> cache;
     int dragId = -1;
     bool resizing = false;
+    bool edited = false;   // true once this drag has taken its undo snapshot
     double grabOffset = 0.0;
     double dragStart = 0.0;
+    double dragLength = 0.0;
 };
 
 //==============================================================================
@@ -455,8 +479,11 @@ MainComponent::MainComponent()
 
     for (juce::Component* b : std::initializer_list<juce::Component*> {
              &rewindButton, &playButton, &pauseButton, &stopButton, &recordButton, &addButton, &addMidiButton,
-             &openButton, &saveButton, &saveAsButton, &exportButton, &zoomOutButton, &zoomInButton })
+             &openButton, &saveButton, &saveAsButton, &exportButton, &undoButton, &redoButton, &zoomOutButton, &zoomInButton })
         addAndMakeVisible (b);
+    undoButton.onClick = [this] { undo(); };
+    redoButton.onClick = [this] { redo(); };
+    updateUndoButtons();
     addAndMakeVisible (metroButton);
     addAndMakeVisible (snapButton);
     addAndMakeVisible (bpmLabel);
@@ -482,10 +509,12 @@ MainComponent::MainComponent()
 
     bpmSlider.setRange (40.0, 240.0, 1.0);
     bpmSlider.setValue (120.0, juce::dontSendNotification);
+    bpmSlider.onDragStart = [this] { beginEdit(); };
     bpmSlider.onValueChange = [this] { engine.bpm = (float) bpmSlider.getValue(); clipsChanged(); };
 
     masterSlider.setRange (0.0, 1.2, 0.001);
     masterSlider.setValue (engine.masterGain, juce::dontSendNotification);
+    masterSlider.onDragStart = [this] { beginEdit(); };
     masterSlider.onValueChange = [this] { engine.masterGain = (float) masterSlider.getValue(); };
 
     timeLabel.setFont (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(), 24.0f, juce::Font::plain));
@@ -565,6 +594,7 @@ void MainComponent::addMidiTrack()
         if (engine.getTrack (i)->type == Track::Type::Midi)
             ++count;
 
+    beginEdit();
     auto* t = engine.addTrack ("Synth " + juce::String (count), Track::Type::Midi);
     const double bar = barSeconds();
     const double start = std::floor (engine.getPositionSeconds() / bar) * bar;
@@ -605,13 +635,92 @@ void MainComponent::clipsChanged()
 }
 
 //==============================================================================
+// Undo/redo: before each change a snapshot of the project is pushed; undo swaps the live
+// project with the latest snapshot (and keeps the state it replaced for redo).
+
+void MainComponent::beginEdit()
+{
+    undoStack.push_back (engine.captureState());
+    if (undoStack.size() > 100)
+        undoStack.erase (undoStack.begin());
+    redoStack.clear();
+    updateUndoButtons();
+}
+
+void MainComponent::cancelEdit()
+{
+    if (! undoStack.empty())
+        undoStack.pop_back();
+    updateUndoButtons();
+}
+
+void MainComponent::updateUndoButtons()
+{
+    undoButton.setEnabled (! undoStack.empty());
+    redoButton.setEnabled (! redoStack.empty());
+}
+
+void MainComponent::undo()
+{
+    if (undoStack.empty())
+        return;
+    redoStack.push_back (engine.captureState());
+    auto state = std::move (undoStack.back());
+    undoStack.pop_back();
+    restoreSnapshot (state);
+}
+
+void MainComponent::redo()
+{
+    if (redoStack.empty())
+        return;
+    undoStack.push_back (engine.captureState());
+    auto state = std::move (redoStack.back());
+    redoStack.pop_back();
+    restoreSnapshot (state);
+}
+
+void MainComponent::restoreSnapshot (const ProjectState& state)
+{
+    // Remember what was selected so it can be selected again (and the piano roll reopened).
+    const int selTrackIndex = selTrack != nullptr ? engine.indexOfTrack (selTrack) : -1;
+    const int selClipId = selClip;
+
+    hideRoll();
+    selTrack = nullptr;
+    selClip = -1;
+    headers.clear();   // they reference the Track objects that restoreState() replaces
+    lanes.clear();
+
+    engine.restoreState (state);
+
+    for (int i = 0; i < engine.getNumTracks(); ++i)
+        addTrackUI (*engine.getTrack (i));
+
+    bpmSlider.setValue (engine.bpm, juce::dontSendNotification);
+    masterSlider.setValue (engine.masterGain, juce::dontSendNotification);
+
+    if (selTrackIndex >= 0)
+        if (auto* t = engine.getTrack (selTrackIndex))
+        {
+            Clip a;
+            MidiClip m;
+            if (engine.getClip (*t, selClipId, a) || engine.getMidiClip (*t, selClipId, m))
+                selectClip (t, selClipId);
+        }
+
+    updateUndoButtons();
+    clipsChanged();
+}
+
+//==============================================================================
 void MainComponent::addTrackUI (Track& t)
 {
     auto* header = headers.add (new TrackHeader (t, [this] (Track* tr)
     {
         // Deferred: this runs inside a button owned by the header being deleted.
         juce::MessageManager::callAsync ([this, tr] { removeTrackUI (tr); });
-    }));
+    }, [this] { beginEdit(); }));
     headerHolder.addAndMakeVisible (header);
 
     auto* lane = lanes.add (new TrackLane (*this, t));
@@ -624,6 +733,7 @@ void MainComponent::removeTrackUI (Track* t)
     for (int i = 0; i < lanes.size(); ++i)
         if (&lanes[i]->getTrack() == t)
         {
+            beginEdit();
             if (selTrack == t)
                 selectClip (nullptr, -1);
             if (roll->getTrack() == t)
@@ -697,6 +807,10 @@ void MainComponent::resized()
     saveAsButton.setBounds (top.removeFromLeft (64));
     top.removeFromLeft (4);
     exportButton.setBounds (top.removeFromLeft (90));
+    top.removeFromLeft (16);
+    undoButton.setBounds (top.removeFromLeft (50));
+    top.removeFromLeft (4);
+    redoButton.setBounds (top.removeFromLeft (50));
     masterSlider.setBounds (top.removeFromRight (150));
 
     // transport: centred along the bottom
@@ -750,10 +864,12 @@ void MainComponent::paintOverChildren (juce::Graphics& g)
 void MainComponent::splitAtPlayhead()
 {
     const double t = engine.getPositionSeconds();
+    beginEdit();
+    bool changed = false;
 
     if (selTrack != nullptr && selClip >= 0)
     {
-        engine.splitClip (*selTrack, selClip, t);
+        changed = engine.splitClip (*selTrack, selClip, t) >= 0;
     }
     else
     {
@@ -761,11 +877,14 @@ void MainComponent::splitAtPlayhead()
             if (auto* tr = engine.getTrack (i))
             {
                 for (auto& c : engine.getClips (*tr))
-                    engine.splitClip (*tr, c.id, t);
+                    changed = engine.splitClip (*tr, c.id, t) >= 0 || changed;
                 for (auto& m : engine.getMidiClips (*tr))
-                    engine.splitClip (*tr, m.id, t);
+                    changed = engine.splitClip (*tr, m.id, t) >= 0 || changed;
             }
     }
+
+    if (! changed)
+        cancelEdit();   // playhead wasn't inside any clip
     clipsChanged();
 }
 
@@ -776,6 +895,7 @@ void MainComponent::deleteSelected()
 
     if (selTrack != nullptr && selClip >= 0)
     {
+        beginEdit();
         engine.deleteClip (*selTrack, selClip);
         selectClip (nullptr, -1);
         clipsChanged();
@@ -786,6 +906,7 @@ void MainComponent::duplicateSelected()
 {
     if (selTrack != nullptr && selClip >= 0)
     {
+        beginEdit();
         const int id = engine.duplicateClip (*selTrack, selClip);
         if (id >= 0)
             selectClip (selTrack, id);
@@ -803,6 +924,8 @@ bool MainComponent::keyPressed (const juce::KeyPress& k)
         if (ch == 's' || k.getKeyCode() == 'S') { saveButton.triggerClick(); return true; }
         if (ch == 'o' || k.getKeyCode() == 'O') { openButton.triggerClick(); return true; }
         if (k.getKeyCode() == 'D')              { duplicateSelected(); return true; }
+        if (k.getKeyCode() == 'Z')              { if (mods.isShiftDown()) redo(); else undo(); return true; }
+        if (k.getKeyCode() == 'Y')              { redo(); return true; }
         return false;
     }
 
@@ -916,11 +1039,13 @@ void MainComponent::finishRecording()
 
     engine.stopRecording();
 
+    beginEdit();
     auto* t = engine.addTrack (recordingFile.getFileNameWithoutExtension());
     if (engine.addClipFromFile (*t, recordingFile, recStartSeconds) < 0)
     {
         engine.removeTrack (t);
         recordingFile.deleteFile();
+        cancelEdit();
         return;
     }
     addTrackUI (*t);
@@ -948,6 +1073,7 @@ void MainComponent::importFiles (const juce::StringArray& paths, Track* target, 
 {
     juce::StringArray failed;
     const bool intoTrack = target != nullptr && target->type == Track::Type::Audio && paths.size() == 1;
+    beginEdit();
 
     for (auto& p : paths)
     {
@@ -972,6 +1098,8 @@ void MainComponent::importFiles (const juce::StringArray& paths, Track* target, 
         }
     }
 
+    if (failed.size() == paths.size())
+        cancelEdit();   // nothing was imported
     clipsChanged();
     if (failed.size() > 0)
         juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon,
@@ -1108,6 +1236,9 @@ void MainComponent::loadProject (const juce::File& file)
     engine.setPositionSeconds (0.0);
     playStartSeconds = 0.0;
     clearTracksUI();
+    undoStack.clear();   // a freshly opened project starts with a clean history
+    redoStack.clear();
+    updateUndoButtons();
 
     engine.bpm = (float) (double) root.getProperty ("bpm", 120.0);
     engine.masterGain = (float) (double) root.getProperty ("masterGain", 0.9);

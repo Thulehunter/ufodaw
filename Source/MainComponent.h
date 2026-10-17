@@ -118,6 +118,10 @@ public:
     void importFiles (const juce::StringArray& paths, Track* target, double timeSeconds);
     void clipsChanged();
 
+    // Call right before a change the user should be able to undo. Once per gesture.
+    void beginEdit();
+    void cancelEdit();   // drops the snapshot beginEdit() just took, if the edit turned out to change nothing
+
 private:
     void timerCallback() override;
     void addTrackUI (Track&);
@@ -126,6 +130,10 @@ private:
     void layoutContent();
     void addTrackDialog();
     void addMidiTrack();
+    void undo();
+    void redo();
+    void restoreSnapshot (const ProjectState&);
+    void updateUndoButtons();
     void showRoll (Track*, int clipId);
     void hideRoll();
 
@@ -152,6 +160,8 @@ private:
     juce::TextButton addButton { "+ Track" }, addMidiButton { "+ MIDI Track" };
     std::unique_ptr<PianoRoll> roll;
     bool rollVisible = false;
+    juce::TextButton undoButton { "Undo" }, redoButton { "Redo" };
+    std::vector<ProjectState> undoStack, redoStack;
     TransportButton rewindButton { TransportButton::Rewind, "Rewind (Enter)" },
                     playButton   { TransportButton::Play,   "Play (Space)" },
                     pauseButton  { TransportButton::Pause,  "Pause (Space)" },

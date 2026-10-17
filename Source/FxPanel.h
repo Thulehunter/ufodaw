@@ -8,7 +8,8 @@
 class FxPanel : public juce::Component
 {
 public:
-    explicit FxPanel (Track&);
+    // `onBeginEdit` is called right before each user change, so the host can take an undo snapshot.
+    FxPanel (Track&, std::function<void()> onBeginEdit);
 
     void paint (juce::Graphics&) override;
     void resized() override;
@@ -32,6 +33,7 @@ private:
                  const juce::String& suffix, int decimals, std::atomic<float>& param);
 
     Track& track;
+    std::function<void()> beginEdit;
     std::vector<std::unique_ptr<Section>> sections;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (FxPanel)

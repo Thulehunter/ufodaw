@@ -8,7 +8,7 @@ namespace
     constexpr int maxRows = 5;   // the compressor has the most parameters
 }
 
-FxPanel::FxPanel (Track& t) : track (t)
+FxPanel::FxPanel (Track& t, std::function<void()> onBeginEdit) : track (t), beginEdit (std::move (onBeginEdit))
 {
     auto& fx = track.fx;
 
@@ -44,7 +44,11 @@ FxPanel::Section& FxPanel::addSection (const juce::String& title, std::atomic<bo
     s->title = title;
     s->toggle.setButtonText (title);
     s->toggle.setToggleState (enabled, juce::dontSendNotification);
-    s->toggle.onClick = [&enabled, &toggle = s->toggle] { enabled = toggle.getToggleState(); };
+    s->toggle.onClick = [this, &enabled, &toggle = s->toggle]
+    {
+        if (beginEdit) beginEdit();
+        enabled = toggle.getToggleState();
+    };
     addAndMakeVisible (s->toggle);
 
     sections.push_back (std::move (s));
@@ -69,6 +73,7 @@ void FxPanel::addRow (Section& s, const juce::String& name, double lo, double hi
     slider.setNumDecimalPlacesToDisplay (decimals);
     slider.setValue (param.load(), juce::dontSendNotification);
     slider.setDoubleClickReturnValue (true, param.load());
+    slider.onDragStart = [this] { if (beginEdit) beginEdit(); };
     slider.onValueChange = [&param, &slider] { param = (float) slider.getValue(); };
     addAndMakeVisible (slider);
 

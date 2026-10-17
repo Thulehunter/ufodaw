@@ -65,6 +65,28 @@ struct Track
     std::atomic<float> level { 0.0f };
 };
 
+// A copy of everything the user can edit, used for undo/redo. Audio sample data is shared,
+// not copied, so snapshots are cheap.
+struct TrackState
+{
+    juce::String name;
+    Track::Type type = Track::Type::Audio;
+    std::vector<Clip> clips;
+    std::vector<MidiClip> midiClips;
+    float gain = 0.8f, pan = 0.0f;
+    bool mute = false, solo = false;
+    int waveform = 0;
+    float synthValues[5] = {};          // attack, decay, sustain, release, cutoff
+    std::vector<float> fxFloats;        // FxParams::forEachFloat order
+    std::vector<char> fxBools;          // FxParams::forEachBool order
+};
+
+struct ProjectState
+{
+    std::vector<TrackState> tracks;
+    float bpm = 120.0f, masterGain = 0.9f;
+};
+
 // Mixes all tracks against a shared transport. The audio thread only ever try-locks,
 // so editing on the message thread can never block audio.
 class Engine : public juce::AudioSource
@@ -105,6 +127,11 @@ public:
     int splitClip (Track&, int clipId, double atSeconds);                   // id of the right-hand part
     int duplicateClip (Track&, int clipId);                                 // id of the copy, placed after the original
     bool deleteClip (Track&, int clipId);
+
+    // Undo/redo support. restoreState() replaces every Track object, so any Track* held
+    // elsewhere is invalid afterwards (clip ids are kept).
+    ProjectState captureState() const;
+    void restoreState (const ProjectState&);
 
     // Audition a note on a MIDI track's synth (works while the transport is stopped).
     void previewNote (const Track&, int pitch, bool on);

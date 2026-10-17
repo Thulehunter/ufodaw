@@ -102,6 +102,7 @@ public:
     {
         if (! load() || selected < 0 || selected >= (int) clip.notes.size())
             return false;
+        main.beginEdit();
         clip.notes.erase (clip.notes.begin() + selected);
         selected = -1;
         commit();
@@ -194,6 +195,7 @@ public:
         }
 
         mode = Mode::None;
+        gestureEdited = false;
         if (hit >= 0)
         {
             selected = hit;
@@ -213,6 +215,8 @@ public:
             n.pitch = yToPitch (e.y);
             n.start = t;
             n.length = juce::jmin (main.beatSeconds(), clip.length - t);
+            main.beginEdit();
+            gestureEdited = true;   // adding the note and stretching it afterwards is one undo step
             clip.notes.push_back (n);
             selected = (int) clip.notes.size() - 1;
             mode = Mode::Resize;   // dragging right right after clicking stretches the new note
@@ -230,23 +234,36 @@ public:
         auto& n = clip.notes[(size_t) selected];
         const double minLen = main.beatSeconds() / 4.0;
 
+        // work out the new values first so the undo snapshot is only taken when something changes
+        double newStart = n.start, newLength = n.length;
+        int newPitch = n.pitch;
         if (mode == Mode::Resize)
         {
             const double end = rawOrSnapped (xToTime (e.x), e) - clip.start;
-            n.length = juce::jmax (minLen, end - n.start);
+            newLength = juce::jmax (minLen, end - n.start);
         }
         else
         {
             const double start = rawOrSnapped (xToTime (e.x) - grabTime, e) - clip.start;
-            n.start = juce::jlimit (0.0, juce::jmax (0.0, clip.length - minLen), start);
-
-            const int pitch = yToPitch (e.y);
-            if (pitch != n.pitch)
-            {
-                n.pitch = pitch;
-                preview (pitch);
-            }
+            newStart = juce::jlimit (0.0, juce::jmax (0.0, clip.length - minLen), start);
+            newPitch = yToPitch (e.y);
         }
+
+        const bool changed = std::abs (newStart - n.start) > 1.0e-9 || std::abs (newLength - n.length) > 1.0e-9
+                             || newPitch != n.pitch;
+        if (! changed)
+            return;
+        if (! gestureEdited)
+        {
+            main.beginEdit();
+            gestureEdited = true;
+        }
+
+        if (newPitch != n.pitch)
+            preview (newPitch);
+        n.start = newStart;
+        n.length = newLength;
+        n.pitch = newPitch;
         commit();
         repaint();
     }
@@ -314,6 +331,7 @@ private:
     MidiClip clip;
     int selected = -1;
     Mode mode = Mode::None;
+    bool gestureEdited = false;   // true once this mouse gesture has taken its undo snapshot
     double grabTime = 0.0;
     int previewPitch = -1;
 };
@@ -328,7 +346,7 @@ PianoRoll::PianoRoll (MainComponent& m) : main (m)
     addAndMakeVisible (title);
 
     waveform.addItemList ({ "Sine", "Saw", "Square", "Triangle" }, 1);
-    waveform.onChange = [this] { applySynthParams(); };
+    waveform.onChange = [this] { main.beginEdit(); applySynthParams(); };
     addAndMakeVisible (waveform);
 
     auto setupSlider = [this] (juce::Slider& s, double lo, double hi, double mid)
@@ -337,6 +355,7 @@ PianoRoll::PianoRoll (MainComponent& m) : main (m)
         s.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
         s.setRange (lo, hi);
         s.setSkewFactorFromMidPoint (mid);
+        s.onDragStart = [this] { main.beginEdit(); };
         s.onValueChange = [this] { applySynthParams(); };
         addAndMakeVisible (s);
     };

@@ -423,6 +423,84 @@ double Engine::getTotalLengthSeconds() const
 }
 
 //==============================================================================
+// Undo/redo snapshots
+
+ProjectState Engine::captureState() const
+{
+    const juce::ScopedLock sl (lock);
+    ProjectState s;
+    s.bpm = bpm;
+    s.masterGain = masterGain;
+
+    for (auto& t : tracks)
+    {
+        TrackState ts;
+        ts.name = t->name;
+        ts.type = t->type;
+        ts.clips = t->clips;
+        ts.midiClips = t->midiClips;
+        ts.gain = t->gain;
+        ts.pan = t->pan;
+        ts.mute = t->mute;
+        ts.solo = t->solo;
+        ts.waveform = t->synth.waveform;
+        ts.synthValues[0] = t->synth.attack;
+        ts.synthValues[1] = t->synth.decay;
+        ts.synthValues[2] = t->synth.sustain;
+        ts.synthValues[3] = t->synth.release;
+        ts.synthValues[4] = t->synth.cutoff;
+        t->fx.forEachFloat ([&ts] (const char*, std::atomic<float>& v) { ts.fxFloats.push_back (v.load()); });
+        t->fx.forEachBool ([&ts] (const char*, std::atomic<bool>& v) { ts.fxBools.push_back (v.load() ? 1 : 0); });
+        s.tracks.push_back (std::move (ts));
+    }
+    return s;
+}
+
+void Engine::restoreState (const ProjectState& s)
+{
+    std::vector<std::unique_ptr<Track>> fresh;
+    for (auto& ts : s.tracks)
+    {
+        auto t = std::make_unique<Track>();
+        t->name = ts.name;
+        t->type = ts.type;
+        t->clips = ts.clips;
+        t->midiClips = ts.midiClips;
+        t->gain = ts.gain;
+        t->pan = ts.pan;
+        t->mute = ts.mute;
+        t->solo = ts.solo;
+        t->synth.waveform = ts.waveform;
+        t->synth.attack = ts.synthValues[0];
+        t->synth.decay = ts.synthValues[1];
+        t->synth.sustain = ts.synthValues[2];
+        t->synth.release = ts.synthValues[3];
+        t->synth.cutoff = ts.synthValues[4];
+
+        size_t fi = 0, bi = 0;
+        t->fx.forEachFloat ([&] (const char*, std::atomic<float>& v) { if (fi < ts.fxFloats.size()) v = ts.fxFloats[fi]; ++fi; });
+        t->fx.forEachBool ([&] (const char*, std::atomic<bool>& v) { if (bi < ts.fxBools.size()) v = ts.fxBools[bi] != 0; ++bi; });
+
+        t->fxState = std::make_unique<TrackFx>();
+        t->fxState->prepare (sampleRate);
+        if (t->type == Track::Type::Midi)
+        {
+            t->voices = std::make_unique<Synth>();
+            t->voices->prepare (sampleRate);
+        }
+        fresh.push_back (std::move (t));
+    }
+
+    bpm = s.bpm;
+    masterGain = s.masterGain;
+    {
+        const juce::ScopedLock sl (lock);
+        tracks.swap (fresh);
+    }
+    // `fresh` now holds the old tracks and is destroyed here, outside the lock
+}
+
+//==============================================================================
 // Note preview (UI thread -> audio thread)
 
 void Engine::previewNote (const Track& t, int pitch, bool on)
