@@ -427,6 +427,7 @@ public:
     bool isAutomationRecording (const Track&, const juce::String& id) const;   // a take is being captured right now
     void automationRecordTick();   // message thread, about 30 times a second
     int recordedTakeCounter = 0;      // grows with every take that riding creates (the program counts it as an edit)
+    bool anyAutomationArmed() const { return ! autoRecs.empty(); }
     void finishAutomationRecording();   // closes the takes in progress (playback stopped)
     AutoData getAutomationData (const Track&, const juce::String& id) const;
     void setAutomationData (Track&, const juce::String& id, AutoData data);   // flattens into the envelope

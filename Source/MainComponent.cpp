@@ -1239,7 +1239,7 @@ private:
                 if (engine.isAutomationArmed (track, id, &armedMode))
                 {
                     const bool rec = engine.isAutomationRecording (track, id);
-                    g.setColour (rec ? Theme::redBright : Theme::redDim);
+                    g.setColour (rec ? Theme::redBright : Theme::redBright.withAlpha (0.75f));
                     g.fillEllipse (8.0f, (float) getHeight() - 20.0f, 10.0f, 10.0f);
                     g.setFont (12.0f);
                     g.drawText (juce::String (rec ? "REC " : "armed: ") + (armedMode == AutoRecMode::Touch ? "Touch" : armedMode == AutoRecMode::Latch ? "Latch" : "Write"),
@@ -2731,6 +2731,8 @@ void MainComponent::openAutomation (Track& t, juce::Component& anchor)
             return;
         (*actions)[(size_t) result - 1]();
         clipsChanged();
+        for (auto* lane : lanes)   // (the arm state and the REC mark are drawn in the lanes)
+            lane->repaint();
     });
 }
 
@@ -3837,6 +3839,11 @@ void MainComponent::timerCallback()
         engine.automationRecordTick();   // rides of armed automation lanes become takes
         if (engine.recordedTakeCounter != takesBefore)
             ++editCounter;                // (unsaved changes, autosave)
+        static int armedTicks = 0;
+        if (engine.anyAutomationArmed() && (++armedTicks % 3 == 0 || engine.recordedTakeCounter != takesBefore))
+            for (auto* lane : lanes)   // the REC mark and the new takes show up while riding
+                if (lane->getTrack().autoEditId.isNotEmpty())
+                    lane->repaint();
     }
     const double p = engine.getPositionSeconds();
     const int mins = (int) (p / 60.0);
