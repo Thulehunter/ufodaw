@@ -26,6 +26,26 @@ Download `MiniDAW-<version>-win64.zip` (see *Packaging*), unzip it and start `Mi
 
 The interface uses a warm dark theme with red, orange and yellow accents; the colours live in `Source/Theme.h`. Track colours tell the types apart: orange = audio, red = MIDI synth, yellow = drums.
 
+## Audio interfaces and ASIO
+
+Click **Audio...** (bottom right) to choose the driver type, the device, the sample rate, the buffer size and which
+channels are on. The choice is remembered. The status line at the bottom shows what is in use. MiniDAW plays through the
+first two enabled output channels and records from the first two enabled input channels, so enable the pair you want.
+
+Without extra steps you get *Windows Audio* (WASAPI), *Windows Audio (Exclusive Mode)* / *(Low Latency Mode)* and
+*DirectSound*. For **ASIO** drivers (PreSonus Quantum / Studio 192, Roland Rubix, AudioBox, ...) MiniDAW has to be built with
+Steinberg's ASIO SDK, which cannot be shipped with the sources:
+
+1. Download the ASIO SDK from <https://www.steinberg.net/asiosdk> (you accept Steinberg's license there).
+2. Unzip it into `third_party\` so that `third_party\asiosdk_<version>\common\iasiodrv.h` exists
+   (or point at it: `cmake -S . -B build -DASIO_SDK_DIR=C:\path\to\asiosdk`, or set the `ASIO_SDK_DIR` environment variable).
+3. Build again (`cmake -S . -B build`, then `cmake --build build --config Release`). The configure step prints
+   `ASIO support: ON`, and *ASIO* appears as a driver type in the Audio window.
+
+Notes: Windows lets a program use one ASIO driver at a time. To use two interfaces together, use *Windows Audio*
+(input and output can be different devices there) or an aggregate driver from the interface maker. Distributing a build
+that includes ASIO means following Steinberg's ASIO license (the SDK is also offered under the GPLv3).
+
 ## Sequencer plugins (Stochas etc.) driving a synthesizer
 
 1. Add two MIDI tracks (**+ MIDI**): one for the sequencer, one for the synth.

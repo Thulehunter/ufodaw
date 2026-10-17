@@ -85,7 +85,8 @@ private:
 
 class MainComponent : public juce::Component,
                       public juce::FileDragAndDropTarget,
-                      private juce::Timer
+                      private juce::Timer,
+                      private juce::ChangeListener
 {
 public:
     MainComponent();
@@ -148,6 +149,12 @@ private:
     void showRoll (Track*, int clipId);
     void hideRoll();
 
+    // ---- Audio device: choose driver / interface, remembered between runs
+    void changeListenerCallback (juce::ChangeBroadcaster*) override;   // the audio device setup changed
+    static juce::File audioSettingsFile();
+    void openAudioSettings();
+    void updateAudioInfo();
+
     // ---- Live MIDI (hardware keyboard or computer keys) -> synth of the armed track
     void enableAllMidiInputs();
     void updateArmedTrack();
@@ -202,7 +209,8 @@ private:
     // Read from the MIDI thread, so it is atomic; the pointer is only ever compared / passed by address.
     std::atomic<Track*> armedTrack { nullptr };
     juce::Label statusLabel;
-    juce::String midiInputText;
+    juce::String midiInputText, audioInfoText;
+    juce::TextButton audioButton { "Audio..." };
     juce::ToggleButton keysButton { "Keys" };   // computer keyboard as piano
     int pianoOctave = 0;
     bool pianoKeyDown[16] = {};

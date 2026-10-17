@@ -784,6 +784,50 @@ private:
 };
 
 //==============================================================================
+// The audio settings window: JUCE's device selector (driver, device, sample rate, buffer size, channels),
+// plus a note on ASIO when no ASIO driver type is available in this build.
+class AudioSettingsPanel : public juce::Component
+{
+public:
+    explicit AudioSettingsPanel (juce::AudioDeviceManager& dm)
+        : selector (dm, 0, 256, 1, 256, false, false, true, false)
+    {
+        addAndMakeVisible (selector);
+
+        bool hasAsio = false;
+        for (auto* type : dm.getAvailableDeviceTypes())
+            hasAsio = hasAsio || type->getTypeName() == "ASIO";
+
+        if (! hasAsio)
+        {
+            hint.setText ("ASIO drivers are not listed because this build does not include ASIO support. "
+                          "\"Windows Audio (Exclusive Mode)\" and \"Windows Audio (Low Latency Mode)\" are the "
+                          "low-latency options meanwhile; see the README (ASIO) to switch ASIO on.",
+                          juce::dontSendNotification);
+            hint.setFont (juce::FontOptions (12.5f));
+            hint.setColour (juce::Label::textColourId, Theme::yellow);
+            hint.setMinimumHorizontalScale (1.0f);
+            addAndMakeVisible (hint);
+        }
+        showsHint = ! hasAsio;
+        setSize (560, showsHint ? 600 : 530);
+    }
+
+    void resized() override
+    {
+        auto area = getLocalBounds().reduced (10);
+        if (showsHint)
+            hint.setBounds (area.removeFromBottom (64));
+        selector.setBounds (area);
+    }
+
+private:
+    juce::AudioDeviceSelectorComponent selector;
+    juce::Label hint;
+    bool showsHint = false;
+};
+
+//==============================================================================
 MainComponent::MainComponent()
 {
     // These must exist before setSize() triggers resized()
@@ -798,9 +842,17 @@ MainComponent::MainComponent()
 
     setWantsKeyboardFocus (true);
 
-    deviceManager.initialiseWithDefaultDevices (2, 2);
+    // Start with the audio setup of the last run (driver, device, rate, buffer, channels); fall back to the default device.
+    {
+        const std::unique_ptr<juce::XmlElement> saved = juce::XmlDocument::parse (audioSettingsFile());
+        const auto error = deviceManager.initialise (2, 2, saved.get(), true);
+        if (error.isNotEmpty())
+            juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Audio device", error);
+    }
+    deviceManager.addChangeListener (this);
     player.setSource (&engine);
     deviceManager.addAudioCallback (&player);
+    updateAudioInfo();
 
     deviceManager.addMidiInputDeviceCallback ({}, &midiForwarder);   // all enabled MIDI inputs
     midiListConnection = juce::MidiDeviceListConnection::make ([this] { enableAllMidiInputs(); });   // hot-plugging
@@ -813,6 +865,11 @@ MainComponent::MainComponent()
     keysButton.setWantsKeyboardFocus (false);
     keysButton.onClick = [this] { grabKeyboardFocus(); };
     addAndMakeVisible (keysButton);
+
+    audioButton.setTooltip ("Audio driver and interface: driver type (ASIO, Windows Audio...), device, sample rate, buffer size, channels");
+    audioButton.setWantsKeyboardFocus (false);
+    audioButton.onClick = [this] { openAudioSettings(); };
+    addAndMakeVisible (audioButton);
 
     pluginsButton.setTooltip ("Scan for and manage VST3 plugins");
     pluginsButton.setWantsKeyboardFocus (false);
@@ -915,6 +972,7 @@ MainComponent::MainComponent()
 MainComponent::~MainComponent()
 {
     stopTimer();
+    deviceManager.removeChangeListener (this);
     pluginHost.closeAllEditors();   // editor windows must go before the plugins they show
     midiListConnection = {};
     deviceManager.removeMidiInputDeviceCallback ({}, &midiForwarder);
@@ -975,9 +1033,60 @@ void MainComponent::updateArmedTrack()
     }
     armedTrack = t;
 
-    statusLabel.setText ("MIDI in: " + (midiInputText.isEmpty() ? juce::String ("none") : midiInputText)
+    statusLabel.setText (audioInfoText + "\n"
+                             + "MIDI in: " + (midiInputText.isEmpty() ? juce::String ("none") : midiInputText)
                              + "    Armed: " + (t != nullptr ? t->name : juce::String ("none (select a MIDI clip)")),
                          juce::dontSendNotification);
+}
+
+//==============================================================================
+// Audio device
+
+juce::File MainComponent::audioSettingsFile()
+{
+    auto dir = juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory).getChildFile ("MiniDAW");
+    dir.createDirectory();
+    return dir.getChildFile ("audio-device.xml");
+}
+
+// Any change in the audio setup (driver, device, rate, buffer, channels) is remembered for the next start.
+void MainComponent::changeListenerCallback (juce::ChangeBroadcaster*)
+{
+    if (auto xml = deviceManager.createStateXml())
+        xml->writeTo (audioSettingsFile());
+    updateAudioInfo();
+}
+
+void MainComponent::updateAudioInfo()
+{
+    if (auto* device = deviceManager.getCurrentAudioDevice())
+    {
+        const double rate = device->getCurrentSampleRate();
+        const int buffer = device->getCurrentBufferSizeSamples();
+        audioInfoText = "Audio: " + device->getTypeName() + " - " + device->getName() + "  |  "
+                        + juce::String (rate / 1000.0, 1) + " kHz, " + juce::String (buffer) + " smp ("
+                        + juce::String (buffer * 1000.0 / juce::jmax (1.0, rate), 1) + " ms), "
+                        + juce::String (device->getActiveInputChannels().countNumberOfSetBits()) + " in/"
+                        + juce::String (device->getActiveOutputChannels().countNumberOfSetBits()) + " out";
+    }
+    else
+    {
+        audioInfoText = "Audio: no device - click Audio... to choose one";
+    }
+    updateArmedTrack();   // rebuilds the status text
+}
+
+void MainComponent::openAudioSettings()
+{
+    juce::DialogWindow::LaunchOptions options;
+    options.content.setOwned (new AudioSettingsPanel (deviceManager));
+    options.dialogTitle = "Audio settings";
+    options.dialogBackgroundColour = Theme::panel;
+    options.componentToCentreAround = this;
+    options.escapeKeyTriggersCloseButton = true;
+    options.useNativeTitleBar = true;
+    options.resizable = false;
+    options.launchAsync();
 }
 
 void MainComponent::MidiForwarder::handleIncomingMidiMessage (juce::MidiInput*, const juce::MidiMessage& m)
@@ -1495,6 +1604,7 @@ void MainComponent::resized()
     statusLabel.setBounds (10, getHeight() - bottomBarHeight + 8, juce::jmax (100, getWidth() / 2 - 150), bottomBarHeight - 16);
     keysButton.setBounds (getWidth() - 100, getHeight() - bottomBarHeight + 18, 90, 24);
     pluginsButton.setBounds (getWidth() - 100 - 96, getHeight() - bottomBarHeight + 16, 90, 28);
+    audioButton.setBounds (getWidth() - 100 - 96 - 84, getHeight() - bottomBarHeight + 16, 78, 28);
 
     // transport: centred along the bottom
     constexpr int tb = 44, gap = 10;
