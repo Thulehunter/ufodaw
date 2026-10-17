@@ -275,8 +275,19 @@ public:
     double getTotalLengthSeconds() const;
     double getRenderTailSeconds() const;   // extra time to render after the last clip (delay/reverb tails)
 
-    // Mixes the whole project offline (faster than realtime) into a 24-bit stereo WAV.
+    // Mixes the project offline (faster than realtime) into a stereo WAV.
+    struct RenderOptions
+    {
+        bool withMetronome = false;
+        int bits = 24;                                  // 16, 24 or 32 (32 = floating point: never clips)
+        const Track* onlyTrack = nullptr;               // set: render just this track (a stem)
+        bool masterProcessing = true;                   // false: no master volume / limiter (stems)
+        std::function<bool()> shouldCancel;             // polled between blocks; true stops the render
+        std::function<void (double)> onProgress;        // 0..1, called from the rendering thread
+    };
     bool renderToFile (const juce::File&, double lengthSeconds, bool withMetronome);
+    bool renderToFile (const juce::File&, double lengthSeconds, const RenderOptions&);
+    bool trackHasOutput (const Track&) const;           // whether the track would give a non-empty stem
 
     // Records the audio input (while the transport plays) straight to a 24-bit WAV on a background thread.
     bool startRecording (const juce::File&, int numChannels);
@@ -378,6 +389,10 @@ private:
     std::vector<float> trackL, trackR;     // one track's stereo signal before fader/pan
     juce::int64 lastBlockEnd = -1;
     bool wasRunning = false;
+
+    std::atomic<bool> offlineRendering { false };   // an export owns the mixer; the audio callback stays silent
+    const Track* renderOnly = nullptr;              // set during an offline render of a single track
+    bool renderMaster = true;
 
     std::atomic<bool> playing { false };
     std::atomic<juce::int64> positionSamples { 0 };

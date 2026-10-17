@@ -195,6 +195,7 @@ private:
     void loadProject (const juce::File&);
     void openProjectDialog();
     void exportDialog();
+    void exportStemsDialog();
 
     struct MidiForwarder : public juce::MidiInputCallback
     {
@@ -245,7 +246,8 @@ private:
     double playStartSeconds = 0.0;
     double recStartSeconds = 0.0;
     juce::File recordingFile;
-    juce::TextButton openButton { "Open" }, saveButton { "Save" }, saveAsButton { "Save As" }, exportButton { "Export WAV" };
+    juce::TextButton openButton { "Open" }, saveButton { "Save" }, saveAsButton { "Save As" }, exportButton { "Export WAV" },
+                     exportStemsButton { "Export stems" };
     juce::TextButton zoomOutButton { "-" }, zoomInButton { "+" };
     juce::ToggleButton snapButton { "Snap" };
     juce::ToggleButton panSnapButton { "Pan snap 5%" };

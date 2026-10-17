@@ -868,6 +868,76 @@ private:
     bool showsHint = false;
 };
 
+// Renders every stem on a background thread behind a progress window (with a cancel button), then reports.
+class StemExportJob : public juce::ThreadWithProgressWindow
+{
+public:
+    struct Item { Track* track; juce::File file; };
+
+    StemExportJob (Engine& e, std::vector<Item> itemsToRender, double lengthSeconds, int bitDepth, bool withMaster,
+                   juce::File targetFolder, juce::StringArray skippedTracks, juce::Component* centreAround)
+        : juce::ThreadWithProgressWindow ("Exporting stems", true, true, 5000, "Cancel", centreAround),
+          engine (e), items (std::move (itemsToRender)), seconds (lengthSeconds), bits (bitDepth), master (withMaster),
+          folder (std::move (targetFolder)), skipped (std::move (skippedTracks))
+    {
+    }
+
+    void run() override
+    {
+        for (size_t i = 0; i < items.size() && ! threadShouldExit(); ++i)
+        {
+            setStatusMessage ("Rendering " + items[i].file.getFileNameWithoutExtension()
+                              + "   (" + juce::String ((int) i + 1) + " of " + juce::String ((int) items.size()) + ")");
+
+            Engine::RenderOptions options;
+            options.onlyTrack = items[i].track;
+            options.bits = bits;
+            options.masterProcessing = master;
+            options.shouldCancel = [this] { return threadShouldExit(); };
+            options.onProgress = [this, i] (double f) { setProgress (((double) i + f) / (double) items.size()); };
+
+            if (engine.renderToFile (items[i].file, seconds, options))
+                done.add (items[i].file.getFileName());
+            else if (! threadShouldExit())
+                failed.add (items[i].file.getFileName());
+        }
+    }
+
+    // Message thread, once the thread is finished or cancelled. (JUCE says this object may be deleted here.)
+    void threadComplete (bool userPressedCancel) override
+    {
+        juce::String message;
+        if (userPressedCancel)
+            message << "Cancelled. " << done.size() << " stem(s) were finished before that.\n\n";
+        else
+            message << done.size() << " stem(s) exported to:\n" << folder.getFullPathName() << "\n\n";
+        if (failed.size() > 0)
+            message << "Could not write: " << failed.joinIntoString (", ") << "\n\n";
+        if (skipped.size() > 0)
+            message << "Not exported: " << skipped.joinIntoString (", ");
+
+        auto target = folder;
+        juce::AlertWindow::showAsync (juce::MessageBoxOptions()
+                                          .withIconType (failed.isEmpty() ? juce::MessageBoxIconType::InfoIcon
+                                                                          : juce::MessageBoxIconType::WarningIcon)
+                                          .withTitle (userPressedCancel ? "Export cancelled" : "Stems exported")
+                                          .withMessage (message.trim())
+                                          .withButton ("Open folder")
+                                          .withButton ("Close"),
+                                      [target] (int result) { if (result == 1) target.revealToUser(); });
+        delete this;
+    }
+
+private:
+    Engine& engine;
+    std::vector<Item> items;
+    double seconds;
+    int bits;
+    bool master;
+    juce::File folder;
+    juce::StringArray skipped, done, failed;
+};
+
 //==============================================================================
 MainComponent::MainComponent()
 {
@@ -964,6 +1034,9 @@ MainComponent::MainComponent()
     saveButton.onClick   = [this] { if (currentProject != juce::File()) saveProject (currentProject); else saveProjectAs(); };
     saveAsButton.onClick = [this] { saveProjectAs(); };
     exportButton.onClick = [this] { exportDialog(); };
+    exportStemsButton.onClick = [this] { exportStemsDialog(); };
+    exportStemsButton.setTooltip ("Export every track as its own WAV file (a stem) into a folder you choose");
+    addAndMakeVisible (exportStemsButton);
     zoomOutButton.onClick = [this] { zoomBy (1.0 / 1.4, laneViewport.getMaximumVisibleWidth() / 2); };
     zoomInButton.onClick  = [this] { zoomBy (1.4, laneViewport.getMaximumVisibleWidth() / 2); };
 
@@ -1669,6 +1742,8 @@ void MainComponent::resized()
     saveAsButton.setBounds (top.removeFromLeft (64));
     top.removeFromLeft (4);
     exportButton.setBounds (top.removeFromLeft (90));
+    top.removeFromLeft (4);
+    exportStemsButton.setBounds (top.removeFromLeft (100));
     separator();
     undoButton.setBounds (top.removeFromLeft (50));
     top.removeFromLeft (4);
@@ -2518,6 +2593,81 @@ void MainComponent::loadProject (const juce::File& file)
         juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon,
                                                 "Some plugins could not be loaded",
                                                 pluginProblems.joinIntoString ("\n"));
+}
+
+// Export stems: pick a folder, pick the format, then every track is rendered to its own WAV file in it.
+void MainComponent::exportStemsDialog()
+{
+    finishRecording();
+    engine.stop();
+
+    // which tracks make a stem: muted and empty tracks don't
+    std::vector<StemExportJob::Item> items;
+    juce::StringArray skipped;
+    for (int i = 0; i < engine.getNumTracks(); ++i)
+    {
+        auto* t = engine.getTrack (i);
+        if (t->mute)                           { skipped.add (t->name + " (muted)"); continue; }
+        if (! engine.trackHasOutput (*t))      { skipped.add (t->name + " (nothing to play)"); continue; }
+        items.push_back ({ t, juce::File (juce::String::formatted ("%02d - ", i + 1) + juce::File::createLegalFileName (t->name) + ".wav") });
+    }
+
+    if (items.empty())
+    {
+        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::InfoIcon, "No stems to export",
+                                                "There are no tracks with anything to play (muted tracks are skipped).");
+        return;
+    }
+
+    auto startFolder = currentProject != juce::File() ? currentProject.getParentDirectory()
+                                                       : juce::File::getSpecialLocation (juce::File::userMusicDirectory);
+    chooser = std::make_unique<juce::FileChooser> ("Choose the folder for the stems", startFolder);
+    chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectDirectories,
+                          [this, items, skipped] (const juce::FileChooser& fc)
+                          {
+                              const auto folder = fc.getResult();
+                              if (folder == juce::File() || ! folder.createDirectory().wasOk())
+                                  return;
+
+                              juce::StringArray names;
+                              for (auto& item : items)
+                                  names.add (item.file.getFileNameWithoutExtension());
+
+                              auto* options = new juce::AlertWindow ("Export stems",
+                                                                     juce::String ((int) items.size()) + " stems will be written to\n"
+                                                                         + folder.getFullPathName() + "\n\n"
+                                                                         + "Each track is rendered on its own, after its effects, volume and pan. "
+                                                                           "Existing files with the same name are replaced.",
+                                                                     juce::MessageBoxIconType::QuestionIcon);
+                              options->addComboBox ("format", { "24-bit WAV", "32-bit float WAV (can never clip)", "16-bit WAV" }, "Format");
+                              options->addComboBox ("master", { "Without master volume and limiter (stems add up to the mix)",
+                                                                "With master volume and limiter on every stem" }, "Master");
+                              options->getComboBoxComponent ("format")->setSelectedItemIndex (0);
+                              options->getComboBoxComponent ("master")->setSelectedItemIndex (0);
+                              options->addButton ("Export", 1, juce::KeyPress (juce::KeyPress::returnKey));
+                              options->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+
+                              options->enterModalState (true,
+                                  juce::ModalCallbackFunction::create ([this, options, items, skipped, folder] (int result)
+                                  {
+                                      if (result != 1)
+                                          return;
+
+                                      const int formatIndex = options->getComboBoxComponent ("format")->getSelectedItemIndex();
+                                      const int bits = formatIndex == 1 ? 32 : formatIndex == 2 ? 16 : 24;
+                                      const bool withMaster = options->getComboBoxComponent ("master")->getSelectedItemIndex() == 1;
+
+                                      auto fullItems = items;
+                                      for (auto& item : fullItems)
+                                          item.file = folder.getChildFile (item.file.getFileName());
+
+                                      auto* job = new StemExportJob (engine, std::move (fullItems),
+                                                                     engine.getTotalLengthSeconds() + engine.getRenderTailSeconds(),
+                                                                     bits, withMaster, folder, skipped, this);
+                                      job->launchThread();   // deletes itself when it is done
+                                  }),
+                                  true);
+                          });
 }
 
 void MainComponent::exportDialog()

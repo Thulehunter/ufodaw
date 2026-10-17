@@ -18,6 +18,7 @@ A small digital audio workstation for Windows, written in C++17 with [JUCE](http
 - **Velocity editing** - velocity bars under the piano roll; Ctrl+drag a step in the drum sequencer.
 - **Mixer** - volume, pan, mute, solo, level meters, soft limiter on the master.
 - **Undo / redo**, project **save / load** (`.mdaw`) and **WAV export** (24-bit).
+- **Stem export** - every track as its own WAV file in a folder you choose (see below).
 
 ## Running
 
@@ -25,6 +26,20 @@ Download `MiniDAW-<version>-win64.zip` (see *Packaging*), unzip it and start `Mi
 `MiniDAW.exe project.mdaw` (or "Open with" on a `.mdaw` file) opens that project right away.
 
 The interface uses a warm dark theme with red, orange and yellow accents; the colours live in `Source/Theme.h`. Track colours tell the types apart: orange = audio, red = MIDI synth, yellow = drums.
+
+## Exporting stems
+
+**Export stems** (top bar) writes one WAV file per track into a folder you pick, named `01 - Bass loop.wav`,
+`02 - Synth 1.wav`, ... in track order. A progress window with a Cancel button shows while it renders, and when it is done
+you can open the folder.
+
+- Each stem is the track as you hear it: after its effects and plugins, with its volume, pan and automation.
+- Muted tracks, empty tracks and sequencer tracks (which are silent themselves; the synth that plays their notes
+  gets them) are skipped; the summary says which ones.
+- Format: 24-bit, 16-bit or **32-bit float** (cannot clip, even when a stem is above 0 dBFS).
+- **Without master volume and limiter** (the default) the stems add up exactly to the mix; with it, every stem gets the master
+  volume and the soft limiter on its own.
+- Every stem is as long as the whole project (plus the tail of reverbs/delays), so they all line up when you drop them in another DAW.
 
 ## Audio interfaces and ASIO
 

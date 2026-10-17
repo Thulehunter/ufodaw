@@ -1106,6 +1106,12 @@ void Engine::getNextAudioBlock (const juce::AudioSourceChannelInfo& info)
 
     info.clearActiveBufferRegion();
 
+    if (offlineRendering)   // an export is using the mixer: stay silent and out of its way
+    {
+        masterLevel = 0.0f;
+        return;
+    }
+
     const juce::ScopedTryLock sl (lock);
     if (! sl.isLocked())
     {
@@ -1481,8 +1487,14 @@ void Engine::mixBlock (float* outL, float* outR, int n, juce::int64 pos, bool wi
 
     for (auto& t : tracks)
     {
+        if (renderOnly != nullptr && t.get() != renderOnly)   // exporting one stem: the other tracks stay out of it
+        {
+            t->level = 0.0f;
+            continue;
+        }
+
         float peak = 0.0f;
-        const bool audible = ! t->mute && (! anySolo || t->solo);
+        const bool audible = renderOnly != nullptr || (! t->mute && (! anySolo || t->solo));
 
         // Fader and pan, possibly automated: evaluated at both ends of the block and ramped in between.
         const double t0 = (double) pos / sampleRate, t1 = (double) (pos + n) / sampleRate;
@@ -1650,22 +1662,47 @@ void Engine::mixBlock (float* outL, float* outR, int n, juce::int64 pos, bool wi
         return std::copysign (knee + (1.0f - knee) * std::tanh ((a - knee) / (1.0f - knee)), x);
     };
 
-    const float mg = masterGain;
+    // Stems skip the master volume and the limiter, so that they add up to the mix instead of being limited one by one.
+    const float mg = renderMaster ? masterGain.load() : 1.0f;
     float mp = 0.0f;
     for (int i = 0; i < n; ++i)
     {
-        outL[i] = softClip (outL[i] * mg);
+        outL[i] = renderMaster ? softClip (outL[i] * mg) : outL[i];
         mp = juce::jmax (mp, std::abs (outL[i]));
         if (outR)
         {
-            outR[i] = softClip (outR[i] * mg);
+            outR[i] = renderMaster ? softClip (outR[i] * mg) : outR[i];
             mp = juce::jmax (mp, std::abs (outR[i]));
         }
     }
     masterLevel = mp;
 }
 
+// True if a track has something to put in a stem: clips, or notes routed to it by a sequencer plugin.
+bool Engine::trackHasOutput (const Track& t) const
+{
+    const juce::ScopedLock sl (lock);
+    if (t.type == Track::Type::Midi && t.instrument != nullptr && ! t.midiOuts.empty())
+        return false;   // a sequencer track: silent itself, its notes sound on other tracks
+    if (! t.clips.empty() || ! t.midiClips.empty())
+        return true;
+    for (auto& other : tracks)
+        for (auto& route : other->midiOuts)
+            if (route.target == &t)
+                return true;
+    return false;
+}
+
 bool Engine::renderToFile (const juce::File& file, double seconds, bool withMetronome)
+{
+    RenderOptions options;
+    options.withMetronome = withMetronome;
+    return renderToFile (file, seconds, options);
+}
+
+// Offline render into a WAV file. The lock is only held block by block, so the interface stays alive during long
+// renders; while it runs the audio callback is silent (offlineRendering) so it can't disturb the shared scratch state.
+bool Engine::renderToFile (const juce::File& file, double seconds, const RenderOptions& options)
 {
     if (seconds <= 0.0)
         return false;
@@ -1676,13 +1713,24 @@ bool Engine::renderToFile (const juce::File& file, double seconds, bool withMetr
         return false;
 
     juce::WavAudioFormat wav;
-    std::unique_ptr<juce::AudioFormatWriter> writer (wav.createWriterFor (stream.get(), sampleRate, 2, 24, {}, 0));
+    std::unique_ptr<juce::AudioFormatWriter> writer (wav.createWriterFor (stream.get(), sampleRate, 2, options.bits, {}, 0));
     if (writer == nullptr)
         return false;
     stream.release(); // the writer owns the stream now
 
-    const juce::ScopedLock sl (lock);
-    silenceSynths();
+    struct Offline   // marks the engine as busy for the whole render, whatever way it ends
+    {
+        explicit Offline (std::atomic<bool>& f) : flag (f) { flag = true; }
+        ~Offline() { flag = false; }
+        std::atomic<bool>& flag;
+    } offline (offlineRendering);
+
+    {
+        const juce::ScopedLock sl (lock);
+        silenceSynths();
+        renderOnly = options.onlyTrack;
+        renderMaster = options.masterProcessing;
+    }
 
     constexpr int blockSize = 1024;
     juce::AudioBuffer<float> buffer (2, blockSize);
@@ -1691,13 +1739,30 @@ bool Engine::renderToFile (const juce::File& file, double seconds, bool withMetr
 
     for (juce::int64 done = 0; done < total && ok; done += blockSize)
     {
+        if (options.shouldCancel && options.shouldCancel())
+        {
+            ok = false;
+            break;
+        }
+
         const int n = (int) juce::jmin<juce::int64> (blockSize, total - done);
         buffer.clear();
-        mixBlock (buffer.getWritePointer (0), buffer.getWritePointer (1), n, done, withMetronome, true);
+        {
+            const juce::ScopedLock sl (lock);
+            mixBlock (buffer.getWritePointer (0), buffer.getWritePointer (1), n, done, options.withMetronome, true);
+        }
         ok = writer->writeFromAudioSampleBuffer (buffer, 0, n);
+
+        if (options.onProgress)
+            options.onProgress ((double) (done + n) / (double) total);
     }
 
-    silenceSynths();
-    lastBlockEnd = -1;
+    {
+        const juce::ScopedLock sl (lock);
+        silenceSynths();
+        lastBlockEnd = -1;
+        renderOnly = nullptr;
+        renderMaster = true;
+    }
     return ok;
 }
