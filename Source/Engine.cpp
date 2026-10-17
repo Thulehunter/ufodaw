@@ -1,4 +1,5 @@
 #include "Engine.h"
+#include "Stretch.h"
 #include <algorithm>
 #include <cmath>
 #include <map>
@@ -632,6 +633,219 @@ bool Engine::setClipReverse (Track& t, int id, bool reverse)
     return true;
 }
 
+bool Engine::setClipGain (Track& t, int id, float gain)
+{
+    const juce::ScopedLock sl (lock);
+    auto* c = findClip (t, id);
+    if (c == nullptr)
+        return false;
+    c->gain = juce::jlimit (0.0f, 8.0f, gain);
+    return true;
+}
+
+bool Engine::setClipEnvelope (Track& t, int id, std::vector<AutoPoint> points)
+{
+    std::stable_sort (points.begin(), points.end(), [] (const AutoPoint& a, const AutoPoint& b) { return a.time < b.time; });
+    for (auto& p : points)
+        p.value = juce::jlimit (0.0f, 2.0f, p.value);
+    const juce::ScopedLock sl (lock);
+    auto* c = findClip (t, id);
+    if (c == nullptr)
+        return false;
+    c->envelope = std::move (points);
+    return true;
+}
+
+bool Engine::normalizeClip (Track& t, int id, float targetPeak)
+{
+    Clip copy;
+    {
+        const juce::ScopedLock sl (lock);
+        auto* c = findClip (t, id);
+        if (c == nullptr || c->audio == nullptr)
+            return false;
+        copy = *c;
+    }
+
+    const int total = copy.audio->getNumSamples();
+    const int from = juce::jlimit (0, total, (int) std::llround (copy.offset * copy.fileRate));
+    const int to = juce::jlimit (from, total, (int) std::llround ((copy.offset + copy.length) * copy.fileRate));
+    float peak = 0.0f;
+    for (int ch = 0; ch < copy.audio->getNumChannels(); ++ch)
+        peak = juce::jmax (peak, copy.audio->getMagnitude (ch, from, to - from));
+    if (peak < 1.0e-6f)
+        return false;   // silence: nothing to scale
+
+    return setClipGain (t, id, targetPeak / peak);
+}
+
+//------------------------------------------------------------------------------ time-stretch and pitch-shift
+
+// The processed audio for a region of `src`, from the disk cache when it was made before (also in an earlier session).
+std::shared_ptr<juce::AudioBuffer<float>> Engine::processedAudio (const Clip& c, const juce::AudioBuffer<float>& src, double regionStart,
+                                                                  double regionLength, double stretch, double semitones,
+                                                                  const ProgressFn& progress)
+{
+    const double rate = c.fileRate;
+    const int startSample = juce::jlimit (0, src.getNumSamples(), (int) std::llround (regionStart * rate));
+    const int numSamples = juce::jlimit (0, src.getNumSamples() - startSample, (int) std::llround (regionLength * rate));
+
+    juce::File cacheFile;
+    if (c.sourceFile != juce::File() && c.sourceFile.existsAsFile())
+    {
+        const auto cacheDir = juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory).getChildFile ("UFODAW").getChildFile ("stretch-cache");
+        cacheDir.createDirectory();
+
+        static bool tidied = false;   // once per run: results nobody asked for in two months go
+        if (! tidied)
+        {
+            tidied = true;
+            for (auto& f : cacheDir.findChildFiles (juce::File::findFiles, false, "*.wav"))
+                if (f.getLastAccessTime() < juce::Time::getCurrentTime() - juce::RelativeTime::days (60))
+                    f.deleteFile();
+        }
+
+        const juce::String key = c.sourceFile.getFullPathName() + "|" + juce::String (c.sourceFile.getLastModificationTime().toMilliseconds()) + "|"
+                                 + juce::String (c.sourceFile.getSize()) + "|" + juce::String (startSample) + "|" + juce::String (numSamples) + "|"
+                                 + juce::String (rate) + "|" + juce::String (stretch, 6) + "|" + juce::String (semitones, 4) + "|"
+                                 + juce::String (src.getNumChannels());
+        // two 64-bit hashes of the description make the file name (a collision would need both to match)
+        cacheFile = cacheDir.getChildFile (juce::String::toHexString (key.hashCode64()) + juce::String::toHexString ((key + "#").hashCode64()) + ".wav");
+
+        if (cacheFile.existsAsFile())
+            if (std::unique_ptr<juce::AudioFormatReader> reader (formats.createReaderFor (cacheFile)); reader != nullptr && reader->lengthInSamples > 0)
+            {
+                auto buffer = std::make_shared<juce::AudioBuffer<float>> ((int) reader->numChannels, (int) reader->lengthInSamples);
+                reader->read (buffer.get(), 0, (int) reader->lengthInSamples, 0, true, true);
+                cacheFile.setLastModificationTime (juce::Time::getCurrentTime());
+                return buffer;
+            }
+    }
+
+    auto result = Stretch::process (src, startSample, numSamples, rate, stretch, semitones, progress);
+    if (result != nullptr && cacheFile != juce::File())
+    {
+        cacheFile.deleteFile();
+        if (auto stream = cacheFile.createOutputStream())
+        {
+            juce::WavAudioFormat wav;
+            if (std::unique_ptr<juce::AudioFormatWriter> writer (wav.createWriterFor (stream.get(), rate, (unsigned int) result->getNumChannels(), 32, {}, 0)); writer != nullptr)
+            {
+                stream.release();   // the writer owns it now
+                writer->writeFromAudioSampleBuffer (*result, 0, result->getNumSamples());
+            }
+        }
+    }
+    return result;
+}
+
+bool Engine::processClip (Track& t, int id, double stretch, double semitones, const ProgressFn& progress)
+{
+    Clip c;
+    {
+        const juce::ScopedLock sl (lock);
+        auto* p = findClip (t, id);
+        if (p == nullptr || p->audio == nullptr)
+            return false;
+        c = *p;   // (the audio buffers are shared, not copied)
+    }
+
+    stretch = juce::jlimit (0.1, 10.0, stretch);
+    semitones = juce::jlimit (-24.0, 24.0, semitones);
+
+    if (std::abs (stretch - 1.0) < 1.0e-6 && std::abs (semitones) < 1.0e-6)   // back to the original
+    {
+        if (! c.processed())
+            return true;
+        const double back = 1.0 / c.stretch;
+        const juce::ScopedLock sl (lock);
+        auto* p = findClip (t, id);
+        if (p == nullptr)
+            return false;
+        p->offset = c.processedFrom + c.offset * back;
+        p->length = c.length * back;
+        p->fadeIn *= back;
+        p->fadeOut *= back;
+        for (auto& pt : p->envelope)
+            pt.time *= back;
+        p->audio = p->source;
+        p->source.reset();
+        p->processedFrom = p->processedLength = 0.0;
+        p->stretch = 1.0;
+        p->pitch = 0.0;
+        return true;
+    }
+
+    // the part of the original that is processed: what the clip plays now, or what was processed before
+    const auto original = c.processed() ? c.source : c.audio;
+    const double regionStart = c.processed() ? c.processedFrom : c.offset;
+    const double regionLength = c.processed() ? c.processedLength : c.length;
+
+    auto result = processedAudio (c, *original, regionStart, regionLength, stretch, semitones, progress);
+    if (result == nullptr)
+        return false;   // cancelled
+
+    const juce::ScopedLock sl (lock);
+    auto* p = findClip (t, id);
+    if (p == nullptr)
+        return false;
+
+    double factor;   // how much the clip's own timeline grows
+    if (! c.processed())
+    {
+        factor = stretch;
+        p->offset = 0.0;
+        p->length = regionLength * stretch;
+    }
+    else
+    {
+        factor = stretch / c.stretch;
+        p->offset *= factor;
+        p->length *= factor;
+    }
+    p->fadeIn *= factor;
+    p->fadeOut *= factor;
+    for (auto& pt : p->envelope)
+        pt.time *= factor;
+
+    p->source = original;
+    p->processedFrom = regionStart;
+    p->processedLength = regionLength;
+    p->stretch = stretch;
+    p->pitch = semitones;
+    p->audio = result;
+    return true;
+}
+
+bool Engine::restoreProcessedClip (Track& t, int id, double stretch, double semitones, double sourceStart, double sourceLength,
+                                   const ProgressFn& progress)
+{
+    Clip c;
+    {
+        const juce::ScopedLock sl (lock);
+        auto* p = findClip (t, id);
+        if (p == nullptr || p->audio == nullptr || p->processed())
+            return false;
+        c = *p;
+    }
+
+    auto result = processedAudio (c, *c.audio, sourceStart, sourceLength, stretch, semitones, progress);
+    if (result == nullptr)
+        return false;
+
+    const juce::ScopedLock sl (lock);
+    auto* p = findClip (t, id);
+    if (p == nullptr)
+        return false;
+    p->source = c.audio;
+    p->processedFrom = sourceStart;
+    p->processedLength = sourceLength;
+    p->stretch = stretch;
+    p->pitch = semitones;
+    p->audio = result;
+    return true;
+}
+
 // Every clip that partly overlaps this one gets a crossfade over the overlap: the earlier clip fades out, the later one fades in.
 int Engine::crossfadeOverlaps (Track& t, int id)
 {
@@ -942,6 +1156,22 @@ int Engine::splitClip (Track& t, int id, double at)
                 // a reversed clip plays its source backwards: the right part is the *start* of the region
                 right.offset = c->offset;
                 c->offset += c->end() - at;
+            }
+            if (! c->envelope.empty())   // the volume curve is cut too, with its value at the cut on both sides
+            {
+                const double cut = at - c->start;
+                const float valueAtCut = evalAutomation (c->envelope, cut, 1.0f);
+                std::vector<AutoPoint> leftPoints, rightPoints { { 0.0, valueAtCut } };
+                for (auto& p : c->envelope)
+                {
+                    if (p.time < cut)
+                        leftPoints.push_back (p);
+                    else if (p.time > cut)
+                        rightPoints.push_back ({ p.time - cut, p.value });
+                }
+                leftPoints.push_back ({ cut, valueAtCut });
+                c->envelope = std::move (leftPoints);
+                right.envelope = std::move (rightPoints);
             }
             right.takeGroup = newGroup;
             right.fadeIn = 0.0;                                      // the cut gets no fade of its own
@@ -2548,6 +2778,12 @@ void Engine::mixBlock (float* outL, float* outR, int n, juce::int64 pos, bool wi
             if ((double) (pos + n) <= clipStart || (double) pos >= clipEnd || c.audio == nullptr)
                 continue;
 
+            // clip gain and volume curve, evaluated at both ends of the block and ramped in between
+            const double tb0 = (double) pos / sampleRate - c.start, tb1 = (double) (pos + nn) / sampleRate - c.start;
+            const float gainA = c.gain * (c.envelope.empty() ? 1.0f : evalAutomation (c.envelope, tb0, 1.0f));
+            const float gainB = c.gain * (c.envelope.empty() ? 1.0f : evalAutomation (c.envelope, tb1, 1.0f));
+            const float gainStep = nn > 0 ? (gainB - gainA) / (float) nn : 0.0f;
+
             const double ratio = c.fileRate / sampleRate;
             const double offsetSamples = c.offset * c.fileRate;
             const double regionSamples = c.length * c.fileRate;   // where the clip's region of the source ends (for reverse)
@@ -2576,6 +2812,7 @@ void Engine::mixBlock (float* outL, float* outR, int n, juce::int64 pos, bool wi
                     edge *= (float) std::sin ((tl - clipStart) / fadeInSamples * juce::MathConstants<double>::halfPi);
                 if (fadeOutSamples > 0.0 && clipEnd - tl < fadeOutSamples)
                     edge *= (float) std::sin ((clipEnd - tl) / fadeOutSamples * juce::MathConstants<double>::halfPi);
+                edge *= gainA + gainStep * (float) i;
                 const float l = (srcL[i0] + frac * (srcL[i0 + 1] - srcL[i0])) * edge;
                 const float r = (srcR[i0] + frac * (srcR[i0 + 1] - srcR[i0])) * edge;
                 bufL[i] += l;

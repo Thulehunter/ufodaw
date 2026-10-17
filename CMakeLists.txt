@@ -15,6 +15,14 @@ FetchContent_Declare(JUCE
     GIT_SHALLOW ON)
 FetchContent_MakeAvailable(JUCE)
 
+# Rubber Band: time-stretching and pitch-shifting of audio clips. Its single-file build (no separate library, built-in FFT)
+# is compiled into the program. GPL: see the README.
+FetchContent_Declare(rubberband
+    GIT_REPOSITORY https://github.com/breakfastquay/rubberband.git
+    GIT_TAG v4.0.0
+    GIT_SHALLOW ON)
+FetchContent_MakeAvailable(rubberband)
+
 juce_add_gui_app(UFODAW PRODUCT_NAME "UFODAW"
     ICON_BIG "${CMAKE_CURRENT_SOURCE_DIR}/Resources/icon.png")
 
@@ -32,7 +40,12 @@ target_sources(UFODAW PRIVATE
     Source/PluginHost.cpp
     Source/PluginPanel.cpp
     Source/PianoRoll.cpp
-    Source/MainComponent.cpp)
+    Source/Stretch.cpp
+    Source/MainComponent.cpp
+    "${rubberband_SOURCE_DIR}/single/RubberBandSingle.cpp")
+target_include_directories(UFODAW PRIVATE "${rubberband_SOURCE_DIR}")
+# (Windows' min/max macros would break std::numeric_limits<...>::max() in Rubber Band)
+set_source_files_properties("${rubberband_SOURCE_DIR}/single/RubberBandSingle.cpp" PROPERTIES COMPILE_DEFINITIONS "NOMINMAX")
 
 target_compile_definitions(UFODAW PRIVATE
     JUCE_WEB_BROWSER=0

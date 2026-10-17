@@ -7,6 +7,7 @@
 #include "MidiTools.h"
 #include "TempoPanel.h"
 #include "SyncPanels.h"
+#include "ClipPanel.h"
 #include <algorithm>
 #include <map>
 
@@ -631,7 +632,32 @@ public:
             {
                 const int idx = c.reverse ? r.getWidth() - 1 - (x - r.getX()) : x - r.getX();   // a reversed clip shows its wave backwards
                 if (idx >= 0 && idx < (int) peaks.size())
-                    g.drawVerticalLine (x, mid - peaks[(size_t) idx] * half, mid + peaks[(size_t) idx] * half);
+                {
+                    const float p = juce::jmin (1.0f, peaks[(size_t) idx] * c.gain);   // (the clip gain is part of what is drawn)
+                    g.drawVerticalLine (x, mid - p * half, mid + p * half);
+                }
+            }
+
+            // the volume curve: a line over the clip (dots too while it is being edited)
+            const bool editingCurve = main.getEnvelopeClip() == c.id && main.getEnvelopeTrack() == &track;
+            if (! c.envelope.empty() || editingCurve)
+            {
+                juce::Path curve;
+                curve.startNewSubPath ((float) r.getX(), envelopeY (r, evalAutomation (c.envelope, 0.0, 1.0f)));
+                for (auto& p : c.envelope)
+                    curve.lineTo ((float) r.getX() + (float) (p.time * pps), envelopeY (r, p.value));
+                curve.lineTo ((float) r.getRight(), envelopeY (r, evalAutomation (c.envelope, c.length, 1.0f)));
+                g.setColour (Theme::yellow.withAlpha (editingCurve ? 1.0f : 0.75f));
+                g.strokePath (curve, juce::PathStrokeType (editingCurve ? 2.0f : 1.5f));
+                if (editingCurve)
+                {
+                    for (auto& p : c.envelope)
+                        g.fillEllipse ((float) r.getX() + (float) (p.time * pps) - 4.0f, envelopeY (r, p.value) - 4.0f, 8.0f, 8.0f);
+                    g.setColour (Theme::text.withAlpha (0.7f));
+                    g.setFont (11.0f);
+                    g.drawText ("Volume curve: click = add, drag = move, right-click = remove, Esc = done", r.getX() + 24, r.getBottom() - 15, 440, 13,
+                                juce::Justification::left);
+                }
             }
 
             // fades: the part that is faded away is darkened, with the fade curve as a line
@@ -793,6 +819,58 @@ public:
                 }
             }
 
+        // the volume curve of a clip that is being edited: click adds a point, drag moves it, right-click removes it
+        if (main.getEnvelopeClip() >= 0 && main.getEnvelopeTrack() == &track)
+        {
+            Clip c;
+            if (main.getEngine().getClip (track, main.getEnvelopeClip(), c) && clipRect (c, pps).contains (e.getPosition()))
+            {
+                envDrag = -1;
+                edited = false;
+                const auto r = clipRect (c, pps);
+                int nearest = -1;
+                float bestDistance = 10.0f;
+                for (int i = 0; i < (int) c.envelope.size(); ++i)
+                {
+                    const float dx = (float) (r.getX() + (int) (c.envelope[(size_t) i].time * pps) - e.x);
+                    const float dy = envelopeY (r, c.envelope[(size_t) i].value) - (float) e.y;
+                    const float d = std::sqrt (dx * dx + dy * dy);
+                    if (d < bestDistance)
+                    {
+                        bestDistance = d;
+                        nearest = i;
+                    }
+                }
+
+                auto points = c.envelope;
+                if (e.mods.isPopupMenu() && nearest >= 0)   // right-click on a point removes it (elsewhere it opens the clip menu as usual)
+                {
+                    main.beginEdit();
+                    points.erase (points.begin() + nearest);
+                    main.getEngine().setClipEnvelope (track, c.id, std::move (points));
+                    repaint();
+                    return;
+                }
+
+                if (! e.mods.isPopupMenu() && nearest < 0)   // a new point where the mouse is
+                {
+                    main.beginEdit();
+                    edited = true;
+                    const AutoPoint p { juce::jlimit (0.0, c.length, (double) (e.x - r.getX()) / pps), envelopeValue (r, e.y) };
+                    points.push_back (p);
+                    std::stable_sort (points.begin(), points.end(), [] (auto& a, auto& b) { return a.time < b.time; });
+                    for (int i = 0; i < (int) points.size(); ++i)
+                        if (points[(size_t) i].time == p.time && points[(size_t) i].value == p.value)
+                            nearest = i;
+                    main.getEngine().setClipEnvelope (track, c.id, std::move (points));
+                    repaint();
+                }
+                envDrag = nearest;
+                envClipId = c.id;
+                return;
+            }
+        }
+
         // Right button: a click opens the clip menu (on release), a drag sets the loop region (Shift: the punch region).
         if (e.mods.isPopupMenu())
         {
@@ -866,6 +944,29 @@ public:
         }
 
         const double t = juce::jmax (0.0, e.x / main.getPixelsPerSecond());
+
+        if (envDrag >= 0)   // dragging a point of the volume curve
+        {
+            Clip c;
+            if (! main.getEngine().getClip (track, envClipId, c) || envDrag >= (int) c.envelope.size())
+                return;
+            const auto r = clipRect (c, main.getPixelsPerSecond());
+            auto points = c.envelope;
+            AutoPoint p { juce::jlimit (0.0, c.length, (double) (e.x - r.getX()) / main.getPixelsPerSecond()), envelopeValue (r, e.y) };
+            points[(size_t) envDrag] = p;
+            std::stable_sort (points.begin(), points.end(), [] (auto& a, auto& b) { return a.time < b.time; });
+            for (int i = 0; i < (int) points.size(); ++i)
+                if (points[(size_t) i].time == p.time && points[(size_t) i].value == p.value)
+                    envDrag = i;
+            if (! edited)
+            {
+                main.beginEdit();
+                edited = true;
+            }
+            main.getEngine().setClipEnvelope (track, envClipId, std::move (points));
+            repaint();
+            return;
+        }
 
         if (fadeDrag != 0)
         {
@@ -960,6 +1061,7 @@ public:
             main.showClipMenu (track, rightClipId, rightTime, *this);
         rightPending = rightDragging = false;
         fadeDrag = 0;
+        envDrag = -1;
         dragId = -1;
         autoDrag = -1;
     }
@@ -982,6 +1084,7 @@ private:
     struct Peaks
     {
         double pps = 0.0, offset = -1.0, length = -1.0;
+        const void* audio = nullptr;   // which buffer the peaks were made from (a stretched / shifted clip gets a new one)
         std::vector<float> values;
     };
 
@@ -1206,11 +1309,12 @@ private:
     const std::vector<float>& peaksFor (const Clip& c, double pps)
     {
         auto& p = cache[c.id];
-        if (p.pps != pps || p.offset != c.offset || p.length != c.length)
+        if (p.pps != pps || p.offset != c.offset || p.length != c.length || p.audio != c.audio.get())
         {
             p.pps = pps;
             p.offset = c.offset;
             p.length = c.length;
+            p.audio = c.audio.get();
 
             const int w = juce::jmax (2, (int) std::round (c.length * pps));
             p.values.assign ((size_t) w, 0.0f);
@@ -1249,6 +1353,14 @@ private:
     bool resizing = false;
     int fadeDrag = 0;                                    // 1 = dragging a fade-in handle, 2 = a fade-out handle
     int fadeClipId = -1;
+    int envDrag = -1, envClipId = -1;                    // the point of a clip's volume curve being dragged
+
+    // the volume curve of a clip: its multiplier 0..2 (1 in the middle) as a height in the clip
+    static float envelopeY (const juce::Rectangle<int>& r, float value) { return (float) r.getBottom() - (float) r.getHeight() * juce::jlimit (0.0f, 2.0f, value) * 0.5f; }
+    static float envelopeValue (const juce::Rectangle<int>& r, int y)
+    {
+        return juce::jlimit (0.0f, 2.0f, 2.0f * ((float) r.getBottom() - (float) y) / (float) juce::jmax (1, r.getHeight()));
+    }
     bool rightPending = false, rightDragging = false;   // right button: click = menu, drag = loop region
     int rightClipId = -1;
     double rightTime = 0.0;
@@ -1530,7 +1642,8 @@ MainComponent::MainComponent()
     addAndMakeVisible (panSnapButton);
     openButton.onClick   = [this] { openProjectDialog(); };
     saveButton.onClick   = [this] { if (currentProject != juce::File()) saveProject (currentProject); else saveProjectAs(); };
-    saveAsButton.onClick = [this] { saveProjectAs(); };
+    saveAsButton.onClick = [this] { saveMenu(); };
+    saveAsButton.setTooltip ("Save as..., save a new version (v2, v3...), or save with all audio in one folder (to move the project)");
     exportButton.onClick = [this] { exportDialog(); };
     exportStemsButton.onClick = [this] { exportStemsDialog(); };
     exportStemsButton.setTooltip ("Export every track as its own WAV file (a stem) into a folder you choose");
@@ -1672,6 +1785,11 @@ void MainComponent::openTempoPanel()
 
 void MainComponent::selectClip (Track* t, int id)
 {
+    if (id != envelopeClipId)
+    {
+        envelopeClipId = -1;   // editing a volume curve ends when another clip is selected
+        envelopeTrack = nullptr;
+    }
     selTrack = t;
     selClip = id;
 
@@ -2914,6 +3032,10 @@ void MainComponent::showClipMenu (Track& track, int clipId, double at, juce::Com
         m.addItem (10, "Reverse", true, audioClip.reverse);
         m.addItem (11, "Crossfade with overlapping clip(s)");
         m.addItem (12, "Remove fades", audioClip.fadeIn > 0.0 || audioClip.fadeOut > 0.0);
+        m.addSeparator();
+        m.addItem (13, "Gain, stretch and pitch...");
+        m.addItem (14, "Edit volume curve", true, envelopeClipId == clipId && envelopeTrack == &track);
+        m.addItem (15, "Remove volume curve", ! audioClip.envelope.empty());
     }
 
     // takes of a loop recording (or of a clip that was split from one): pick which plays
@@ -3013,6 +3135,23 @@ void MainComponent::showClipMenu (Track& track, int clipId, double at, juce::Com
                 self.clipsChanged();
                 break;
             }
+            case 13: self.openClipPanel (*tr, clipId); break;
+            case 14:
+            {
+                const bool already = self.envelopeClipId == clipId && self.envelopeTrack == tr;
+                self.envelopeTrack = already ? nullptr : tr;
+                self.envelopeClipId = already ? -1 : clipId;
+                self.repaint();
+                self.laneHolder.repaint();
+                break;
+            }
+            case 15:
+            {
+                self.beginEdit();
+                self.engine.setClipEnvelope (*tr, clipId, {});
+                self.clipsChanged();
+                break;
+            }
             default: break;
         }
     });
@@ -3103,6 +3242,13 @@ bool MainComponent::keyPressed (const juce::KeyPress& k)
     {
         metroButton.setToggleState (! metroButton.getToggleState(), juce::dontSendNotification);
         engine.metronome = metroButton.getToggleState();
+        return true;
+    }
+    if (k == juce::KeyPress::escapeKey && envelopeClipId >= 0)   // done editing the volume curve
+    {
+        envelopeClipId = -1;
+        envelopeTrack = nullptr;
+        laneHolder.repaint();
         return true;
     }
     if (k.getKeyCode() == 'Q' && ! mods.isAnyModifierKeyDown())
@@ -3522,6 +3668,74 @@ void MainComponent::openRouting (Track& t, juce::Component& anchor)
                                             anchor.getScreenBounds(), nullptr);
 }
 
+// Time-stretch / pitch-shift runs behind a progress window with a Cancel button (a long clip takes a few seconds).
+class ClipProcessJob : public juce::ThreadWithProgressWindow
+{
+public:
+    ClipProcessJob (MainComponent& m, Engine& e, Track& t, int id, double stretchRatio, double semitoneShift)
+        : juce::ThreadWithProgressWindow ("Processing audio", true, true, 5000, "Cancel", &m),
+          main (&m), engine (e), track (t), clipId (id), stretch (stretchRatio), semitones (semitoneShift)
+    {
+    }
+
+    void run() override
+    {
+        ok = engine.processClip (track, clipId, stretch, semitones, [this] (double fraction)
+        {
+            setProgress (fraction);
+            return ! threadShouldExit();
+        });
+    }
+
+    // Message thread, when it is done or cancelled (this object deletes itself here, like the stem export).
+    void threadComplete (bool) override
+    {
+        if (main != nullptr)
+        {
+            if (! ok)
+                main->cancelEdit();   // cancelled, or the clip is gone: the undo step taken before is dropped again
+            main->clipsChanged();
+        }
+        delete this;
+    }
+
+    bool ok = false;
+
+private:
+    juce::Component::SafePointer<MainComponent> main;
+    Engine& engine;
+    Track& track;
+    int clipId;
+    double stretch, semitones;
+};
+
+// Gain, stretch and pitch of an audio clip.
+void MainComponent::openClipPanel (Track& t, int clipId)
+{
+    Clip clip;
+    if (! engine.getClip (t, clipId, clip))
+        return;
+
+    juce::Component::SafePointer<MainComponent> safe (this);
+    Track* tr = &t;
+
+    auto panel = std::make_unique<ClipPanel> (engine, t, clipId, tempoMap.bpmAt (clip.start), [safe] { if (safe != nullptr) safe->beginEdit(); },
+                                              [safe] { if (safe != nullptr) safe->clipsChanged(); },
+                                              [safe, tr, clipId] (double stretch, double semitones)
+    {
+        // later, not inside the panel's own button handler (the panel goes away when the progress window takes the focus)
+        juce::MessageManager::callAsync ([safe, tr, clipId, stretch, semitones]
+        {
+            if (safe == nullptr || safe->engine.indexOfTrack (tr) < 0)
+                return;
+            safe->beginEdit();
+            (new ClipProcessJob (*safe, safe->engine, *tr, clipId, stretch, semitones))->launchThread();   // deletes itself when done
+        });
+    });
+
+    juce::CallOutBox::launchAsynchronously (std::move (panel), juce::Rectangle<int> (1, 1).withCentre (juce::Desktop::getMousePosition()), nullptr);
+}
+
 // Quantize / swing / humanize: every Apply works from the notes the clip had when the panel opened.
 void MainComponent::openQuantize (Track& t, int clipId)
 {
@@ -3702,7 +3916,7 @@ void MainComponent::importFiles (const juce::StringArray& paths, Track* target, 
 }
 
 //==============================================================================
-void MainComponent::saveProject (const juce::File& file, bool asAutosave)
+void MainComponent::saveProject (const juce::File& file, SaveKind kind)
 {
     const auto baseDir = file.getParentDirectory();
 
@@ -3715,10 +3929,26 @@ void MainComponent::saveProject (const juce::File& file, bool asAutosave)
         for (auto& c : engine.getClips (*t))
         {
             auto* co = new juce::DynamicObject();
-            co->setProperty ("file", c.sourceFile.getRelativePathFrom (baseDir));
+            co->setProperty ("file", projectFilePath ? projectFilePath (c.sourceFile) : c.sourceFile.getRelativePathFrom (baseDir));
             co->setProperty ("start", c.start);
             co->setProperty ("offset", c.offset);
             co->setProperty ("length", c.length);
+            if (std::abs (c.gain - 1.0f) > 1.0e-6f)
+                co->setProperty ("gain", (double) c.gain);
+            if (! c.envelope.empty())
+            {
+                juce::Array<juce::var> curve;   // the clip's volume curve: [seconds from the clip start, multiplier]
+                for (auto& p : c.envelope)
+                    curve.add (juce::var (juce::Array<juce::var> { juce::var (p.time), juce::var ((double) p.value) }));
+                co->setProperty ("envelope", curve);
+            }
+            if (c.processed())   // time-stretched / pitch-shifted: the settings and which part of the file, not the processed audio
+            {
+                co->setProperty ("stretch", c.stretch);
+                co->setProperty ("pitch", c.pitch);
+                co->setProperty ("regionStart", c.processedFrom);
+                co->setProperty ("regionLength", c.processedLength);
+            }
             if (c.fadeIn > 0.0)  co->setProperty ("fadeIn", c.fadeIn);
             if (c.fadeOut > 0.0) co->setProperty ("fadeOut", c.fadeOut);
             if (c.reverse)       co->setProperty ("reverse", true);
@@ -3791,7 +4021,7 @@ void MainComponent::saveProject (const juce::File& file, bool asAutosave)
                 for (int pad = 0; pad < DrumKit::numPads; ++pad)
                 {
                     const auto f = t->kit->getPad (pad).file;
-                    padFiles.add (f == juce::File() ? juce::String() : f.getRelativePathFrom (baseDir));
+                    padFiles.add (f == juce::File() ? juce::String() : (projectFilePath ? projectFilePath (f) : f.getRelativePathFrom (baseDir)));
                 }
                 o->setProperty ("drumPads", padFiles);
             }
@@ -3885,10 +4115,10 @@ void MainComponent::saveProject (const juce::File& file, bool asAutosave)
     root->setProperty ("punchEnabled", engine.punchEnabled.load());
     root->setProperty ("tracks", trackList);
 
-    if (asAutosave)
+    if (kind != SaveKind::Normal)
     {
         file.getParentDirectory().createDirectory();
-        if (file.replaceWithText (juce::JSON::toString (juce::var (root))))
+        if (file.replaceWithText (juce::JSON::toString (juce::var (root))) && kind == SaveKind::Autosave)
         {
             auto* info = new juce::DynamicObject();   // what the recovery offer shows, and where the project belongs
             info->setProperty ("original", currentProject.getFullPathName());
@@ -3906,12 +4136,201 @@ void MainComponent::saveProject (const juce::File& file, bool asAutosave)
         clearAutosave();
         if (auto* w = getTopLevelComponent())
             w->setName ("UFODAW - " + file.getFileNameWithoutExtension());
+        writeBackup (file);
     }
     else
     {
         juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon,
                                                 "Cannot save project", file.getFullPathName());
     }
+}
+
+//==============================================================================
+// Backups, new versions, and collecting all audio into the project folder
+
+juce::File MainComponent::backupFolder (const juce::File& project)
+{
+    return project.getParentDirectory().getChildFile (project.getFileNameWithoutExtension() + " backups");
+}
+
+// Every save also leaves a time-stamped copy next to the project; the newest twenty are kept.
+void MainComponent::writeBackup (const juce::File& project)
+{
+    const auto folder = backupFolder (project);
+    folder.createDirectory();
+    const auto stamp = juce::Time::getCurrentTime().formatted ("%Y-%m-%d %H-%M-%S");
+    saveProject (folder.getChildFile (project.getFileNameWithoutExtension() + " " + stamp + ".mdaw"), SaveKind::Copy);
+
+    auto backups = folder.findChildFiles (juce::File::findFiles, false, "*.mdaw");
+    std::sort (backups.begin(), backups.end(), [] (const juce::File& a, const juce::File& b) { return a.getFileName() > b.getFileName(); });
+    for (int i = 20; i < backups.size(); ++i)
+        backups.getReference (i).deleteFile();
+}
+
+// "Save a new version": jam.mdaw -> jam v2.mdaw -> jam v3.mdaw (the next number that is free); the new file becomes the open project.
+void MainComponent::saveNewVersion()
+{
+    if (currentProject == juce::File())
+    {
+        saveProjectAs();
+        return;
+    }
+
+    auto base = currentProject.getFileNameWithoutExtension();
+    int version = 1;
+    const auto tail = base.fromLastOccurrenceOf (" v", false, false);
+    if (tail.isNotEmpty() && tail.containsOnly ("0123456789") && base.contains (" v"))
+    {
+        version = tail.getIntValue();
+        base = base.upToLastOccurrenceOf (" v", false, false);
+    }
+
+    juce::File next;
+    do
+    {
+        ++version;
+        next = currentProject.getParentDirectory().getChildFile (base + " v" + juce::String (version) + ".mdaw");
+    }
+    while (next.exists());
+
+    saveProject (next);
+}
+
+// What goes into a collected project: a folder with the project file and an Audio folder holding a copy of every audio file it uses.
+class CollectJob : public juce::ThreadWithProgressWindow
+{
+public:
+    CollectJob (MainComponent& m, std::vector<juce::File> filesToCopy, juce::File audioFolder, juce::File projectFileToWrite)
+        : juce::ThreadWithProgressWindow ("Collecting audio", true, true, 3000, "Cancel", &m),
+          main (&m), files (std::move (filesToCopy)), audioDir (std::move (audioFolder)), projectFile (std::move (projectFileToWrite))
+    {
+    }
+
+    void run() override
+    {
+        audioDir.createDirectory();
+        for (size_t i = 0; i < files.size() && ! threadShouldExit(); ++i)
+        {
+            const auto& source = files[i];
+            setStatusMessage ("Copying " + source.getFileName() + "   (" + juce::String ((int) i + 1) + " of " + juce::String ((int) files.size()) + ")");
+
+            auto target = audioDir.getChildFile (source.getFileName());
+            for (int n = 2; target.exists() && target.getSize() != source.getSize() ; ++n)   // another file with the same name: number it
+                target = audioDir.getChildFile (source.getFileNameWithoutExtension() + " (" + juce::String (n) + ")" + source.getFileExtension());
+
+            if (target.getSize() == source.getSize() && target.existsAsFile() ? true : source.copyFileTo (target))
+            {
+                paths[source.getFullPathName()] = "Audio/" + target.getFileName();
+                bytes += source.getSize();
+            }
+            else
+            {
+                failed.add (source.getFullPathName());
+            }
+            setProgress ((double) (i + 1) / (double) files.size());
+        }
+    }
+
+    void threadComplete (bool userPressedCancel) override
+    {
+        if (main != nullptr)
+            main->finishCollect (projectFile, paths, failed, bytes, userPressedCancel);
+        delete this;
+    }
+
+private:
+    juce::Component::SafePointer<MainComponent> main;
+    std::vector<juce::File> files;
+    juce::File audioDir, projectFile;
+    std::map<juce::String, juce::String> paths;
+    juce::StringArray failed;
+    juce::int64 bytes = 0;
+};
+
+void MainComponent::collectProject()
+{
+    // every audio file the project uses: clips (also processed ones: their original) and drum samples
+    std::vector<juce::File> files;
+    auto add = [&] (const juce::File& f)
+    {
+        if (f != juce::File() && f.existsAsFile() && std::find (files.begin(), files.end(), f) == files.end())
+            files.push_back (f);
+    };
+    for (int i = 0; i < engine.getNumTracks(); ++i)
+        if (auto* t = engine.getTrack (i))
+        {
+            for (auto& c : engine.getClips (*t))
+                add (c.sourceFile);
+            if (t->kit != nullptr)
+                for (int pad = 0; pad < DrumKit::numPads; ++pad)
+                    add (t->kit->getPad (pad).file);
+        }
+
+    chooser = std::make_unique<juce::FileChooser> ("Choose where the project folder goes", currentProject.getParentDirectory(), "");
+    chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectDirectories,
+                          [this, files] (const juce::FileChooser& fc)
+                          {
+                              const auto parent = fc.getResult();
+                              if (parent == juce::File() || ! parent.isDirectory())
+                                  return;
+
+                              const auto name = juce::File::createLegalFileName (currentProject == juce::File() ? juce::String ("Untitled")
+                                                                                                                 : currentProject.getFileNameWithoutExtension());
+                              auto folder = parent.getChildFile (name);
+                              for (int n = 2; folder.exists() && folder.getNumberOfChildFiles (juce::File::findFilesAndDirectories) > 0; ++n)
+                                  folder = parent.getChildFile (name + " " + juce::String (n));
+                              folder.createDirectory();
+
+                              (new CollectJob (*this, files, folder.getChildFile ("Audio"), folder.getChildFile (name + ".mdaw")))->launchThread();
+                          });
+}
+
+// Back on the message thread, the audio is copied: write the project with the new paths and open it from there.
+void MainComponent::finishCollect (const juce::File& projectFile, const std::map<juce::String, juce::String>& paths,
+                                   const juce::StringArray& failed, juce::int64 bytes, bool cancelled)
+{
+    if (cancelled)
+    {
+        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::InfoIcon, "Collecting cancelled",
+                                                "The files that were copied stay in " + projectFile.getParentDirectory().getFullPathName()
+                                                    + ". The open project was not changed.");
+        return;
+    }
+
+    projectFilePath = [paths] (const juce::File& f)   // the copy inside the project folder, or (not copied) the old relative path
+    {
+        const auto found = paths.find (f.getFullPathName());
+        return found != paths.end() ? found->second : f.getFullPathName();
+    };
+    saveProject (projectFile);
+    projectFilePath = nullptr;
+    loadProject (projectFile);   // continue from the collected project, so later saves keep pointing at the copies
+
+    juce::String message = juce::String ((int) paths.size()) + " audio file(s), " + juce::String ((double) bytes / (1024.0 * 1024.0), 1)
+                           + " MB, were copied into:\n" + projectFile.getParentDirectory().getFullPathName()
+                           + "\n\nThis folder is now the open project, and can be moved or copied as a whole.";
+    if (failed.size() > 0)
+        message << "\n\nCould not be copied (they stay where they were):\n" << failed.joinIntoString ("\n");
+    juce::AlertWindow::showMessageBoxAsync (failed.isEmpty() ? juce::MessageBoxIconType::InfoIcon : juce::MessageBoxIconType::WarningIcon,
+                                            "Project collected", message);
+}
+
+// The "Save As" button: its menu has the other ways to save.
+void MainComponent::saveMenu()
+{
+    juce::PopupMenu menu;
+    menu.addItem (1, "Save as...");
+    menu.addItem (2, "Save a new version (adds v2, v3...)");
+    menu.addItem (3, "Save with all audio in one folder...");
+    menu.addSeparator();
+    menu.addItem (4, "Show the backups folder", currentProject != juce::File() && backupFolder (currentProject).isDirectory());
+    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&saveAsButton), [this] (int result)
+    {
+        if (result == 1) saveProjectAs();
+        if (result == 2) saveNewVersion();
+        if (result == 3) collectProject();
+        if (result == 4) backupFolder (currentProject).revealToUser();
+    });
 }
 
 //==============================================================================
@@ -3931,7 +4350,7 @@ void MainComponent::autosaveNow()
         return;
     if (engine.isRecording() || midiRecording)   // not while recording: try again at the next round
         return;
-    saveProject (autosaveFile(), true);
+    saveProject (autosaveFile(), SaveKind::Autosave);
     autosavedEdit = editCounter;
 }
 
@@ -4109,12 +4528,26 @@ void MainComponent::loadProject (const juce::File& file)
                 missing.add (audioFile.getFullPathName());
                 return;
             }
+            if (v.hasProperty ("stretch"))   // the stretched / shifted audio is made again (or taken from the cache) before the region is set
+                if (! engine.restoreProcessedClip (*t, id, v.getProperty ("stretch", 1.0), v.getProperty ("pitch", 0.0),
+                                                   v.getProperty ("regionStart", 0.0), v.getProperty ("regionLength", 0.0), nullptr))
+                    pluginProblems.add ("Could not apply the time-stretch of a clip in " + t->name);
             Clip c;
             engine.getClip (*t, id, c);
             engine.setClipRegion (*t, id, start,
                                   v.getProperty ("offset", 0.0),
                                   v.getProperty ("length", c.sourceLength()));
             engine.setClipFades (*t, id, v.getProperty ("fadeIn", 0.0), v.getProperty ("fadeOut", 0.0));
+            if (v.hasProperty ("gain"))
+                engine.setClipGain (*t, id, (float) (double) v.getProperty ("gain", 1.0));
+            if (auto* curve = v["envelope"].getArray())
+            {
+                std::vector<AutoPoint> points;
+                for (auto& pv : *curve)
+                    if (auto* pair = pv.getArray(); pair != nullptr && pair->size() >= 2)
+                        points.push_back ({ (double) (*pair)[0], (float) (double) (*pair)[1] });
+                engine.setClipEnvelope (*t, id, std::move (points));
+            }
             engine.setClipReverse (*t, id, (bool) v.getProperty ("reverse", false));
             if ((int) v.getProperty ("takeGroup", 0) != 0)
                 engine.setClipTake (*t, id, v["takeGroup"], v.getProperty ("takeIndex", 1), v.getProperty ("takeActive", true));

@@ -10,6 +10,10 @@ A small digital audio workstation for Windows, written in C++17 with [JUCE](http
   effects, volume and pan.
 - **Tuner** - **Tuner** (bottom right) opens a chromatic tuner for any input of your interface: note, cents sharp/flat, a needle and
   the frequency (A = 430-450 Hz). It starts on the input of the armed track and works down to a low bass B.
+- **Collect, versions and backups** - **Save As** (button) opens a menu: *Save a new version* (jam, jam v2, jam v3...), and *Save with all
+  audio in one folder*, which copies every audio file the project uses into `<folder>Audio` and opens the project from there, so the
+  whole folder can be moved to another disk or PC. Every normal save also leaves a time-stamped copy in `<project> backups` (the newest
+  twenty are kept; *Show the backups folder* in the same menu).
 - **Autosave and recovery** - every two minutes, when something changed, the project is written to a recovery file. If the program
   crashes (a plugin, say) or is closed with unsaved changes, the next start offers to restore it; saving normally removes it.
 - **Metronome and count-in** - the **Click** button in the transport bar (or `M`) switches the metronome on and off, also while playing
@@ -46,6 +50,11 @@ A small digital audio workstation for Windows, written in C++17 with [JUCE](http
 - **Mixer** - volume, pan, mute, solo and level meters per track, plus a **master channel** (the yellow strip under the tracks):
   volume with automation, the built-in effects (EQ, compressor, delay, reverb), VST3 effect plugins on the whole mix, a
   level meter, and the soft limiter after it. Stems skip the master channel.
+- **Clip gain, volume curve, time-stretch and pitch-shift** - right-click an audio clip: *Gain, stretch and pitch...* sets the clip gain
+  (with *Normalize*), the length as a percentage (200% = twice as long; *Fit to project tempo* from the clip's own BPM) and the pitch in
+  semitones, made offline with Rubber Band from the original (a progress window, Cancel; *Reset* puts the original back; results are
+  cached on disk). *Edit volume curve* draws a multiplier over the clip (click adds a point, drag moves, right-click removes, Esc is
+  done); splitting a clip splits the curve too.
 - **Clip fades, crossfades and reverse** - drag the little squares in the top corners of an audio clip to set its fade-in and
   fade-out (equal-power curves). Drag a clip so it overlaps its neighbour a little, then right-click > *Crossfade with overlapping
   clip(s)*. *Reverse* plays the clip backwards (also after splitting it).
@@ -166,6 +175,9 @@ An arpeggiator or similar plugin that should change the notes of one track goes 
 | Set the loop region | right-drag on the ruler or in any track (a right-click without dragging opens the clip menu) |
 | Add an empty audio track | **+ Track** > *Empty audio track* (it starts armed for recording); drop audio files on it later, several files go one after the other |
 | Record into a specific audio track | click the red dot left of the track name to arm it, then **Record** (`R`). Arm several tracks to record them all at once. Without an armed track the recording becomes a new track from inputs 1+2 |
+| Clip gain / stretch / pitch | right-click an audio clip > *Gain, stretch and pitch...* |
+| Volume curve of a clip | right-click the clip > *Edit volume curve* (click = add, drag = move, right-click = remove, `Esc` = done) |
+| New version / collect audio / backups | **Save As** button: its menu |
 | Fade in / out of an audio clip | drag the squares in the top corners of the clip; right-click > *Remove fades* |
 | Crossfade two clips | let the clips overlap a little, right-click one > *Crossfade with overlapping clip(s)* |
 | Reverse a clip | right-click > *Reverse* |
@@ -234,6 +246,7 @@ builds Release and writes `dist\UFODAW-<version>-win64.zip`. For a regular insta
 | `Source/PluginHost.*`, `Source/Plugin.h` | VST3 scanning, loading, editor windows |
 | `Source/MainComponent.*` | Main window: arrangement, transport, project files, undo/redo |
 | `Source/PianoRoll.*`, `Source/DrumSequencer.*` | Note editors below the arrangement |
+| `Source/Stretch.*`, `Source/ClipPanel.h` | Time-stretch and pitch-shift (Rubber Band), and the clip gain / stretch / pitch panel |
 | `Source/Tuner.*` | Pitch detection (YIN) and the tuner window |
 | `Source/TempoMap.h`, `Source/TempoPanel.h` | Tempo and time signature sections: seconds / beats / bars, and the list to edit them |
 | `Source/SyncPanels.h` | The latency and MIDI clock tabs of the audio settings |
@@ -253,3 +266,5 @@ The audio thread never blocks: the UI edits the project under a lock that the au
 ## License
 
 UFODAW uses JUCE, which is available under the AGPLv3 or a commercial license. If you distribute UFODAW binaries, you must comply with one of them (for AGPLv3 that means offering the source under the same terms).
+
+Time-stretching and pitch-shifting use the [Rubber Band Library](https://breakfastquay.com/rubberband/) (Particular Programs Ltd.), compiled into UFODAW under the GPL (v2 or later), which fits the AGPLv3 above. Distributing a closed-source build would need a commercial licence from them as well.

@@ -12,6 +12,14 @@
 #include "ExternalMidi.h"
 #include "TempoMap.h"
 
+// A breakpoint envelope: linear between points, flat before the first and after the last.
+// (Automation lanes use seconds on the timeline; a clip's volume curve uses seconds from the start of the clip.)
+struct AutoPoint
+{
+    double time = 0.0;
+    float value = 0.0f;
+};
+
 // A piece of audio placed on the timeline. The sample data is immutable and shared, so
 // splitting and duplicating clips is free; only start/offset/length differ.
 struct Clip
@@ -29,6 +37,19 @@ struct Clip
     // region of the source plays backwards).
     double fadeIn = 0.0, fadeOut = 0.0;
     bool reverse = false;
+
+    // Clip gain (linear, 1 = unchanged) and a volume curve: a multiplier (0..2) that varies over the clip, times in seconds from the
+    // start of the clip, flat outside the first and last point. No points = no curve.
+    float gain = 1.0f;
+    std::vector<AutoPoint> envelope;
+
+    // Time-stretch and pitch-shift. `audio` then holds the processed region; `source` is the original (the whole, unprocessed audio, shared)
+    // so the clip can be processed again or put back, `processedFrom` / `processedLength` the part of it (seconds) that was processed, and
+    // `stretch` (2 = twice as long) / `pitch` (semitones) what was done to it. `offset` and `length` then count in the processed audio.
+    std::shared_ptr<const juce::AudioBuffer<float>> source;
+    double processedFrom = 0.0, processedLength = 0.0;
+    double stretch = 1.0, pitch = 0.0;
+    bool processed() const { return source != nullptr; }
 
     // Takes: clips of one group are alternatives for the same spot (a loop recording makes one per pass); only the
     // active one plays and shows. takeGroup 0 = an ordinary clip.
@@ -90,13 +111,6 @@ struct ExternalRoute
     int channel = 0;
     int outChannel = 1;
     int port = -1;                       // resolved by Engine::setExternalOuts; -1 while the device isn't available
-};
-
-// A breakpoint envelope: linear between points, flat before the first and after the last.
-struct AutoPoint
-{
-    double time = 0.0;   // seconds on the timeline
-    float value = 0.0f;
 };
 
 // Automation is addressed by id: "volume" and "pan" (fader range 0..1.5 / -1..1), "fx.<name>" (effect parameters),
@@ -310,6 +324,19 @@ public:
     bool getClip (const Track&, int clipId, Clip& out) const;
     bool setClipRegion (Track&, int clipId, double start, double offset, double length);
 
+    // Clip gain, volume curve and normalizing of audio clips.
+    bool setClipGain (Track&, int clipId, float gain);
+    bool setClipEnvelope (Track&, int clipId, std::vector<AutoPoint> points);   // sorted by time on the way in; empty = no curve
+    bool normalizeClip (Track&, int clipId, float targetPeak = 0.97f);         // sets the gain so the loudest sample of the clip reaches targetPeak
+
+    // Time-stretch and pitch-shift of an audio clip (Rubber Band, offline: this can take a while, so `progress` gets 0..1 and returns
+    // false to cancel). stretch 2.0 = twice as long. The clip's length, fades and volume curve follow the new length. stretch 1 and pitch 0
+    // put the original back. Results are cached on disk, so loading a project does not process them again.
+    using ProgressFn = std::function<bool (double)>;
+    bool processClip (Track&, int clipId, double stretch, double semitones, const ProgressFn& progress);
+    // Loading a project: processes the saved region of the clip's (just loaded, unprocessed) audio; the caller then sets offset and length.
+    bool restoreProcessedClip (Track&, int clipId, double stretch, double semitones, double sourceStart, double sourceLength, const ProgressFn& progress);
+
     // Fades, crossfades and reverse of audio clips.
     bool setClipFades (Track&, int clipId, double fadeIn, double fadeOut);   // clamped to the clip's length
     bool setClipReverse (Track&, int clipId, bool reverse);
@@ -488,6 +515,9 @@ public:
     void resetMaster();   // back to defaults (a new project)
 
 private:
+    std::shared_ptr<juce::AudioBuffer<float>> processedAudio (const Clip& c, const juce::AudioBuffer<float>& src, double regionStart,
+                                                              double regionLength, double stretch, double semitones, const ProgressFn&);
+
     struct NoteEvent
     {
         int offset;     // sample offset inside the block

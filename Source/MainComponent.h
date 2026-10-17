@@ -155,6 +155,7 @@ class MainComponent : public juce::Component,
                       private juce::Timer,
                       private juce::ChangeListener
 {
+    friend class CollectJob;   // reports back when the audio has been copied
 public:
     MainComponent();
     ~MainComponent() override;
@@ -201,6 +202,13 @@ public:
     }
 
     void selectClip (Track*, int clipId);
+
+    // The clip whose volume curve is being edited (the points are shown and can be dragged); none by default.
+    int getEnvelopeClip() const { return envelopeClipId; }
+    Track* getEnvelopeTrack() const { return envelopeTrack; }
+    int envelopeClipId = -1;
+    Track* envelopeTrack = nullptr;
+    void openClipPanel (Track&, int clipId);   // gain, stretch and pitch of an audio clip
     // right-click menu on a clip (clipId >= 0) or on an empty spot of a lane (clipId < 0)
     void showClipMenu (Track&, int clipId, double atSeconds, juce::Component& source);
     bool isSelected (const Track* t, int clipId) const { return t == selTrack && clipId == selClip && clipId >= 0; }
@@ -288,8 +296,17 @@ private:
     void pasteClip (Track*, double atSeconds);
     Track* pasteTargetTrack() const;
 
-    void saveProject (const juce::File&, bool asAutosave = false);   // an autosave leaves the project's own file and name alone
+    enum class SaveKind { Normal, Autosave, Copy };   // an autosave or a copy leaves the project's own file and name alone
+    void saveProject (const juce::File&, SaveKind kind = SaveKind::Normal);
     void saveProjectAs();
+    void saveMenu();                                  // the "Save As" button: save as, new version, collect, backups
+    void saveNewVersion();
+    void collectProject();                            // copies all audio into <folder>/Audio and saves the project there
+    void finishCollect (const juce::File& projectFile, const std::map<juce::String, juce::String>& paths,
+                        const juce::StringArray& failed, juce::int64 bytes, bool cancelled);
+    void writeBackup (const juce::File& project);     // every save leaves a time-stamped copy (the newest twenty are kept)
+    static juce::File backupFolder (const juce::File& project);
+    std::function<juce::String (const juce::File&)> projectFilePath;   // set while collecting: where a file lives in the project
 
     // Autosave: every two minutes, when something changed, the project goes to a recovery file. A normal save (or a normal exit
     // without unsaved changes) removes it; if the program dies, or is closed with unsaved changes, it is offered at the next start.
