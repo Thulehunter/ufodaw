@@ -1,6 +1,7 @@
 #pragma once
 
 #include <juce_gui_basics/juce_gui_basics.h>
+#include <bitset>
 #include "Engine.h"
 #include "RollPanel.h"
 
@@ -34,6 +35,8 @@ public:
     class Velocity;
 
 private:
+    std::bitset<128> activePitches();   // notes sounding now: played live, or under the playhead in this clip
+    void scrollToNotes();               // scroll the grid so the clip's notes are in view
     void applySynthParams();
     void updateToolbar();   // plugin-instrument tracks show a "Plugin window" button instead of the built-in synth controls
 
@@ -45,7 +48,8 @@ private:
     juce::ComboBox waveform;
     juce::Label attackLabel { {}, "Attack" }, releaseLabel { {}, "Release" }, cutoffLabel { {}, "Cutoff" };
     juce::Slider attack, release, cutoff;
-    juce::TextButton closeButton { "x" }, pluginButton { "Plugin window" };
+    juce::TextButton closeButton { "x" }, pluginButton { "Plugin window" }, fitButton { "Show notes" };
+    bool pendingScroll = false;
     bool toolbarShowsPlugin = false;
 
     juce::Viewport viewport;

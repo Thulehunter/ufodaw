@@ -30,10 +30,12 @@ class PianoRoll::Keys : public juce::Component
 public:
     explicit Keys (PianoRoll& r) : roll (r) {}
 
+    // Every key carries its name (C4, D#4, ...) and lights up while its note sounds: played live, or playing in the clip.
     void paint (juce::Graphics& g) override
     {
         const auto area = g.getClipBounds();
-        g.setFont (10.0f);
+        const auto sounding = roll.activePitches();
+        g.setFont (juce::FontOptions (10.0f, juce::Font::bold));
         for (int p = maxPitch; p >= minPitch; --p)
         {
             const juce::Rectangle<int> r (0, pitchToY (p), getWidth(), rowH);
@@ -41,13 +43,12 @@ public:
                 continue;
 
             const bool black = isBlackKey (p);
-            g.setColour (p == held ? Theme::midiClipSel : black ? Theme::keyBlack : Theme::keyWhite);
+            const bool lit = p == held || sounding.test ((size_t) p);
+            g.setColour (lit ? Theme::yellow : black ? Theme::keyBlack : Theme::keyWhite);
             g.fillRect (r.withTrimmedBottom (1));
-            if (p % 12 == 0)
-            {
-                g.setColour (Theme::textFaint);
-                g.drawText (noteName (p), r.withTrimmedLeft (getWidth() / 2), juce::Justification::centredRight);
-            }
+
+            g.setColour (lit ? Theme::noteOutline : black ? Theme::textDim : (p % 12 == 0 ? Theme::noteOutline : Theme::textFaint));
+            g.drawText (noteName (p), r.withTrimmedRight (6), juce::Justification::centredRight);
         }
     }
 
@@ -117,13 +118,34 @@ public:
         repaint();
     }
 
-    int highestPitch()
+    // Lowest and highest pitch of the clip's notes (a default range around middle C when it has none).
+    void pitchRange (int& lo, int& hi)
     {
-        int hi = 78;
-        if (load())
+        lo = 60;
+        hi = 72;
+        if (load() && ! clip.notes.empty())
+        {
+            lo = 127;
+            hi = 0;
             for (auto& n : clip.notes)
+            {
+                lo = juce::jmin (lo, n.pitch);
                 hi = juce::jmax (hi, n.pitch);
-        return hi;
+            }
+        }
+    }
+
+    // Pitches that sound right now because the playhead is inside a note.
+    std::bitset<128> soundingInClip()
+    {
+        std::bitset<128> set;
+        if (! main.getEngine().isPlaying() || ! load())
+            return set;
+        const double pos = main.getEngine().getPositionSeconds() - clip.start;
+        for (auto& n : clip.notes)
+            if (pos >= n.start && pos < n.start + n.length && juce::isPositiveAndBelow (n.pitch, 128))
+                set.set ((size_t) n.pitch);
+        return set;
     }
 
     void paint (juce::Graphics& g) override
@@ -167,16 +189,28 @@ public:
         const int endX = timeToX (clip.end());
         g.fillRect (endX, 0, getWidth() - endX, getHeight());
 
+        const double playingPos = main.getEngine().getPositionSeconds() - clip.start;   // where the playhead is inside this clip
         for (int i = 0; i < (int) clip.notes.size(); ++i)
         {
             const auto r = noteRect (clip.notes[(size_t) i]);
             if (! r.intersects (area))
                 continue;
+            const auto& note = clip.notes[(size_t) i];
             const bool sel = i == selected;
-            g.setColour (sel ? Theme::noteSel : Theme::midiClipSel.withMultipliedBrightness (0.6f + 0.5f * clip.notes[(size_t) i].velocity));
+            const bool playingNow = playingPos >= note.start && playingPos < note.start + note.length && main.getEngine().isPlaying();
+            g.setColour (playingNow ? Theme::yellow
+                                    : sel ? Theme::noteSel
+                                          : Theme::midiClipSel.withMultipliedBrightness (0.6f + 0.5f * note.velocity));
             g.fillRect (r);
             g.setColour (sel ? Theme::text : Theme::noteOutline);
             g.drawRect (r, 1);
+
+            if (r.getWidth() >= 26)   // wide enough: name the note on the note itself
+            {
+                g.setColour (playingNow || sel ? Theme::noteOutline : Theme::text);
+                g.setFont (juce::FontOptions (10.0f, juce::Font::bold));
+                g.drawText (noteName (note.pitch), r.reduced (3, 0), juce::Justification::centredLeft);
+            }
         }
 
         const int px = timeToX (main.getEngine().getPositionSeconds());
@@ -499,6 +533,10 @@ PianoRoll::PianoRoll (MainComponent& m) : main (m)
     closeButton.onClick = [this] { if (onClose) onClose(); };
     addAndMakeVisible (closeButton);
 
+    fitButton.setTooltip ("Scroll so the notes of this clip are in view");
+    fitButton.onClick = [this] { scrollToNotes(); };
+    addAndMakeVisible (fitButton);
+
     pluginButton.setTooltip ("Open the VST instrument's own window");
     pluginButton.onClick = [this] { if (track != nullptr) main.openInstrumentEditor (*track); };
     addChildComponent (pluginButton);
@@ -531,9 +569,37 @@ void PianoRoll::showClip (Track* t, int id)
         cutoff.setValue (t->synth.cutoff, juce::dontSendNotification);
 
         if (changed)
-            viewport.setViewPosition (0, juce::jmax (0, pitchToY (grid->highestPitch() + 3)));
+            scrollToNotes();   // (waits for the panel's layout if it is not sized yet)
     }
     repaint();
+}
+
+std::bitset<128> PianoRoll::activePitches()
+{
+    auto set = grid->soundingInClip();
+    for (int p = 0; p < 128; ++p)
+        if (main.isLiveNoteDown (p))
+            set.set ((size_t) p);
+    return set;
+}
+
+// Puts the clip's notes in the middle of the view (or its highest notes at the top when they don't all fit).
+void PianoRoll::scrollToNotes()
+{
+    const int viewH = viewport.getMaximumVisibleHeight();
+    if (viewH <= 0)
+    {
+        pendingScroll = true;
+        return;
+    }
+
+    int lo = 60, hi = 72;
+    grid->pitchRange (lo, hi);
+    const int spanPx = (hi - lo + 1) * rowH;
+    int y = spanPx >= viewH - 2 * rowH ? pitchToY (hi) - rowH
+                                       : pitchToY (hi) - (viewH - spanPx) / 2;
+    viewport.setViewPosition (0, juce::jlimit (0, juce::jmax (0, totalHeight - viewH), y));
+    pendingScroll = false;
 }
 
 void PianoRoll::applySynthParams()
@@ -569,6 +635,7 @@ void PianoRoll::repaintGrid()
 {
     updateToolbar();   // cheap; keeps the toolbar right when a plugin is loaded or removed while the roll is open
     grid->repaint();
+    keys->repaint();   // keys light up while their notes sound
     velocity->repaint();
 }
 
@@ -605,6 +672,8 @@ void PianoRoll::resized()
 {
     auto bar = getLocalBounds().removeFromTop (toolbarHeight).reduced (8, 5);
     closeButton.setBounds (bar.removeFromRight (26));
+    bar.removeFromRight (6);
+    fitButton.setBounds (bar.removeFromRight (96));
     title.setBounds (bar.removeFromLeft (MainComponent::controlsWidth - 20));
     const auto waveArea = bar.removeFromLeft (100);
     waveform.setBounds (waveArea);
@@ -626,4 +695,7 @@ void PianoRoll::resized()
     holder.setSize (w, totalHeight);
     keys->setBounds (MainComponent::controlsWidth - keyWidth, 0, keyWidth, totalHeight);
     grid->setBounds (MainComponent::controlsWidth, 0, juce::jmax (0, w - MainComponent::controlsWidth), totalHeight);
+
+    if (pendingScroll)   // a clip was opened before the panel had its size
+        scrollToNotes();
 }

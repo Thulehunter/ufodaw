@@ -196,7 +196,8 @@ struct TrackState
 struct ProjectState
 {
     std::vector<TrackState> tracks;
-    float bpm = 120.0f, masterGain = 0.9f;
+    float bpm = 120.0f;
+    TrackState master;   // the master channel: volume, effects, plugins, automation
 };
 
 // Mixes all tracks against a shared transport. The audio thread only ever try-locks,
@@ -309,8 +310,16 @@ public:
 
     std::atomic<float> bpm { 120.0f };
     std::atomic<bool> metronome { false };
-    std::atomic<float> masterGain { 0.9f };
     std::atomic<float> masterLevel { 0.0f };
+
+    // The master channel: the last stage of the mix. It is a Track without clips, so it has a volume
+    // (gain), built-in effects, plugin inserts and automation like any other channel; mixBlock runs the
+    // summed tracks through it before the limiter.
+    Track& getMaster() { return *master; }
+    const Track& getMaster() const { return *master; }
+    bool isMaster (const Track& t) const { return &t == master.get(); }
+    void setMasterLevel (float v) { masterLevel = v; master->level = v; }
+    void resetMaster();   // back to defaults (a new project)
 
 private:
     struct NoteEvent
@@ -340,6 +349,8 @@ private:
     ParamAutomation* findLane (const Track&, const juce::String& id) const;
     ParamAutomation* ensureLane (Track&, const juce::String& id);   // null if the id doesn't resolve to a parameter
     void applyAutomation (Track&, double timeSeconds);
+    TrackState captureTrack (const Track&) const;               // everything the user can edit on one track
+    void applyTrackState (Track&, const TrackState&);           // ...and the way back (also used for the master channel)
     void releaseAllNotes (Track&);                              // soft all-notes-off for the synth or plugin instrument
     void collectNoteEvents (Track&, int numSamples, juce::int64 pos, bool running);
     void runMidiSource (Track&, int numSamples);                // plugin sequencer track: its MIDI output goes to Track::midiOuts
@@ -370,6 +381,7 @@ private:
     juce::AudioFormatManager formats;
     mutable juce::CriticalSection lock;
     std::vector<std::unique_ptr<Track>> tracks;
+    std::unique_ptr<Track> master;
     int nextClipId = 1;
 
     juce::TimeSliceThread writerThread { "MiniDAW audio writer" };

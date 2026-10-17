@@ -115,6 +115,7 @@ public:
     static constexpr int rulerHeight = 26;
     static constexpr int bottomBarHeight = 60;
     static constexpr int rollHeight = 320;
+    static constexpr int masterHeight = 66;
 
     // ---- Used by the timeline components
     Engine& getEngine() { return engine; }
@@ -129,6 +130,12 @@ public:
     double beatSeconds() const;
     double barSeconds() const { return beatSeconds() * 4.0; }
     double snapTime (double seconds) const;
+
+    bool isLiveNoteDown (int pitch) const   // a note being played right now on a MIDI keyboard or the computer keys
+    {
+        const auto& mask = pitch < 64 ? liveMaskLow : liveMaskHigh;
+        return pitch >= 0 && pitch < 128 && ((mask.load() >> (pitch & 63)) & 1ull) != 0;
+    }
 
     void selectClip (Track*, int clipId);
     bool isSelected (const Track* t, int clipId) const { return t == selTrack && clipId == selClip && clipId >= 0; }
@@ -147,6 +154,8 @@ private:
     void removeTrackUI (Track*);
     void clearTracksUI();
     void layoutContent();
+    void layoutMasterLane();                                    // keeps the master strip's lane scrolled with the arrangement
+    std::unique_ptr<TrackHeader> makeHeader (Track&, bool master);
     void addTrackDialog();
     void addTrackMenu();                       // "+ Track": an empty audio track, or audio from files
     void addEmptyAudioTrack();
@@ -181,6 +190,8 @@ private:
     void openPlugins (Track&, juce::Component& anchor);
     void openAutomation (Track&, juce::Component& anchor);
     juce::var pluginsToVar (const Track&) const;
+    void writeEffectsAndAutomation (juce::DynamicObject&, Track&);                          // for tracks and the master channel
+    void readEffectsAndAutomation (Track&, const juce::var&, juce::StringArray& problems);
     void pluginsFromVar (Track&, const juce::var& trackVar, juce::StringArray& problems);
 
     void startPlayback();
@@ -224,6 +235,7 @@ private:
     // The MIDI track that live notes go to: the selected MIDI clip's track, or the open piano roll's.
     // Read from the MIDI thread, so it is atomic; the pointer is only ever compared / passed by address.
     std::atomic<Track*> armedTrack { nullptr };
+    std::atomic<unsigned long long> liveMaskLow { 0 }, liveMaskHigh { 0 };   // keys held down live, bit per MIDI note (for the piano roll)
     juce::Label statusLabel;
     juce::String midiInputText, audioInfoText;
     juce::TextButton audioButton { "Audio..." };
@@ -259,8 +271,10 @@ private:
     juce::ToggleButton metroButton { "Metronome" };
     juce::Label bpmLabel { {}, "BPM" }, timeLabel;
     juce::Slider bpmSlider { juce::Slider::LinearBar, juce::Slider::TextBoxLeft };
-    juce::Slider masterSlider { juce::Slider::LinearHorizontal, juce::Slider::NoTextBox };
-    float masterShown = 0.0f;
+    // The master channel strip, pinned below the tracks: controls on the left, an automation lane on the right.
+    std::unique_ptr<TrackHeader> masterHeader;
+    std::unique_ptr<TrackLane> masterLane;
+    juce::Component masterArea;
     std::vector<int> topSeparators;   // x positions of the dividers between the top bar's button groups
 
     double pixelsPerSecond = 100.0;

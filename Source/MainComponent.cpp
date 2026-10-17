@@ -37,10 +37,11 @@ public:
                  std::function<void (Track&, juce::Component&)> onOpenAutomation,
                  std::function<double()> onPosition,
                  std::function<void (Track&)> onOpenEditor,
-                 std::function<void (Track&)> onToggleArm)
+                 std::function<void (Track&)> onToggleArm,
+                 bool masterStrip = false)
         : track (t), remove (std::move (onRemove)), beginEdit (std::move (onBeginEdit)), openPlugins (std::move (onOpenPlugins)),
           openAutomation (std::move (onOpenAutomation)), position (std::move (onPosition)), openEditor (std::move (onOpenEditor)),
-          toggleArm (std::move (onToggleArm))
+          toggleArm (std::move (onToggleArm)), isMaster (masterStrip)
     {
         // record-arm: audio tracks only; the next audio recording goes into the armed track
         armButton.setTooltip ("Record arm: the next recording goes into this track (click Record at the bottom, or press R)");
@@ -109,9 +110,30 @@ public:
         autoButton.setTooltip ("Automation of volume and pan");
         autoButton.onClick = [this] { openAutomation (track, autoButton); };
         addAndMakeVisible (autoButton);
+
+        if (isMaster)   // the master channel: no pan, mute, solo, arming or deleting; it is the final stage of the mix
+        {
+            for (juce::Component* c : std::initializer_list<juce::Component*> { &pan, &muteButton, &soloButton, &deleteButton, &armButton })
+                c->setVisible (false);
+            nameLabel.setText ("MASTER", juce::dontSendNotification);
+            nameLabel.setColour (juce::Label::textColourId, Theme::yellow);
+            volume.setTooltip ("Master volume: everything you hear goes through it (double-click: reset)");
+            fxButton.setTooltip ("Effects on the whole mix: EQ, compressor, delay, reverb");
+            vstButton.setTooltip ("VST3 effect plugins on the whole mix (a limiter or EQ, for example)");
+            autoButton.setTooltip ("Automation of the master volume and its effects");
+        }
     }
 
     Track& getTrack() { return track; }
+
+    // After the track's values were changed from outside (undo, opening a project).
+    void syncControls()
+    {
+        volume.setValue (track.gain, juce::dontSendNotification);
+        pan.setValue (track.pan, juce::dontSendNotification);
+        muteButton.setToggleState (track.mute, juce::dontSendNotification);
+        soloButton.setToggleState (track.solo, juce::dontSendNotification);
+    }
 
     void mouseDoubleClick (const juce::MouseEvent& e) override
     {
@@ -124,8 +146,8 @@ public:
         g.fillAll (Theme::panel);
 
         // colour stripe by track type: orange = audio, red = MIDI synth, yellow = drums
-        g.setColour (Theme::trackColour (track.type == Track::Type::Midi, track.kit != nullptr));
-        g.fillRect (0, 0, 5, getHeight() - 1);
+        g.setColour (isMaster ? Theme::yellow : Theme::trackColour (track.type == Track::Type::Midi, track.kit != nullptr));
+        g.fillRect (0, 0, isMaster ? 8 : 5, getHeight() - 1);
 
         auto m = juce::Rectangle<int> (getWidth() - 8, 6, 4, getHeight() - 12);
         g.setColour (juce::Colours::black);
@@ -140,6 +162,21 @@ public:
 
     void resized() override
     {
+        if (isMaster)   // compact: name and buttons on top, the volume fader below
+        {
+            auto m = getLocalBounds().withTrimmedRight (14).withTrimmedLeft (4).reduced (8, 4);
+            auto row = m.removeFromTop (22);
+            fxButton.setBounds (row.removeFromRight (32));
+            row.removeFromRight (4);
+            vstButton.setBounds (row.removeFromRight (38));
+            row.removeFromRight (4);
+            autoButton.setBounds (row.removeFromRight (26));
+            nameLabel.setBounds (row);
+            m.removeFromTop (6);
+            volume.setBounds (m.removeFromTop (24));
+            return;
+        }
+
         auto c = getLocalBounds().withTrimmedRight (14).reduced (8, 6);
         auto top = c.removeFromTop (20);
         deleteButton.setBounds (top.removeFromRight (22));
@@ -230,6 +267,7 @@ private:
     std::function<double()> position;
     std::function<void (Track&)> openEditor;
     std::function<void (Track&)> toggleArm;
+    bool isMaster = false;
     bool armShown = false;
     float shown = 0.0f;
 
@@ -439,8 +477,17 @@ public:
             g.drawRoundedRectangle (r.toFloat(), 4.0f, sel ? 2.0f : 1.0f);
         }
 
+        // the master channel's lane: a hint at the start of the (usually empty) strip
+        if (main.getEngine().isMaster (track) && track.autoEditId.isEmpty())
+        {
+            g.setColour (Theme::textFaint);
+            g.setFont (juce::FontOptions (13.0f));
+            g.drawText ("Master channel - the whole mix goes through here. A = automate its volume or effects, VST = plugins on the mix.",
+                        14, 0, juce::jmax (200, getWidth() - 20), getHeight(), juce::Justification::centredLeft);
+        }
+
         // an audio track without clips says what can be done with it
-        if (track.type == Track::Type::Audio && clips.empty() && track.autoEditId.isEmpty())
+        if (track.type == Track::Type::Audio && clips.empty() && track.autoEditId.isEmpty() && ! main.getEngine().isMaster (track))
         {
             g.setColour (track.recordArmed ? Theme::redBright : Theme::textFaint);
             g.setFont (juce::FontOptions (13.0f));
@@ -587,7 +634,7 @@ public:
             Component::mouseWheelMove (e, w);
     }
 
-    bool isInterestedInFileDrag (const juce::StringArray&) override { return true; }
+    bool isInterestedInFileDrag (const juce::StringArray&) override { return ! main.getEngine().isMaster (track); }
     void filesDropped (const juce::StringArray& files, int x, int) override
     {
         main.importFiles (files, &track, juce::jmax (0.0, main.snapTime (x / main.getPixelsPerSecond())));
@@ -1038,8 +1085,14 @@ MainComponent::MainComponent()
     addAndMakeVisible (snapButton);
     addAndMakeVisible (bpmLabel);
     addAndMakeVisible (bpmSlider);
-    addAndMakeVisible (masterSlider);
     addAndMakeVisible (timeLabel);
+
+    // the master channel strip under the tracks
+    masterHeader = makeHeader (engine.getMaster(), true);
+    masterLane = std::make_unique<TrackLane> (*this, engine.getMaster());
+    masterArea.addAndMakeVisible (*masterLane);
+    addAndMakeVisible (*masterHeader);
+    addAndMakeVisible (masterArea);
 
     rewindButton.onClick = [this] { engine.setPositionSeconds (0.0); playStartSeconds = 0.0; };
     playButton.onClick   = [this] { startPlayback(); };
@@ -1078,10 +1131,6 @@ MainComponent::MainComponent()
     bpmSlider.onDragStart = [this] { beginEdit(); };
     bpmSlider.onValueChange = [this] { engine.bpm = (float) bpmSlider.getValue(); clipsChanged(); };
 
-    masterSlider.setRange (0.0, 1.2, 0.001);
-    masterSlider.setValue (engine.masterGain, juce::dontSendNotification);
-    masterSlider.onDragStart = [this] { beginEdit(); };
-    masterSlider.onValueChange = [this] { engine.masterGain = (float) masterSlider.getValue(); };
 
     timeLabel.setFont (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(), 24.0f, juce::Font::plain));
     timeLabel.setJustificationType (juce::Justification::centred);
@@ -1105,13 +1154,13 @@ MainComponent::MainComponent()
     zoomInButton.setTooltip ("Zoom in (Ctrl + mouse wheel)");
     zoomOutButton.setTooltip ("Zoom out (Ctrl + mouse wheel)");
     bpmSlider.setTooltip ("Tempo in beats per minute (drag, or double-click to type)");
-    masterSlider.setTooltip ("Master volume");
 
     laneViewport.setViewedComponent (&laneHolder, false);
     laneViewport.setScrollBarsShown (true, true);
     laneViewport.onScroll = [this]
     {
         headerViewport.setViewPosition (0, laneViewport.getViewPositionY());
+        layoutMasterLane();
         ruler->repaint();
         roll->repaintGrid();
         repaint();
@@ -1283,6 +1332,13 @@ void MainComponent::MidiForwarder::handleIncomingMidiMessage (juce::MidiInput*, 
 // May run on the MIDI thread: plays the note on the armed synth and, while recording, remembers it.
 void MainComponent::liveNote (int pitch, bool on, float velocity)
 {
+    if (juce::isPositiveAndBelow (pitch, 128))   // remember which keys are down, so the piano roll can light them up
+    {
+        auto& mask = pitch < 64 ? liveMaskLow : liveMaskHigh;
+        const unsigned long long bit = 1ull << (pitch & 63);
+        if (on) mask.fetch_or (bit); else mask.fetch_and (~bit);
+    }
+
     auto* t = armedTrack.load();
     if (t == nullptr)
         return;
@@ -1421,7 +1477,8 @@ void MainComponent::openAutomation (Track& t, juce::Component& anchor)
 
     // what can be edited: volume, pan, then the built-in effects/synth and every hosted plugin's parameters
     add (menu, "Volume", true, t.autoEditId == "volume", edit ("volume"));
-    add (menu, "Pan", true, t.autoEditId == "pan", edit ("pan"));
+    if (! engine.isMaster (t))   // the master channel has no pan
+        add (menu, "Pan", true, t.autoEditId == "pan", edit ("pan"));
 
     std::map<juce::String, juce::PopupMenu> groups;
     std::vector<juce::String> groupOrder;
@@ -1526,6 +1583,64 @@ void MainComponent::pluginsFromVar (Track& t, const juce::var& trackVar, juce::S
                 engine.addMidiFx (t, slot);
             else
                 problems.add (t.name + " (MIDI effect): " + error);
+        }
+}
+
+// Effects, plugins and automation of a track (or of the master channel), as they go into the project file.
+void MainComponent::writeEffectsAndAutomation (juce::DynamicObject& o, Track& t)
+{
+    auto* fo = new juce::DynamicObject();
+    t.fx.forEachFloat ([fo] (const char* name, std::atomic<float>& v) { fo->setProperty (name, (double) v.load()); });
+    t.fx.forEachBool ([fo] (const char* name, std::atomic<bool>& v) { fo->setProperty (name, v.load()); });
+    o.setProperty ("fx", juce::var (fo));
+    o.setProperty ("plugins", pluginsToVar (t));
+
+    // automation, keyed by envelope id ("volume", "pan", "fx.reverbMix", "plugin:3:12", ...)
+    auto* ao = new juce::DynamicObject();
+    for (auto& id : engine.getAutomationIds (t))
+    {
+        juce::Array<juce::var> points;
+        for (auto& p : engine.getAutomation (t, id))
+        {
+            juce::Array<juce::var> pair;
+            pair.add (p.time);
+            pair.add ((double) p.value);
+            points.add (juce::var (pair));
+        }
+        auto* lo = new juce::DynamicObject();
+        lo->setProperty ("active", engine.isAutomationActive (t, id));
+        lo->setProperty ("points", points);
+        ao->setProperty (juce::Identifier (id), juce::var (lo));
+    }
+    o.setProperty ("automation", juce::var (ao));
+}
+
+void MainComponent::readEffectsAndAutomation (Track& t, const juce::var& item, juce::StringArray& problems)
+{
+    const auto fxv = item["fx"];
+    if (fxv.isObject())
+    {
+        t.fx.forEachFloat ([&fxv] (const char* name, std::atomic<float>& v)
+                           { if (fxv.hasProperty (name)) v = (float) (double) fxv.getProperty (name, 0.0); });
+        t.fx.forEachBool ([&fxv] (const char* name, std::atomic<bool>& v)
+                          { if (fxv.hasProperty (name)) v = (bool) fxv.getProperty (name, false); });
+    }
+
+    pluginsFromVar (t, item, problems);
+
+    // (plugins are loaded first, so lanes bound to plugin parameters can find them)
+    if (auto* automation = item["automation"].getDynamicObject())
+        for (auto& entry : automation->getProperties())
+        {
+            const juce::String id = entry.name.toString();
+            std::vector<AutoPoint> points;
+            if (auto* arr = entry.value["points"].getArray())
+                for (auto& pv : *arr)
+                    if (auto* pair = pv.getArray(); pair != nullptr && pair->size() >= 2)
+                        points.push_back ({ (double) (*pair)[0], (float) (double) (*pair)[1] });
+
+            if (engine.setAutomation (t, id, std::move (points)))
+                engine.setAutomationActive (t, id, (bool) entry.value.getProperty ("active", true));
         }
 }
 
@@ -1649,7 +1764,7 @@ void MainComponent::restoreSnapshot (const ProjectState& state)
         addTrackUI (*engine.getTrack (i));
 
     bpmSlider.setValue (engine.bpm, juce::dontSendNotification);
-    masterSlider.setValue (engine.masterGain, juce::dontSendNotification);
+    masterHeader->syncControls();   // the master channel was restored in place
 
     if (selTrackIndex >= 0)
         if (auto* t = engine.getTrack (selTrackIndex))
@@ -1666,9 +1781,9 @@ void MainComponent::restoreSnapshot (const ProjectState& state)
 }
 
 //==============================================================================
-void MainComponent::addTrackUI (Track& t)
+std::unique_ptr<TrackHeader> MainComponent::makeHeader (Track& t, bool master)
 {
-    auto* header = headers.add (new TrackHeader (t, [this] (Track* tr)
+    return std::make_unique<TrackHeader> (t, [this] (Track* tr)
     {
         // Deferred: this runs inside a button owned by the header being deleted.
         juce::MessageManager::callAsync ([this, tr] { removeTrackUI (tr); });
@@ -1677,7 +1792,13 @@ void MainComponent::addTrackUI (Track& t)
        [this] (Track& tr, juce::Component& anchor) { openAutomation (tr, anchor); },
        [this] { return engine.getPositionSeconds(); },
        [this] (Track& tr) { openInstrumentEditor (tr); },
-       [this] (Track& tr) { armAudioTrack (tr, ! tr.recordArmed); }));
+       [this] (Track& tr) { armAudioTrack (tr, ! tr.recordArmed); },
+       master);
+}
+
+void MainComponent::addTrackUI (Track& t)
+{
+    auto* header = headers.add (makeHeader (t, false).release());
     headerHolder.addAndMakeVisible (header);
 
     auto* lane = lanes.add (new TrackLane (*this, t));
@@ -1728,7 +1849,13 @@ void MainComponent::layoutContent()
     const int y0 = topBarHeight + rulerHeight;
     const int laneW = getWidth() - controlsWidth;
     const int rollH = rollVisible ? juce::jmin (rollHeight, getHeight() / 2) : 0;
-    laneViewport.setBounds (controlsWidth, y0, laneW, getHeight() - y0 - bottomBarHeight - rollH);
+    const int lanesH = juce::jmax (0, getHeight() - y0 - bottomBarHeight - rollH - masterHeight - 2);   // 2 px for the line above the master strip
+    laneViewport.setBounds (controlsWidth, y0, laneW, lanesH);
+
+    // master channel strip pinned under the tracks
+    const int masterY = y0 + lanesH + 2;
+    masterHeader->setBounds (0, masterY, controlsWidth, masterHeight);
+    masterArea.setBounds (controlsWidth, masterY, laneW, masterHeight);
     for (juce::Component* panel : std::initializer_list<juce::Component*> { pianoRoll.get(), drumRoll.get() })
     {
         panel->setBounds (0, getHeight() - bottomBarHeight - rollH, getWidth(), rollH);
@@ -1751,6 +1878,14 @@ void MainComponent::layoutContent()
     }
     laneHolder.setSize (contentW, contentH);
     headerHolder.setSize (controlsWidth, contentH);
+    layoutMasterLane();
+}
+
+// The master strip's lane is as wide as the arrangement and slides sideways with it (the strip clips it).
+void MainComponent::layoutMasterLane()
+{
+    if (masterLane != nullptr)
+        masterLane->setBounds (-getScrollX(), 0, juce::jmax (laneHolder.getWidth(), masterArea.getWidth()), masterHeight);
 }
 
 void MainComponent::resized()
@@ -1786,7 +1921,6 @@ void MainComponent::resized()
     undoButton.setBounds (top.removeFromLeft (50));
     top.removeFromLeft (4);
     redoButton.setBounds (top.removeFromLeft (50));
-    masterSlider.setBounds (top.removeFromRight (150));
 
     // bottom bar: MIDI/armed status on the left, computer-keys toggle on the right
     statusLabel.setBounds (10, getHeight() - bottomBarHeight + 8, juce::jmax (100, getWidth() / 2 - 150), bottomBarHeight - 16);
@@ -1833,21 +1967,18 @@ void MainComponent::paint (juce::Graphics& g)
     for (int x : topSeparators)
         g.fillRect (x, 12, 1, topBarHeight - 3 - 24);
 
-    g.setColour (Theme::textDim);
-    g.setFont (juce::FontOptions (11.0f, juce::Font::bold));
-    g.drawText ("MASTER", masterSlider.getX() - 58, 10, 54, 14, juce::Justification::centredRight);
-
     // bottom bar
     g.setColour (Theme::panel);
     g.fillRect (0, getHeight() - bottomBarHeight, getWidth(), bottomBarHeight);
     g.setColour (Theme::border);
     g.drawHorizontalLine (getHeight() - bottomBarHeight, 0.0f, (float) getWidth());
 
-    auto m = juce::Rectangle<int> (getWidth() - 158, 8, 150, 4);
-    g.setColour (Theme::border);
-    g.fillRect (m);
-    g.setColour (masterShown > 0.95f ? Theme::redBright : Theme::yellow);
-    g.fillRect (m.withWidth ((int) (juce::jlimit (0.0f, 1.0f, masterShown) * (float) m.getWidth())));
+    // a yellow line above the master channel strip sets it apart from the tracks
+    if (masterArea.isVisible())
+    {
+        g.setColour (Theme::yellowDim);
+        g.fillRect (0, masterArea.getY() - 2, getWidth(), 2);
+    }
 }
 
 void MainComponent::paintOverChildren (juce::Graphics& g)
@@ -1869,7 +2000,7 @@ void MainComponent::paintOverChildren (juce::Graphics& g)
     if (x >= laneViewport.getX() && x < laneViewport.getRight())
     {
         g.setColour (Theme::playhead);
-        g.fillRect (x - 1, ruler->getY(), 2, laneViewport.getBottom() - ruler->getY());
+        g.fillRect (x - 1, ruler->getY(), 2, masterArea.getBottom() - ruler->getY());   // through the lanes and the master strip
         juce::Path head;   // small flag on the ruler so the playhead is easy to spot and grab
         head.addTriangle ((float) x - 6.0f, (float) ruler->getY() + 1.0f, (float) x + 6.0f, (float) ruler->getY() + 1.0f,
                           (float) x, (float) ruler->getY() + 11.0f);
@@ -2058,11 +2189,10 @@ void MainComponent::timerCallback()
     const int mins = (int) (p / 60.0);
     timeLabel.setText (juce::String::formatted ("%02d:%06.3f", mins, p - mins * 60.0), juce::dontSendNotification);
 
-    const float ml = engine.masterLevel;
-    masterShown = ml > masterShown ? ml : masterShown * 0.85f;
-
     for (auto* h : headers)
         h->tick();
+    masterHeader->tick();
+    masterLane->repaint();   // the master lane shows its automation and follows the zoom
 
     if (rollVisible)
     {
@@ -2421,11 +2551,7 @@ void MainComponent::saveProject (const juce::File& file)
                 o->setProperty ("drumPads", padFiles);
             }
         }
-        auto* fo = new juce::DynamicObject();
-        t->fx.forEachFloat ([fo] (const char* name, std::atomic<float>& v) { fo->setProperty (name, (double) v.load()); });
-        t->fx.forEachBool ([fo] (const char* name, std::atomic<bool>& v) { fo->setProperty (name, v.load()); });
-        o->setProperty ("fx", juce::var (fo));
-        o->setProperty ("plugins", pluginsToVar (*t));
+        writeEffectsAndAutomation (*o, *t);   // effects, plugins, automation
         o->setProperty ("sequencer", t->sequencer);
         juce::Array<juce::var> outs;
         for (auto& route : t->midiOuts)
@@ -2437,32 +2563,18 @@ void MainComponent::saveProject (const juce::File& file)
         }
         o->setProperty ("midiOuts", outs);
 
-        // automation, keyed by envelope id ("volume", "pan", "fx.reverbMix", "plugin:3:12", ...)
-        auto* ao = new juce::DynamicObject();
-        for (auto& id : engine.getAutomationIds (*t))
-        {
-            juce::Array<juce::var> points;
-            for (auto& p : engine.getAutomation (*t, id))
-            {
-                juce::Array<juce::var> pair;
-                pair.add (p.time);
-                pair.add ((double) p.value);
-                points.add (juce::var (pair));
-            }
-            auto* lo = new juce::DynamicObject();
-            lo->setProperty ("active", engine.isAutomationActive (*t, id));
-            lo->setProperty ("points", points);
-            ao->setProperty (juce::Identifier (id), juce::var (lo));
-        }
-        o->setProperty ("automation", juce::var (ao));
-
         trackList.add (juce::var (o));
     }
+
+    // the master channel: volume, effects, plugins, automation
+    auto* masterObject = new juce::DynamicObject();
+    masterObject->setProperty ("gain", (double) engine.getMaster().gain.load());
+    writeEffectsAndAutomation (*masterObject, engine.getMaster());
 
     auto* root = new juce::DynamicObject();
     root->setProperty ("version", 3);
     root->setProperty ("bpm", (double) engine.bpm.load());
-    root->setProperty ("masterGain", (double) engine.masterGain.load());
+    root->setProperty ("master", juce::var (masterObject));
     root->setProperty ("metronome", engine.metronome.load());
     root->setProperty ("loopEnabled", engine.loopEnabled.load());
     root->setProperty ("loopStart", engine.loopStart.load());
@@ -2527,10 +2639,8 @@ void MainComponent::loadProject (const juce::File& file)
     updateUndoButtons();
 
     engine.bpm = (float) (double) root.getProperty ("bpm", 120.0);
-    engine.masterGain = (float) (double) root.getProperty ("masterGain", 0.9);
     engine.metronome = (bool) root.getProperty ("metronome", false);
     bpmSlider.setValue (engine.bpm, juce::dontSendNotification);
-    masterSlider.setValue (engine.masterGain, juce::dontSendNotification);
     metroButton.setToggleState (engine.metronome, juce::dontSendNotification);
 
     engine.loopStart = (double) root.getProperty ("loopStart", 0.0);
@@ -2540,6 +2650,19 @@ void MainComponent::loadProject (const juce::File& file)
 
     juce::StringArray missing, pluginProblems;
     const auto baseDir = file.getParentDirectory();
+
+    // master channel (projects from before it had effects only stored a master volume)
+    engine.resetMaster();
+    if (const auto masterVar = root["master"]; masterVar.isObject())
+    {
+        engine.getMaster().gain = (float) (double) masterVar.getProperty ("gain", 0.9);
+        readEffectsAndAutomation (engine.getMaster(), masterVar, pluginProblems);
+    }
+    else
+    {
+        engine.getMaster().gain = (float) (double) root.getProperty ("masterGain", 0.9);
+    }
+    masterHeader->syncControls();
 
     for (auto& item : *root["tracks"].getArray())
     {
@@ -2565,14 +2688,6 @@ void MainComponent::loadProject (const juce::File& file)
         t->mute = (bool) item.getProperty ("mute", false);
         t->solo = (bool) item.getProperty ("solo", false);
 
-        const auto fxv = item["fx"];
-        if (fxv.isObject())
-        {
-            t->fx.forEachFloat ([&fxv] (const char* name, std::atomic<float>& v)
-                                { if (fxv.hasProperty (name)) v = (float) (double) fxv.getProperty (name, 0.0); });
-            t->fx.forEachBool ([&fxv] (const char* name, std::atomic<bool>& v)
-                               { if (fxv.hasProperty (name)) v = (bool) fxv.getProperty (name, false); });
-        }
 
         auto loadClip = [&] (const juce::var& v)
         {
@@ -2629,22 +2744,7 @@ void MainComponent::loadProject (const juce::File& file)
             loadClip (item);
         }
 
-        pluginsFromVar (*t, item, pluginProblems);
-
-        // (plugins are loaded above, so lanes bound to plugin parameters can find them)
-        if (auto* automation = item["automation"].getDynamicObject())
-            for (auto& entry : automation->getProperties())
-            {
-                const juce::String id = entry.name.toString();
-                std::vector<AutoPoint> points;
-                if (auto* arr = entry.value["points"].getArray())
-                    for (auto& pv : *arr)
-                        if (auto* pair = pv.getArray(); pair != nullptr && pair->size() >= 2)
-                            points.push_back ({ (double) (*pair)[0], (float) (double) (*pair)[1] });
-
-                if (engine.setAutomation (*t, id, std::move (points)))
-                    engine.setAutomationActive (*t, id, (bool) entry.value.getProperty ("active", true));
-            }
+        readEffectsAndAutomation (*t, item, pluginProblems);
 
         addTrackUI (*t);
     }

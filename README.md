@@ -6,7 +6,9 @@ A small digital audio workstation for Windows, written in C++17 with [JUCE](http
 
 - **Audio tracks** - import wav / aiff / flac / mp3 / ogg (drag files into the window), record from your audio input.
 - **Arrangement** - clips can be moved (also between tracks), split, duplicated and deleted; zoom, snap to the grid, loop region.
-- **MIDI tracks** with a built-in polyphonic synth (sine / saw / square / triangle, ADSR, low-pass) and a **piano roll**.
+- **MIDI tracks** with a built-in polyphonic synth (sine / saw / square / triangle, ADSR, low-pass) and a **piano roll**
+  that names every key and note, lights up the keys that sound (live or during playback) and scrolls to the clip's notes
+  ("Show notes" brings them back).
 - **Drum tracks** - 8-pad drum kit with generated sounds, a **step sequencer**, and your own samples per pad (right-click a pad).
 - **MIDI input** - any connected keyboard plays the selected MIDI track and can be recorded; the computer keyboard works as a piano too ("Keys").
 - **Effects per track** - 3-band EQ, compressor, delay, reverb.
@@ -16,7 +18,9 @@ A small digital audio workstation for Windows, written in C++17 with [JUCE](http
 - **Plugin delay compensation** - tracks are delayed to line up with plugins that report latency (up to half a second).
 - **Automation** - breakpoint envelopes for volume, pan, every built-in effect parameter, the synth, and any parameter of a hosted VST3 plugin.
 - **Velocity editing** - velocity bars under the piano roll; Ctrl+drag a step in the drum sequencer.
-- **Mixer** - volume, pan, mute, solo, level meters, soft limiter on the master.
+- **Mixer** - volume, pan, mute, solo and level meters per track, plus a **master channel** (the yellow strip under the tracks):
+  volume with automation, the built-in effects (EQ, compressor, delay, reverb), VST3 effect plugins on the whole mix, a
+  level meter, and the soft limiter after it. Stems skip the master channel.
 - **Undo / redo**, project **save / load** (`.mdaw`) and **WAV export** (24-bit).
 - **Stem export** - every track as its own WAV file in a folder you choose (see below).
 

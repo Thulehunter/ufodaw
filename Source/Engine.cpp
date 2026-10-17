@@ -28,6 +28,26 @@ Engine::Engine()
     synthScratch.assign (16384, 0.0f);
     trackL.assign (16384, 0.0f);
     trackR.assign (16384, 0.0f);
+
+    master = std::make_unique<Track>();
+    master->name = "Master";
+    master->gain = 0.9f;
+    master->fxState = std::make_unique<TrackFx>();
+    master->fxState->prepare (sampleRate);
+}
+
+void Engine::resetMaster()
+{
+    const juce::ScopedLock sl (lock);
+    TrackState defaults;
+    defaults.name = "Master";
+    defaults.gain = 0.9f;
+    defaults.autoLanes.push_back ({ "volume", {}, true });
+    defaults.autoLanes.push_back ({ "pan", {}, true });
+    FxParams blank;   // default effect settings, all off
+    blank.forEachFloat ([&] (const char*, std::atomic<float>& v) { defaults.fxFloats.push_back (v.load()); });
+    blank.forEachBool ([&] (const char*, std::atomic<bool>& v) { defaults.fxBools.push_back (v.load() ? 1 : 0); });
+    applyTrackState (*master, defaults);
 }
 
 Engine::~Engine()
@@ -47,6 +67,10 @@ void Engine::prepareToPlay (int samplesPerBlock, double newRate)
         trackL.assign ((size_t) samplesPerBlock * 2, 0.0f);
         trackR.assign ((size_t) samplesPerBlock * 2, 0.0f);
     }
+    master->fxState->prepare (newRate);
+    for (auto& p : master->inserts)
+        preparePlugin (*p);
+
     for (auto& t : tracks)
     {
         if (t->voices != nullptr)
@@ -859,46 +883,107 @@ void Engine::applyAutomation (Track& t, double time)
 //==============================================================================
 // Undo/redo snapshots
 
+// Copies what the user can edit on one track into a TrackState (MIDI routes are added by captureState: they need indices).
+TrackState Engine::captureTrack (const Track& t) const
+{
+    TrackState ts;
+    ts.name = t.name;
+    ts.type = t.type;
+    ts.clips = t.clips;
+    ts.midiClips = t.midiClips;
+    ts.gain = t.gain;
+    ts.pan = t.pan;
+    ts.mute = t.mute;
+    ts.solo = t.solo;
+    ts.waveform = t.synth.waveform;
+    ts.synthValues[0] = t.synth.attack;
+    ts.synthValues[1] = t.synth.decay;
+    ts.synthValues[2] = t.synth.sustain;
+    ts.synthValues[3] = t.synth.release;
+    ts.synthValues[4] = t.synth.cutoff;
+    ts.instrument = t.instrument;
+    ts.inserts = t.inserts;
+    ts.midiFx = t.midiFx;
+    ts.sequencer = t.sequencer;
+    ts.recordArmed = t.recordArmed;
+    ts.autoLanes.push_back ({ "volume", t.autoVolume.points, t.autoVolume.active.load() });
+    ts.autoLanes.push_back ({ "pan", t.autoPan.points, t.autoPan.active.load() });
+    for (auto& lane : t.autoLanes)
+        ts.autoLanes.push_back ({ lane->id, lane->points, lane->active.load() });
+    ts.kit = t.kit;
+    const_cast<Track&> (t).fx.forEachFloat ([&ts] (const char*, std::atomic<float>& v) { ts.fxFloats.push_back (v.load()); });
+    const_cast<Track&> (t).fx.forEachBool ([&ts] (const char*, std::atomic<bool>& v) { ts.fxBools.push_back (v.load() ? 1 : 0); });
+    return ts;
+}
+
+// The way back: writes a TrackState into an existing track (caller holds the lock if the track is live).
+void Engine::applyTrackState (Track& t, const TrackState& ts)
+{
+    t.name = ts.name;
+    t.clips = ts.clips;
+    t.midiClips = ts.midiClips;
+    t.gain = ts.gain;
+    t.pan = ts.pan;
+    t.mute = ts.mute;
+    t.solo = ts.solo;
+    t.synth.waveform = ts.waveform;
+    t.synth.attack = ts.synthValues[0];
+    t.synth.decay = ts.synthValues[1];
+    t.synth.sustain = ts.synthValues[2];
+    t.synth.release = ts.synthValues[3];
+    t.synth.cutoff = ts.synthValues[4];
+
+    size_t fi = 0, bi = 0;
+    t.fx.forEachFloat ([&] (const char*, std::atomic<float>& v) { if (fi < ts.fxFloats.size()) v = ts.fxFloats[fi]; ++fi; });
+    t.fx.forEachBool ([&] (const char*, std::atomic<bool>& v) { if (bi < ts.fxBools.size()) v = ts.fxBools[bi] != 0; ++bi; });
+
+    t.instrument = ts.instrument;
+    t.inserts = ts.inserts;
+    t.midiFx = ts.midiFx;
+    t.kit = ts.kit;
+    t.sequencer = ts.sequencer;
+    t.recordArmed = ts.recordArmed;
+
+    // lanes last: they bind to the effect/synth parameters and plugins assigned above
+    t.autoLanes.clear();
+    t.autoVolume.points.clear();
+    t.autoPan.points.clear();
+    t.autoVolume.active = true;
+    t.autoPan.active = true;
+    for (auto& ls : ts.autoLanes)
+    {
+        if (ls.id == "volume")
+        {
+            t.autoVolume.points = ls.points;
+            t.autoVolume.active = ls.active;
+        }
+        else if (ls.id == "pan")
+        {
+            t.autoPan.points = ls.points;
+            t.autoPan.active = ls.active;
+        }
+        else if (auto* lane = ensureLane (t, ls.id))
+        {
+            lane->points = ls.points;
+            lane->active = ls.active;
+        }
+    }
+}
+
 ProjectState Engine::captureState() const
 {
     const juce::ScopedLock sl (lock);
     ProjectState s;
     s.bpm = bpm;
-    s.masterGain = masterGain;
+    s.master = captureTrack (*master);
 
     for (auto& t : tracks)
     {
-        TrackState ts;
-        ts.name = t->name;
-        ts.type = t->type;
-        ts.clips = t->clips;
-        ts.midiClips = t->midiClips;
-        ts.gain = t->gain;
-        ts.pan = t->pan;
-        ts.mute = t->mute;
-        ts.solo = t->solo;
-        ts.waveform = t->synth.waveform;
-        ts.synthValues[0] = t->synth.attack;
-        ts.synthValues[1] = t->synth.decay;
-        ts.synthValues[2] = t->synth.sustain;
-        ts.synthValues[3] = t->synth.release;
-        ts.synthValues[4] = t->synth.cutoff;
-        ts.instrument = t->instrument;
-        ts.inserts = t->inserts;
-        ts.midiFx = t->midiFx;
-        ts.sequencer = t->sequencer;
-        ts.recordArmed = t->recordArmed;
+        TrackState ts = captureTrack (*t);
         for (auto& route : t->midiOuts)
             for (size_t k = 0; k < tracks.size(); ++k)
                 if (tracks[k].get() == route.target)
                     ts.midiOuts.push_back ({ (int) k, route.channel });
-        ts.autoLanes.push_back ({ "volume", t->autoVolume.points, t->autoVolume.active.load() });
-        ts.autoLanes.push_back ({ "pan", t->autoPan.points, t->autoPan.active.load() });
-        for (auto& lane : t->autoLanes)
-            ts.autoLanes.push_back ({ lane->id, lane->points, lane->active.load() });
-        ts.kit = t->kit;
-        t->fx.forEachFloat ([&ts] (const char*, std::atomic<float>& v) { ts.fxFloats.push_back (v.load()); });
-        t->fx.forEachBool ([&ts] (const char*, std::atomic<bool>& v) { ts.fxBools.push_back (v.load() ? 1 : 0); });
         s.tracks.push_back (std::move (ts));
     }
     return s;
@@ -910,48 +995,8 @@ void Engine::restoreState (const ProjectState& s)
     for (auto& ts : s.tracks)
     {
         auto t = std::make_unique<Track>();
-        t->name = ts.name;
         t->type = ts.type;
-        t->clips = ts.clips;
-        t->midiClips = ts.midiClips;
-        t->gain = ts.gain;
-        t->pan = ts.pan;
-        t->mute = ts.mute;
-        t->solo = ts.solo;
-        t->synth.waveform = ts.waveform;
-        t->synth.attack = ts.synthValues[0];
-        t->synth.decay = ts.synthValues[1];
-        t->synth.sustain = ts.synthValues[2];
-        t->synth.release = ts.synthValues[3];
-        t->synth.cutoff = ts.synthValues[4];
-
-        size_t fi = 0, bi = 0;
-        t->fx.forEachFloat ([&] (const char*, std::atomic<float>& v) { if (fi < ts.fxFloats.size()) v = ts.fxFloats[fi]; ++fi; });
-        t->fx.forEachBool ([&] (const char*, std::atomic<bool>& v) { if (bi < ts.fxBools.size()) v = ts.fxBools[bi] != 0; ++bi; });
-
-        t->instrument = ts.instrument;
-        t->inserts = ts.inserts;
-        t->midiFx = ts.midiFx;
-        t->kit = ts.kit;
-        // lanes last: they bind to the effect/synth parameters and plugins assigned above
-        for (auto& ls : ts.autoLanes)
-        {
-            if (ls.id == "volume")
-            {
-                t->autoVolume.points = ls.points;
-                t->autoVolume.active = ls.active;
-            }
-            else if (ls.id == "pan")
-            {
-                t->autoPan.points = ls.points;
-                t->autoPan.active = ls.active;
-            }
-            else if (auto* lane = ensureLane (*t, ls.id))
-            {
-                lane->points = ls.points;
-                lane->active = ls.active;
-            }
-        }
+        applyTrackState (*t, ts);
 
         t->fxState = std::make_unique<TrackFx>();
         t->fxState->prepare (sampleRate);
@@ -975,10 +1020,10 @@ void Engine::restoreState (const ProjectState& s)
     }
 
     bpm = s.bpm;
-    masterGain = s.masterGain;
     {
         const juce::ScopedLock sl (lock);
         tracks.swap (fresh);
+        applyTrackState (*master, s.master);   // master channel: volume, effects, plugins, automation
     }
     // `fresh` now holds the old tracks and is destroyed here, outside the lock
 }
@@ -1043,6 +1088,10 @@ bool Engine::anySynthActive() const
 
 void Engine::silenceSynths()
 {
+    master->fxState->reset();
+    for (auto& p : master->inserts)
+        p->instance->reset();
+
     for (auto& t : tracks)
     {
         if (t->voices != nullptr)
@@ -1067,6 +1116,8 @@ void Engine::silenceSynths()
 double Engine::getRenderTailSeconds() const
 {
     const juce::ScopedLock sl (lock);
+    if (master->fx.hasTail() || ! master->inserts.empty())
+        return 3.0;
     for (auto& t : tracks)
         if (t->fx.hasTail() || t->instrument != nullptr || ! t->inserts.empty())
             return 3.0;
@@ -1110,14 +1161,14 @@ void Engine::getNextAudioBlock (const juce::AudioSourceChannelInfo& info)
 
     if (offlineRendering)   // an export is using the mixer: stay silent and out of its way
     {
-        masterLevel = 0.0f;
+        setMasterLevel (0.0f);
         return;
     }
 
     const juce::ScopedTryLock sl (lock);
     if (! sl.isLocked())
     {
-        masterLevel = 0.0f;
+        setMasterLevel (0.0f);
         return;
     }
 
@@ -1137,7 +1188,7 @@ void Engine::getNextAudioBlock (const juce::AudioSourceChannelInfo& info)
         if (! anySynthActive())
         {
             for (auto& t : tracks) t->level = 0.0f;
-            masterLevel = 0.0f;
+            setMasterLevel (0.0f);
             return;
         }
     }
@@ -1638,6 +1689,40 @@ void Engine::mixBlock (float* outL, float* outR, int n, juce::int64 pos, bool wi
         t->level = peak * g;
     }
 
+    // ---- Master channel: effects and plugin inserts on the summed tracks, run in slices while its parameters
+    // are automated. Stems skip it (renderMaster == false) so they add up to the mix.
+    if (renderMaster && outR != nullptr)
+    {
+        auto& m = *master;
+        bool sliced = false;
+        if (running)
+            for (auto& lane : m.autoLanes)
+                sliced = sliced || (lane->active && ! lane->points.empty());
+        const int slice = sliced ? 64 : juce::jmax (1, n);
+        for (int s = 0; s < n; s += slice)
+        {
+            const int len = juce::jmin (slice, n - s);
+            if (sliced)
+                applyAutomation (m, (double) (pos + s) / sampleRate);
+            if (m.fx.anyOn())
+                m.fxState->process (outL + s, outR + s, len, m.fx);
+            for (auto& p : m.inserts)
+                if (! p->bypass)
+                    processInsert (*p, outL + s, outR + s, len);
+        }
+    }
+
+    // master volume, possibly automated: evaluated at both ends of the block and ramped in between
+    float masterGain0 = 1.0f, masterGain1 = 1.0f;
+    if (renderMaster)
+    {
+        auto& m = *master;
+        const bool autoVol = m.autoVolume.active && ! m.autoVolume.points.empty();
+        masterGain0 = autoVol ? evalAutomation (m.autoVolume.points, (double) pos / sampleRate, m.gain) : m.gain.load();
+        masterGain1 = autoVol ? evalAutomation (m.autoVolume.points, (double) (pos + n) / sampleRate, m.gain) : masterGain0;
+        m.effGain = masterGain0;
+    }
+
     if (withMetronome)
     {
         const double samplesPerBeat = sampleRate * 60.0 / juce::jmax (20.0f, bpm.load());
@@ -1665,10 +1750,11 @@ void Engine::mixBlock (float* outL, float* outR, int n, juce::int64 pos, bool wi
     };
 
     // Stems skip the master volume and the limiter, so that they add up to the mix instead of being limited one by one.
-    const float mg = renderMaster ? masterGain.load() : 1.0f;
+    const float masterRamp = n > 0 ? 1.0f / (float) n : 0.0f;
     float mp = 0.0f;
     for (int i = 0; i < n; ++i)
     {
+        const float mg = masterGain0 + (masterGain1 - masterGain0) * (float) i * masterRamp;
         outL[i] = renderMaster ? softClip (outL[i] * mg) : outL[i];
         mp = juce::jmax (mp, std::abs (outL[i]));
         if (outR)
@@ -1677,7 +1763,7 @@ void Engine::mixBlock (float* outL, float* outR, int n, juce::int64 pos, bool wi
             mp = juce::jmax (mp, std::abs (outR[i]));
         }
     }
-    masterLevel = mp;
+    setMasterLevel (mp);
 }
 
 // True if a track has something to put in a stem: clips, or notes routed to it by a sequencer plugin.
