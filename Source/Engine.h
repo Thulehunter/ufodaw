@@ -24,6 +24,13 @@ struct Clip
     double offset = 0.0;  // where in the source audio the clip begins (seconds)
     double length = 0.0;  // how long the clip plays (seconds)
 
+    // Takes: clips of one group are alternatives for the same spot (a loop recording makes one per pass); only the
+    // active one plays and shows. takeGroup 0 = an ordinary clip.
+    int takeGroup = 0;
+    int takeIndex = 0;    // 1, 2, 3 ... in recording order
+    bool takeActive = true;
+    bool audible() const { return takeGroup == 0 || takeActive; }
+
     double end() const { return start + length; }
     double sourceLength() const { return audio != nullptr && fileRate > 0 ? audio->getNumSamples() / fileRate : 0.0; }
 };
@@ -251,6 +258,14 @@ public:
     bool getClip (const Track&, int clipId, Clip& out) const;
     bool setClipRegion (Track&, int clipId, double start, double offset, double length);
 
+    // Takes (see Clip::takeGroup). addTakes puts the clips in one group, the last one active, and returns its id.
+    int addTakes (Track&, std::vector<Clip>);
+    std::vector<Clip> getTakes (const Track&, int clipId) const;   // every take of the clip's group, in order (just itself without takes)
+    bool setActiveTake (Track&, int clipId);                       // this one plays, the others of its group are silent
+    bool deleteTake (Track&, int clipId);                          // removes only this take
+    bool flattenTakes (Track&, int clipId);                        // keeps this take as an ordinary clip, drops the others
+    void setClipTake (Track&, int clipId, int group, int index, bool active);   // project loading
+
     // ---- Message thread: MIDI clips
     int addMidiClip (Track&, double startSeconds, double lengthSeconds);
     std::vector<MidiClip> getMidiClips (const Track&) const;
@@ -328,6 +343,24 @@ public:
     bool startRecording (const std::vector<RecordTarget>&);   // false (nothing recording) if any file cannot be created
     void stopRecording();
     bool isRecording() const { return recordingActive.load(); }
+
+    // Punch in/out: while enabled, a recording only captures between punchIn and punchOut (seconds). When the punch-out
+    // has passed, punchFinished() turns true (the transport keeps running; the app then closes the recording).
+    std::atomic<bool> punchEnabled { false };
+    std::atomic<double> punchIn { 0.0 }, punchOut { 0.0 };
+    bool punchFinished() const { return punchDone.load(); }
+    double recordedStartSeconds() const   // where on the timeline the first recorded sample lies; -1 if nothing yet
+    {
+        const auto s = recFirstSample.load();
+        return s < 0 ? -1.0 : (double) s / sampleRate;
+    }
+
+    // Tuner: while a channel is set (numbered among the enabled input channels, like RecordTarget), the audio thread keeps
+    // the latest input samples of that channel for readTunerSamples(). -1 = off.
+    static constexpr int tunerRingSize = 8192;
+    void setTunerChannel (int c) { tunerChannel = c; }
+    int getTunerChannel() const { return tunerChannel.load(); }
+    bool readTunerSamples (float* dest, int n) const;   // the newest n samples, oldest first; false when the tuner is off
 
     void play()  { playing = true; }
     void stop()  { playing = false; }
@@ -426,6 +459,13 @@ private:
     };
     std::vector<Recorder> recorders;                // guarded by recLock; the audio thread only try-locks it
     std::atomic<bool> recordingActive { false };
+    std::atomic<bool> punchDone { false };
+    std::atomic<juce::int64> recFirstSample { -1 };
+    int nextTakeGroup = 1;
+
+    std::array<float, tunerRingSize> tunerRing {};
+    std::atomic<int> tunerChannel { -1 };
+    std::atomic<juce::int64> tunerWritePos { 0 };
 
     // The device input of the block being mixed, copied before the output buffer is cleared (all channels): what
     // armed tracks with Monitor on play back through their effects and fader.

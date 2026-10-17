@@ -368,6 +368,17 @@ public:
             g.fillRect (x1, getHeight() - 3, x2 - x1, 3);
         }
 
+        const double punchA = engine.punchIn, punchB = engine.punchOut;
+        if (punchB > punchA)   // punch region: the top half of the ruler in red
+        {
+            const int x1 = (int) (punchA * pps - scroll), x2 = (int) (punchB * pps - scroll);
+            const bool on = engine.punchEnabled;
+            g.setColour ((on ? Theme::redBright : Theme::textFaint).withAlpha (on ? 0.5f : 0.22f));
+            g.fillRect (x1, 0, x2 - x1, getHeight() / 2);
+            g.setColour (on ? Theme::redBright : Theme::textFaint);
+            g.fillRect (x1, 0, x2 - x1, 3);
+        }
+
         const int labelEvery = juce::jmax (1, (int) std::ceil (60.0 / (bar * pps)));
         const int firstBar = (int) std::floor (scroll / (bar * pps));
 
@@ -396,10 +407,11 @@ public:
         g.drawHorizontalLine (getHeight() - 1, 0.0f, (float) getWidth());
     }
 
-    // left button: playhead; right button: drag out the loop region
+    // left button: playhead; right button: drag out the loop region (with Shift: the punch region)
     void mouseDown (const juce::MouseEvent& e) override
     {
         loopDragging = e.mods.isPopupMenu();
+        punchDragging = loopDragging && e.mods.isShiftDown();
         if (loopDragging)
             loopAnchor = main.snapTime (timeAt (e.x));
         else
@@ -411,7 +423,10 @@ public:
         if (loopDragging)
         {
             const double t = main.snapTime (timeAt (e.x));
-            main.setLoopRegion (juce::jmin (loopAnchor, t), juce::jmax (loopAnchor, t));
+            if (punchDragging)
+                main.setPunchRegion (juce::jmin (loopAnchor, t), juce::jmax (loopAnchor, t));
+            else
+                main.setLoopRegion (juce::jmin (loopAnchor, t), juce::jmax (loopAnchor, t));
         }
         else
         {
@@ -419,13 +434,13 @@ public:
         }
     }
 
-    void mouseUp (const juce::MouseEvent&) override { loopDragging = false; }
+    void mouseUp (const juce::MouseEvent&) override { loopDragging = punchDragging = false; }
 
 private:
     double timeAt (int x) const { return juce::jmax (0.0, (x + main.getScrollX()) / main.getPixelsPerSecond()); }
     void move (const juce::MouseEvent& e) { main.setPlayhead (timeAt (e.x)); }
 
-    bool loopDragging = false;
+    bool loopDragging = false, punchDragging = false;
     double loopAnchor = 0.0;
 
     MainComponent& main;
@@ -471,6 +486,8 @@ public:
 
         for (auto& c : clips)
         {
+            if (! c.audible())
+                continue;
             const auto r = clipRect (c, pps);
             if (! r.intersects (area))
                 continue;
@@ -497,7 +514,15 @@ public:
             g.reduceClipRegion (r.reduced (2));
             g.setColour (Theme::text.withAlpha (0.85f));
             g.setFont (11.0f);
-            g.drawText (c.sourceFile.getFileNameWithoutExtension(), r.getX() + 5, r.getY() + 2, 400, 13, juce::Justification::left);
+            auto label = c.sourceFile.getFileNameWithoutExtension();
+            if (c.takeGroup != 0)
+            {
+                int count = 0;
+                for (auto& other : clips)
+                    count += other.takeGroup == c.takeGroup ? 1 : 0;
+                label = "Take " + juce::String (c.takeIndex) + " of " + juce::String (count) + "  (right-click to choose)";
+            }
+            g.drawText (label, r.getX() + 5, r.getY() + 2, 400, 13, juce::Justification::left);
             g.restoreState();
         }
 
@@ -925,7 +950,8 @@ private:
     {
         std::vector<Hit> out;
         for (auto& c : main.getEngine().getClips (track))
-            out.push_back ({ c.id, c.start, c.length, false });
+            if (c.audible())   // inactive takes are hidden
+                out.push_back ({ c.id, c.start, c.length, false });
         for (auto& m : main.getEngine().getMidiClips (track))
             out.push_back ({ m.id, m.start, m.length, true });
         std::reverse (out.begin(), out.end());
@@ -1157,6 +1183,20 @@ MainComponent::MainComponent()
     loopButton.setWantsKeyboardFocus (false);
     loopButton.onClick = [this] { toggleLoop(); grabKeyboardFocus(); };
     addAndMakeVisible (loopButton);
+
+    punchButton.setClickingTogglesState (true);
+    punchButton.setColour (juce::TextButton::buttonOnColourId, Theme::redBright);
+    punchButton.setTooltip ("Punch in/out (P): a recording only captures inside the red punch region. Shift + right-drag on the ruler sets it. "
+                            "Press Record before the region: playback starts a bar ahead and recording starts and stops by itself.");
+    punchButton.setWantsKeyboardFocus (false);
+    punchButton.onClick = [this] { togglePunch(); grabKeyboardFocus(); };
+    addAndMakeVisible (punchButton);
+
+    tunerButton.setTooltip ("Tuner: shows the note and how many cents off it is, for the input you pick (default: the armed track's input)");
+    tunerButton.setWantsKeyboardFocus (false);
+    tunerButton.onClick = [this] { openTuner(); };
+    addAndMakeVisible (tunerButton);
+
     undoButton.onClick = [this] { undo(); };
     redoButton.onClick = [this] { redo(); };
     updateUndoButtons();
@@ -1739,6 +1779,84 @@ void MainComponent::toggleLoop()
     repaint();
 }
 
+void MainComponent::togglePunch()
+{
+    const bool on = punchButton.getToggleState();
+    if (on && engine.punchOut <= engine.punchIn)   // no region yet: the selected clip, else two bars from the playhead's bar
+    {
+        double a = 0.0, b = 0.0;
+        Clip ac;
+        MidiClip mc;
+        if (selTrack != nullptr && selClip >= 0 && engine.getClip (*selTrack, selClip, ac))
+            a = ac.start, b = ac.end();
+        else if (selTrack != nullptr && selClip >= 0 && engine.getMidiClip (*selTrack, selClip, mc))
+            a = mc.start, b = mc.end();
+        else
+        {
+            const double bar = barSeconds();
+            a = std::floor (engine.getPositionSeconds() / bar) * bar;
+            b = a + 2.0 * bar;
+        }
+        engine.punchIn = a;
+        engine.punchOut = b;
+    }
+    engine.punchEnabled = on;
+    ruler->repaint();
+    repaint();
+}
+
+void MainComponent::setPunchRegion (double a, double b)
+{
+    if (b - a < beatSeconds() * 0.5)
+        return;
+    engine.punchIn = a;
+    engine.punchOut = b;
+    engine.punchEnabled = true;
+    punchButton.setToggleState (true, juce::dontSendNotification);
+    ruler->repaint();
+    repaint();
+}
+
+void MainComponent::openTuner()
+{
+    if (tunerWindow != nullptr)
+    {
+        tunerWindow.reset();
+        return;
+    }
+
+    auto* device = deviceManager.getCurrentAudioDevice();
+    juce::StringArray names;
+    if (device != nullptr)
+    {
+        const auto active = device->getActiveInputChannels();
+        const auto all = device->getInputChannelNames();
+        for (int i = 0, n = 0; i < all.size(); ++i)
+            if (active[i])
+                names.add ("Input " + juce::String (++n) + " (" + all[i] + ")");
+    }
+    if (names.isEmpty())
+    {
+        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "No audio input",
+                                                "The tuner needs an audio input. Check the device under Audio...");
+        return;
+    }
+
+    int first = 0;   // the input of the first armed audio track
+    for (int i = 0; i < engine.getNumTracks(); ++i)
+        if (auto* t = engine.getTrack (i); t->type == Track::Type::Audio && t->recordArmed)
+        {
+            first = juce::jlimit (0, names.size() - 1, t->inputFirst);
+            break;
+        }
+
+    juce::Component::SafePointer<MainComponent> safe (this);
+    tunerWindow = std::make_unique<TunerWindow> (engine, names, first, [safe]
+    {
+        juce::MessageManager::callAsync ([safe] { if (safe != nullptr) safe->tunerWindow.reset(); });
+    });
+}
+
 void MainComponent::loopToSelection()
 {
     if (selTrack == nullptr || selClip < 0)
@@ -2009,6 +2127,7 @@ void MainComponent::resized()
     keysButton.setBounds (getWidth() - 100, getHeight() - bottomBarHeight + 18, 90, 24);
     pluginsButton.setBounds (getWidth() - 100 - 96, getHeight() - bottomBarHeight + 16, 90, 28);
     audioButton.setBounds (getWidth() - 100 - 96 - 84, getHeight() - bottomBarHeight + 16, 78, 28);
+    tunerButton.setBounds (getWidth() - 100 - 96 - 84 - 72, getHeight() - bottomBarHeight + 16, 66, 28);
 
     // transport: centred along the bottom
     constexpr int tb = 44, gap = 10;
@@ -2021,6 +2140,7 @@ void MainComponent::resized()
         bx += tb + gap;
     }
     loopButton.setBounds (bx + 6, by + 8, 60, tb - 16);
+    punchButton.setBounds (bx + 6 + 60 + 6, by + 8, 60, tb - 16);
 
     // snap + zoom live in the corner above the track headers
     auto corner = juce::Rectangle<int> (0, topBarHeight, controlsWidth, rulerHeight).reduced (6, 2);
@@ -2075,6 +2195,22 @@ void MainComponent::paintOverChildren (juce::Graphics& g)
         {
             g.setColour (Theme::orange.withAlpha (0.07f));
             g.fillRect (x1, lanesArea.getY(), x2 - x1, lanesArea.getHeight());
+        }
+    }
+
+    // punch region: where a recording is captured, as a faint red wash
+    if (engine.punchEnabled && engine.punchOut > engine.punchIn)
+    {
+        const auto lanesArea = laneViewport.getBounds();
+        const int x1 = juce::jmax (lanesArea.getX(), lanesArea.getX() + (int) (engine.punchIn * pixelsPerSecond) - getScrollX());
+        const int x2 = juce::jmin (lanesArea.getRight(), lanesArea.getX() + (int) (engine.punchOut * pixelsPerSecond) - getScrollX());
+        if (x2 > x1)
+        {
+            g.setColour (Theme::redBright.withAlpha (0.10f));
+            g.fillRect (x1, lanesArea.getY(), x2 - x1, lanesArea.getHeight());
+            g.setColour (Theme::redBright.withAlpha (0.6f));
+            g.fillRect (x1, lanesArea.getY(), 1, lanesArea.getHeight());
+            g.fillRect (x2 - 1, lanesArea.getY(), 1, lanesArea.getHeight());
         }
     }
 
@@ -2235,6 +2371,9 @@ void MainComponent::pasteClip (Track* target, double at)
     else
     {
         Clip c = clipboard.audio;
+        c.takeGroup = 0;   // a pasted take is an ordinary clip
+        c.takeIndex = 0;
+        c.takeActive = true;
         c.start = juce::jmax (0.0, at);
         id = engine.addClip (*target, std::move (c));
     }
@@ -2266,18 +2405,58 @@ void MainComponent::showClipMenu (Track& track, int clipId, double at, juce::Com
     m.addItem (5, "Duplicate\tCtrl+D", onClip);
     m.addItem (6, "Delete\tDel", onClip);
 
+    // takes of a loop recording (or of a clip that was split from one): pick which plays
+    std::vector<Clip> takes;
+    if (onClip && track.type == Track::Type::Audio)
+        takes = engine.getTakes (track, clipId);
+    if (takes.size() > 1)
+    {
+        m.addSeparator();
+        juce::PopupMenu takeMenu;
+        for (size_t i = 0; i < takes.size(); ++i)
+            takeMenu.addItem (100 + (int) i, "Take " + juce::String (takes[i].takeIndex), true, takes[i].takeActive);
+        m.addSubMenu ("Choose take", takeMenu);
+        m.addItem (7, "Keep this take, drop the others");
+        m.addItem (8, "Delete only this take");
+    }
+
     juce::Component::SafePointer<MainComponent> safe (this);
     Track* tr = &track;
     juce::ignoreUnused (source);
     m.showMenuAsync (juce::PopupMenu::Options().withTargetScreenArea (
                          juce::Rectangle<int> (1, 1).withCentre (juce::Desktop::getMousePosition())),
-                     [safe, tr, clipId, when] (int r)
+                     [safe, tr, clipId, when, takes] (int r)
     {
         if (safe == nullptr || r == 0)
             return;
         auto& self = *safe;
+
+        if (r >= 100 && r - 100 < (int) takes.size())
+        {
+            self.beginEdit();
+            const int chosen = takes[(size_t) (r - 100)].id;
+            self.engine.setActiveTake (*tr, chosen);
+            self.selectClip (tr, chosen);
+            self.clipsChanged();
+            return;
+        }
+
         switch (r)
         {
+            case 7:
+            case 8:
+            {
+                self.beginEdit();
+                if (r == 7)
+                    self.engine.flattenTakes (*tr, clipId);
+                else
+                {
+                    self.engine.deleteTake (*tr, clipId);
+                    self.selectClip (nullptr, -1);
+                }
+                self.clipsChanged();
+                break;
+            }
             case 1: self.copySelected (true); break;
             case 2: self.copySelected (false); break;
             case 3: self.pasteClip (tr, when); break;
@@ -2377,6 +2556,12 @@ bool MainComponent::keyPressed (const juce::KeyPress& k)
     if (k == juce::KeyPress::spaceKey)  { if (engine.isPlaying()) pausePlayback(); else startPlayback(); return true; }
     if (k == juce::KeyPress::returnKey) { rewindButton.triggerClick(); return true; }
     if (k.getKeyCode() == 'R' && ! mods.isAnyModifierKeyDown()) { toggleRecording(); return true; }
+    if (k.getKeyCode() == 'P' && ! mods.isAnyModifierKeyDown())
+    {
+        punchButton.setToggleState (! punchButton.getToggleState(), juce::dontSendNotification);
+        togglePunch();
+        return true;
+    }
     if (k == juce::KeyPress::deleteKey || k == juce::KeyPress::backspaceKey) { deleteSelected(); return true; }
     if (k.getKeyCode() == 'S' && ! mods.isAnyModifierKeyDown()) { splitAtPlayhead(); return true; }
     return false;
@@ -2387,6 +2572,9 @@ void MainComponent::timerCallback()
     const double p = engine.getPositionSeconds();
     const int mins = (int) (p / 60.0);
     timeLabel.setText (juce::String::formatted ("%02d:%06.3f", mins, p - mins * 60.0), juce::dontSendNotification);
+
+    if (engine.isRecording() && engine.punchEnabled && engine.punchFinished())
+        finishRecording();   // the punch-out has passed: close the recording, playback carries on
 
     for (auto* h : headers)
         h->tick();
@@ -2515,7 +2703,18 @@ void MainComponent::toggleRecording()
         return;
     }
 
+    // Punch: from a stop (or from after the region) start a bar ahead of it, so there is a run-up.
+    if (engine.punchEnabled && engine.punchOut > engine.punchIn && ! engine.isPlaying()
+        && engine.getPositionSeconds() > engine.punchIn - 0.001)
+        setPlayhead (juce::jmax (0.0, engine.punchIn - barSeconds()));
+
     recStartSeconds = engine.getPositionSeconds();
+
+    // Recording while looping: every pass of the loop becomes a take (cut up when the recording ends).
+    recLoopStart = engine.loopStart;
+    recLoopEnd = engine.loopEnd;
+    recLoopTakes = ! engine.punchEnabled && engine.loopEnabled && recLoopEnd > recLoopStart + 0.05 && recStartSeconds < recLoopEnd;
+
     startPlayback();   // recording only captures while the transport runs
 }
 
@@ -2576,6 +2775,9 @@ void MainComponent::finishRecording()
     if (! engine.isRecording())
         return;
 
+    // the first recorded sample is where the clip starts (with punch that is the punch-in, or later)
+    const double recordedStart = engine.recordedStartSeconds();
+    const double clipStartSeconds = recordedStart >= 0.0 ? recordedStart : recStartSeconds;
     engine.stopRecording();
 
     // each recorded file becomes a clip where recording began: on its armed track, or on a new track
@@ -2588,13 +2790,48 @@ void MainComponent::finishRecording()
         if (! intoArmedTrack)
             t = engine.addTrack (rec.file.getFileNameWithoutExtension());
 
-        const int id = engine.addClipFromFile (*t, rec.file, recStartSeconds);
+        int id = engine.addClipFromFile (*t, rec.file, clipStartSeconds);
         if (id < 0)
         {
             if (! intoArmedTrack)
                 engine.removeTrack (t);
             rec.file.deleteFile();
             continue;
+        }
+
+        // A loop recording is cut at the loop end into one take per pass; the newest plays, the others can be chosen.
+        Clip whole;
+        if (recLoopTakes && engine.getClip (*t, id, whole) && whole.audio != nullptr)
+        {
+            const double sr = engine.getSampleRate();
+            const auto loopStartS = (juce::int64) (recLoopStart * sr), loopEndS = (juce::int64) (recLoopEnd * sr);
+            const auto passS = loopEndS - loopStartS;
+            const auto firstS = loopEndS - (juce::int64) std::llround (clipStartSeconds * sr);
+            const auto totalS = (juce::int64) whole.audio->getNumSamples();
+
+            if (passS > 0 && firstS > 0 && totalS > firstS + (juce::int64) (0.05 * sr))
+            {
+                std::vector<Clip> takes;
+                auto take = whole;
+                take.length = (double) firstS / sr;   // the first pass: from where recording began to the loop end
+                takes.push_back (take);
+                for (juce::int64 off = firstS; off < totalS; off += passS)
+                {
+                    const auto len = juce::jmin (passS, totalS - off);
+                    if (len < (juce::int64) (0.05 * sr))
+                        break;
+                    take = whole;
+                    take.start = recLoopStart;
+                    take.offset = (double) off / sr;
+                    take.length = (double) len / sr;
+                    takes.push_back (take);
+                }
+                if (takes.size() > 1)
+                {
+                    engine.deleteClip (*t, id);
+                    id = engine.addTakes (*t, std::move (takes));
+                }
+            }
         }
 
         if (! intoArmedTrack)
@@ -2771,6 +3008,12 @@ void MainComponent::saveProject (const juce::File& file)
             co->setProperty ("start", c.start);
             co->setProperty ("offset", c.offset);
             co->setProperty ("length", c.length);
+            if (c.takeGroup != 0)
+            {
+                co->setProperty ("takeGroup", c.takeGroup);
+                co->setProperty ("takeIndex", c.takeIndex);
+                co->setProperty ("takeActive", c.takeActive);
+            }
             clipList.add (juce::var (co));
         }
 
@@ -2868,6 +3111,9 @@ void MainComponent::saveProject (const juce::File& file)
     root->setProperty ("loopEnabled", engine.loopEnabled.load());
     root->setProperty ("loopStart", engine.loopStart.load());
     root->setProperty ("loopEnd", engine.loopEnd.load());
+    root->setProperty ("punchIn", engine.punchIn.load());
+    root->setProperty ("punchOut", engine.punchOut.load());
+    root->setProperty ("punchEnabled", engine.punchEnabled.load());
     root->setProperty ("tracks", trackList);
 
     if (file.replaceWithText (juce::JSON::toString (juce::var (root))))
@@ -2934,6 +3180,10 @@ void MainComponent::loadProject (const juce::File& file)
 
     engine.loopStart = (double) root.getProperty ("loopStart", 0.0);
     engine.loopEnd = (double) root.getProperty ("loopEnd", 0.0);
+    engine.punchIn = (double) root.getProperty ("punchIn", 0.0);
+    engine.punchOut = (double) root.getProperty ("punchOut", 0.0);
+    engine.punchEnabled = (bool) root.getProperty ("punchEnabled", false);
+    punchButton.setToggleState (engine.punchEnabled, juce::dontSendNotification);
     engine.loopEnabled = (bool) root.getProperty ("loopEnabled", false);
     loopButton.setToggleState (engine.loopEnabled, juce::dontSendNotification);
 
@@ -2993,6 +3243,8 @@ void MainComponent::loadProject (const juce::File& file)
             engine.setClipRegion (*t, id, start,
                                   v.getProperty ("offset", 0.0),
                                   v.getProperty ("length", c.sourceLength()));
+            if ((int) v.getProperty ("takeGroup", 0) != 0)
+                engine.setClipTake (*t, id, v["takeGroup"], v.getProperty ("takeIndex", 1), v.getProperty ("takeActive", true));
         };
 
         if (isMidi)

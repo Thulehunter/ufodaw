@@ -298,6 +298,8 @@ bool Engine::startRecording (const std::vector<RecordTarget>& targets)
         fresh.push_back (std::move (r));
     }
 
+    punchDone = false;
+    recFirstSample = -1;
     {
         const juce::SpinLock::ScopedLockType sl (recLock);
         recorders.swap (fresh);
@@ -315,6 +317,16 @@ void Engine::stopRecording()
         old.swap (recorders);
     }
     old.clear();   // flushes what is left and closes the files
+}
+
+bool Engine::readTunerSamples (float* dest, int n) const
+{
+    if (tunerChannel.load() < 0 || n <= 0 || n > tunerRingSize)
+        return false;
+    const auto end = tunerWritePos.load();
+    for (int i = 0; i < n; ++i)
+        dest[i] = tunerRing[(size_t) ((end - n + i + 8 * (juce::int64) tunerRingSize) % tunerRingSize)];
+    return true;
 }
 
 bool Engine::anyMonitoring() const
@@ -492,6 +504,123 @@ int Engine::addClip (Track& track, Clip c)
     return track.clips.back().id;
 }
 
+int Engine::addTakes (Track& track, std::vector<Clip> clips)
+{
+    if (clips.empty())
+        return -1;
+    if (clips.size() == 1)
+        return addClip (track, std::move (clips[0]));
+
+    const juce::ScopedLock sl (lock);
+    const int group = nextTakeGroup++;
+    int activeId = -1;
+    for (size_t i = 0; i < clips.size(); ++i)
+    {
+        auto c = std::move (clips[i]);
+        c.id = nextClipId++;
+        c.takeGroup = group;
+        c.takeIndex = (int) i + 1;
+        c.takeActive = i + 1 == clips.size();   // the newest take plays
+        if (c.takeActive)
+            activeId = c.id;
+        track.clips.push_back (std::move (c));
+    }
+    return activeId;
+}
+
+std::vector<Clip> Engine::getTakes (const Track& t, int id) const
+{
+    const juce::ScopedLock sl (lock);
+    std::vector<Clip> out;
+    const auto* c = findClip (t, id);
+    if (c == nullptr)
+        return out;
+    if (c->takeGroup == 0)
+        return { *c };
+    for (auto& other : t.clips)
+        if (other.takeGroup == c->takeGroup)
+            out.push_back (other);
+    std::sort (out.begin(), out.end(), [] (auto& a, auto& b) { return a.takeIndex < b.takeIndex; });
+    return out;
+}
+
+bool Engine::setActiveTake (Track& t, int id)
+{
+    const juce::ScopedLock sl (lock);
+    auto* c = findClip (t, id);
+    if (c == nullptr || c->takeGroup == 0)
+        return false;
+    for (auto& other : t.clips)
+        if (other.takeGroup == c->takeGroup)
+            other.takeActive = other.id == id;
+    return true;
+}
+
+bool Engine::deleteTake (Track& t, int id)
+{
+    const juce::ScopedLock sl (lock);
+    auto* c = findClip (t, id);
+    if (c == nullptr)
+        return false;
+    const int group = c->takeGroup;
+    const bool wasActive = c->takeActive;
+    t.clips.erase (t.clips.begin() + (c - t.clips.data()));
+    if (group == 0)
+        return true;
+
+    Clip* last = nullptr;
+    int count = 0;
+    for (auto& other : t.clips)
+        if (other.takeGroup == group)
+        {
+            ++count;
+            if (last == nullptr || other.takeIndex > last->takeIndex)
+                last = &other;
+        }
+    if (count == 1)
+    {
+        last->takeGroup = 0;
+        last->takeIndex = 0;
+        last->takeActive = true;
+    }
+    else if (wasActive && last != nullptr)
+    {
+        last->takeActive = true;
+    }
+    return true;
+}
+
+bool Engine::flattenTakes (Track& t, int id)
+{
+    const juce::ScopedLock sl (lock);
+    auto* c = findClip (t, id);
+    if (c == nullptr || c->takeGroup == 0)
+        return false;
+    const int group = c->takeGroup;
+    t.clips.erase (std::remove_if (t.clips.begin(), t.clips.end(),
+                                   [id, group] (auto& o) { return o.takeGroup == group && o.id != id; }),
+                   t.clips.end());
+    if (auto* keep = findClip (t, id))
+    {
+        keep->takeGroup = 0;
+        keep->takeIndex = 0;
+        keep->takeActive = true;
+    }
+    return true;
+}
+
+void Engine::setClipTake (Track& t, int id, int group, int index, bool active)
+{
+    const juce::ScopedLock sl (lock);
+    if (auto* c = findClip (t, id))
+    {
+        c->takeGroup = group;
+        c->takeIndex = index;
+        c->takeActive = active;
+        nextTakeGroup = juce::jmax (nextTakeGroup, group + 1);
+    }
+}
+
 std::vector<Clip> Engine::getClips (const Track& t) const
 {
     const juce::ScopedLock sl (lock);
@@ -591,7 +720,14 @@ bool Engine::moveClip (Track& t, int id, double newStart)
     const juce::ScopedLock sl (lock);
     if (auto* c = findClip (t, id))
     {
-        c->start = juce::jmax (0.0, newStart);
+        // the takes of a group move together
+        const double delta = juce::jmax (0.0, newStart) - c->start;
+        const int group = c->takeGroup;
+        c->start += delta;
+        if (group != 0)
+            for (auto& other : t.clips)
+                if (other.takeGroup == group && other.id != id)
+                    other.start = juce::jmax (0.0, other.start + delta);
         return true;
     }
     if (auto* m = findMidiClip (t, id))
@@ -607,21 +743,41 @@ int Engine::splitClip (Track& t, int id, double at)
     constexpr double minPart = 0.01;
     const juce::ScopedLock sl (lock);
 
-    if (auto* c = findClip (t, id))
+    if (auto* c0 = findClip (t, id))
     {
-        if (at <= c->start + minPart || at >= c->end() - minPart)
+        if (at <= c0->start + minPart || at >= c0->end() - minPart)
             return -1;
 
-        Clip right = *c;
-        right.id = nextClipId++;
-        right.start = at;
-        right.offset = c->offset + (at - c->start);
-        right.length = c->end() - at;
-        c->length = at - c->start;   // `c` is not used after the push_back below
+        // Every take of the group that spans the cut is split, and the right-hand parts form a new group: each
+        // stretch of a comped recording can then pick its own take.
+        std::vector<int> ids { id };
+        const int oldGroup = c0->takeGroup;
+        if (oldGroup != 0)
+            for (auto& other : t.clips)
+                if (other.takeGroup == oldGroup && other.id != id)
+                    ids.push_back (other.id);
+        const int newGroup = oldGroup != 0 ? nextTakeGroup++ : 0;
 
-        const int newId = right.id;
-        t.clips.push_back (std::move (right));
-        return newId;
+        int result = -1;
+        for (const int cid : ids)
+        {
+            auto* c = findClip (t, cid);
+            if (c == nullptr || at <= c->start + minPart || at >= c->end() - minPart)
+                continue;
+
+            Clip right = *c;
+            right.id = nextClipId++;
+            right.start = at;
+            right.offset = c->offset + (at - c->start);
+            right.length = c->end() - at;
+            right.takeGroup = newGroup;
+            c->length = at - c->start;   // `c` is not used after the push_back below
+
+            if (cid == id)
+                result = right.id;
+            t.clips.push_back (std::move (right));
+        }
+        return result;
     }
 
     if (auto* m = findMidiClip (t, id))
@@ -678,6 +834,9 @@ int Engine::duplicateClip (Track& t, int id)
         Clip copy = *c;
         copy.id = nextClipId++;
         copy.start = c->end();
+        copy.takeGroup = 0;   // a copy is an ordinary clip
+        copy.takeIndex = 0;
+        copy.takeActive = true;
         const int newId = copy.id;
         t.clips.push_back (std::move (copy));
         return newId;
@@ -698,7 +857,10 @@ bool Engine::deleteClip (Track& t, int id)
 {
     const juce::ScopedLock sl (lock);
     const auto before = t.clips.size() + t.midiClips.size();
-    t.clips.erase (std::remove_if (t.clips.begin(), t.clips.end(), [id] (auto& c) { return c.id == id; }), t.clips.end());
+    const int group = findClip (t, id) != nullptr ? findClip (t, id)->takeGroup : 0;   // deleting a take set removes all its takes
+    t.clips.erase (std::remove_if (t.clips.begin(), t.clips.end(),
+                                   [id, group] (auto& c) { return c.id == id || (group != 0 && c.takeGroup == group); }),
+                   t.clips.end());
     t.midiClips.erase (std::remove_if (t.midiClips.begin(), t.midiClips.end(), [id] (auto& c) { return c.id == id; }),
                        t.midiClips.end());
     return t.clips.size() + t.midiClips.size() != before;
@@ -710,10 +872,19 @@ bool Engine::moveClipToTrack (Track& from, Track& to, int id)
         return false;
 
     const juce::ScopedLock sl (lock);
-    if (auto* c = findClip (from, id))
+    if (auto* c0 = findClip (from, id))
     {
-        to.clips.push_back (std::move (*c));
-        from.clips.erase (from.clips.begin() + (c - from.clips.data()));
+        std::vector<int> ids { id };   // the takes of a group travel together
+        if (c0->takeGroup != 0)
+            for (auto& other : from.clips)
+                if (other.takeGroup == c0->takeGroup && other.id != id)
+                    ids.push_back (other.id);
+        for (const int cid : ids)
+            if (auto* c = findClip (from, cid))
+            {
+                to.clips.push_back (std::move (*c));
+                from.clips.erase (from.clips.begin() + (c - from.clips.data()));
+            }
         return true;
     }
     if (auto* m = findMidiClip (from, id))
@@ -1243,15 +1414,43 @@ void Engine::getNextAudioBlock (const juce::AudioSourceChannelInfo& info)
     const int bufferChannels = info.buffer->getNumChannels();
     if (playing && recordingActive)
     {
-        const juce::SpinLock::ScopedTryLockType rl (recLock);
-        if (rl.isLocked())
-            for (auto& r : recorders)
+        // With punch on, only the part of this block inside [punchIn, punchOut) is written.
+        const auto blockPos = positionSamples.load();
+        int from = 0, to = info.numSamples;
+        if (punchEnabled)
+        {
+            const auto inS = (juce::int64) (punchIn * sampleRate), outS = (juce::int64) (punchOut * sampleRate);
+            from = (int) juce::jlimit<juce::int64> (0, info.numSamples, inS - blockPos);
+            to = (int) juce::jlimit<juce::int64> (0, info.numSamples, outS - blockPos);
+            if (blockPos + info.numSamples >= outS)
+                punchDone = true;
+        }
+
+        if (to > from)
+        {
+            const juce::SpinLock::ScopedTryLockType rl (recLock);
+            if (rl.isLocked())
             {
-                const float* in[2];
-                in[0] = info.buffer->getReadPointer (juce::jmin (r.first, bufferChannels - 1), info.startSample);
-                in[1] = r.count > 1 ? info.buffer->getReadPointer (juce::jmin (r.first + 1, bufferChannels - 1), info.startSample) : in[0];
-                r.writer->write (in, info.numSamples);
+                if (recFirstSample.load() < 0)
+                    recFirstSample = blockPos + from;
+                for (auto& r : recorders)
+                {
+                    const float* in[2];
+                    in[0] = info.buffer->getReadPointer (juce::jmin (r.first, bufferChannels - 1), info.startSample + from);
+                    in[1] = r.count > 1 ? info.buffer->getReadPointer (juce::jmin (r.first + 1, bufferChannels - 1), info.startSample + from) : in[0];
+                    r.writer->write (in, to - from);
+                }
             }
+        }
+    }
+
+    if (const int tc = tunerChannel.load(); tc >= 0 && tc < bufferChannels)
+    {
+        const float* src = info.buffer->getReadPointer (tc, info.startSample);
+        auto w = tunerWritePos.load();
+        for (int i = 0; i < info.numSamples; ++i, ++w)
+            tunerRing[(size_t) (w % tunerRingSize)] = src[i];
+        tunerWritePos = w;
     }
 
     inputChannelsCopied = juce::jmin (bufferChannels, inputBuf.getNumChannels());
@@ -1749,6 +1948,8 @@ void Engine::mixBlock (float* outL, float* outR, int n, juce::int64 pos, bool wi
         {
             if (! running)
                 break;   // stopped: only a monitored input is heard
+            if (! c.audible())
+                continue;   // an inactive take
             const double clipStart = c.start * sampleRate;
             const double clipEnd = c.end() * sampleRate;
             if ((double) (pos + n) <= clipStart || (double) pos >= clipEnd || c.audio == nullptr)

@@ -5,6 +5,7 @@
 #include "Engine.h"
 #include "PluginHost.h"
 #include "Theme.h"
+#include "Tuner.h"
 
 // Settings shared by the track headers and the lanes
 namespace UiSettings
@@ -123,6 +124,7 @@ public:
     juce::Component& getLaneHolder() { return laneHolder; }
     Track* trackAtY (int yInLaneHolder) const;       // the track whose lane contains this y, or nullptr
     void setLoopRegion (double startSeconds, double endSeconds);   // also switches looping on
+    void setPunchRegion (double startSeconds, double endSeconds);  // also switches punch on
     void openProject (const juce::File& file) { loadProject (file); }
     void openInstrumentEditor (Track&);   // the plugin window of the track's instrument (or first effect); the VST panel if none
     double getPixelsPerSecond() const { return pixelsPerSecond; }
@@ -189,6 +191,8 @@ private:
     void finishMidiRecording();
 
     void toggleLoop();
+    void togglePunch();
+    void openTuner();
     void loopToSelection();
     void openPlugins (Track&, juce::Component& anchor);
     void openAutomation (Track&, juce::Component& anchor);
@@ -278,6 +282,12 @@ private:
                     stopButton   { TransportButton::Stop,   "Stop" },
                     recordButton { TransportButton::Record, "Record (R)" };
     juce::TextButton loopButton { "Loop" }, pluginsButton { "Plugins..." };
+    juce::TextButton punchButton { "Punch" }, tunerButton { "Tuner" };
+    std::unique_ptr<TunerWindow> tunerWindow;
+
+    // what a loop/punch recording needs to know when it ends
+    bool recLoopTakes = false;
+    double recLoopStart = 0.0, recLoopEnd = 0.0;
     juce::TooltipWindow tooltipWindow { this };
     double playStartSeconds = 0.0;
     double recStartSeconds = 0.0;

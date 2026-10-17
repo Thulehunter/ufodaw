@@ -23,6 +23,7 @@ target_sources(MiniDAW PRIVATE
     Source/Engine.cpp
     Source/Theme.cpp
     Source/ExternalMidi.cpp
+    Source/Tuner.cpp
     Source/Synth.cpp
     Source/Fx.cpp
     Source/FxPanel.cpp
