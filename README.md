@@ -41,7 +41,9 @@ A small digital audio workstation for Windows, written in C++17 with [JUCE](http
   click adds a point, drag moves it, right-click deletes). The built-in synth ignores them.
 - **Effects per track** - 3-band EQ, compressor, delay, reverb, and a **Mono** button on every track, bus and the master (lit = mono): the channel
   plays with left and right summed - to check a source or the whole mix in mono, or to centre a stereo recording.
-- **VST3 hosting** - instruments and effects, with their own editor windows; plugin states are saved in the project.
+- **VST3 hosting** - instruments and effects, with their own editor windows; plugin states are saved in the project. Picking a plugin
+  (the instrument, or *+ Add effect plugin...*) opens a **search box**: type part of a name, a maker or a category ("kon", "reverb",
+  "native") and the list narrows; Up / Down move through it, Enter picks.
 - **MIDI routing** - a sequencer plugin on one track can play the synth (built-in, drum kit or VST) of one or more other tracks; plugins receive tempo, bar position and play state from the DAW.
 - **External hardware** - the MIDI notes of a track or sequencer plugin can play analog/hardware synths through any MIDI output, with channel selection.
 - **MIDI effects** - arpeggiators, chord tools and other MIDI plugins can sit in front of a track's instrument.
@@ -187,6 +189,7 @@ An arpeggiator or similar plugin that should change the notes of one track goes 
 | Volume curve of a clip | right-click the clip > *Edit volume curve* (click = add, drag = move, right-click = remove, `Esc` = done) |
 | New version / collect audio / backups | **Save As** button: its menu |
 | Sampler | **+ Track > Sampler**, then Load... (or drop an audio file on the track); right-click an audio clip > *Sample this clip* |
+| Find a plugin | VST panel > the Instrument button or *+ Add effect plugin...*: type to search by name, maker or category; Up / Down, Enter |
 | Fade in / out of an audio clip | drag the squares in the top corners of the clip; right-click > *Remove fades* |
 | Crossfade two clips | let the clips overlap a little, right-click one > *Crossfade with overlapping clip(s)* |
 | Reverse a clip | right-click > *Reverse* |

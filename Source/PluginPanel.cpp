@@ -1,4 +1,5 @@
 #include "PluginPanel.h"
+#include "PluginSearch.h"
 #include "Theme.h"
 
 namespace
@@ -26,32 +27,15 @@ PluginPanel::PluginPanel (Track& t, Engine& e, PluginHost& h, std::function<void
         instrumentLabel.setText (track.sequencer ? "Plugin" : "Instrument", juce::dontSendNotification);
         addAndMakeVisible (instrumentLabel);
 
-        instrumentBox.addItem (track.kit != nullptr ? "Built-in drum kit" : track.sampler != nullptr ? "Built-in sampler" : "Built-in synth", 1);
-        for (int pass = 0; pass < 2; ++pass)   // instruments first, then everything else
-        {
-            bool headingAdded = false;
+        for (int pass = 0; pass < 2; ++pass)   // instruments first, then everything else (effects, MIDI tools)
             for (auto& d : host.getList().getTypes())
                 if (d.isInstrument == (pass == 0))
-                {
-                    if (pass == 1 && ! headingAdded)
-                    {
-                        instrumentBox.addSeparator();
-                        instrumentBox.addSectionHeading ("Effects / MIDI tools / other");
-                        headingAdded = true;
-                    }
                     instruments.add (d);
-                    instrumentBox.addItem (d.name + "  (" + d.manufacturerName + ")", 100 + instruments.size() - 1);
-                }
-        }
-        int selected = 1;
-        if (track.instrument != nullptr)
-            for (int i = 0; i < instruments.size(); ++i)
-                if (instruments[i].uniqueId == track.instrument->description.uniqueId
-                    && instruments[i].name == track.instrument->description.name)
-                    selected = 100 + i;
-        instrumentBox.setSelectedId (selected, juce::dontSendNotification);
-        instrumentBox.onChange = [this] { chooseInstrument(); };
-        addAndMakeVisible (instrumentBox);
+
+        instrumentButton.setTooltip ("Pick the instrument: click, then type part of a name to search");
+        instrumentButton.onClick = [this] { openInstrumentSearch(); };
+        updateInstrumentButton();
+        addAndMakeVisible (instrumentButton);
 
         instrumentEdit.onClick = [this]
         {
@@ -161,31 +145,56 @@ void PluginPanel::refreshLayout()
 }
 
 //==============================================================================
-void PluginPanel::chooseInstrument()
+void PluginPanel::updateInstrumentButton()
 {
-    const int id = instrumentBox.getSelectedId();
-    beginEdit();
+    instrumentButton.setButtonText (track.instrument != nullptr
+                                        ? track.instrument->description.name + "  (" + track.instrument->description.manufacturerName + ")"
+                                        : track.kit != nullptr ? juce::String ("Built-in drum kit")
+                                                               : track.sampler != nullptr ? juce::String ("Built-in sampler") : juce::String ("Built-in synth"));
+}
 
-    if (track.instrument != nullptr)
-        host.closeEditorsFor (track.instrument.get());
+void PluginPanel::openInstrumentSearch()
+{
+    const juce::String builtIn = track.kit != nullptr ? "Built-in drum kit" : track.sampler != nullptr ? "Built-in sampler" : "Built-in synth";
 
-    if (id < 100)
-    {
-        engine.setInstrument (track, nullptr);
-        return;
-    }
+    // (the callbacks only use things that outlive this panel: the panel may be closed by the time something is picked)
+    auto* tr = &track;
+    auto* eng = &engine;
+    auto* h = &host;
+    auto begin = beginEdit;
+    auto candidates = instruments;
+    juce::Component::SafePointer<PluginPanel> safe (this);
 
-    juce::String error;
-    auto slot = host.createSlot (instruments[id - 100], engine, error);
-    if (slot == nullptr)
-    {
-        alert ("Cannot load plugin", error);
-        engine.setInstrument (track, nullptr);
-        instrumentBox.setSelectedId (1, juce::dontSendNotification);
-        return;
-    }
-    engine.setInstrument (track, slot);
-    host.showEditor (*slot);   // so the sound can be set up right away
+    juce::CallOutBox::launchAsynchronously (std::make_unique<PluginSearchPanel> (instruments, builtIn,
+        [tr, eng, h, begin, candidates, safe] (int index)
+        {
+            begin();
+            if (tr->instrument != nullptr)
+                h->closeEditorsFor (tr->instrument.get());
+
+            if (index < 0 || index >= candidates.size())
+            {
+                eng->setInstrument (*tr, nullptr);   // back to the built-in sound
+            }
+            else
+            {
+                juce::String error;
+                auto slot = h->createSlot (candidates[index], *eng, error);
+                if (slot == nullptr)
+                {
+                    juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Cannot load plugin", error);
+                    eng->setInstrument (*tr, nullptr);
+                }
+                else
+                {
+                    eng->setInstrument (*tr, slot);
+                    h->showEditor (*slot);   // so the sound can be set up right away
+                }
+            }
+            if (safe != nullptr)
+                safe->updateInstrumentButton();
+        }),
+        instrumentButton.getScreenBounds(), nullptr);
 }
 
 void PluginPanel::roleChanged()
@@ -339,30 +348,41 @@ void PluginPanel::addPluginMenu (PluginList& list)
         if (list.midi || ! d.isInstrument)   // MIDI effects can be flagged as anything; audio inserts are effects
             candidates.add (d);
 
-    juce::PopupMenu menu;
-    for (int i = 0; i < candidates.size(); ++i)
-        menu.addItem (i + 1, candidates[i].name + "  (" + candidates[i].manufacturerName + ")");
     if (candidates.isEmpty())
-        menu.addItem (-1, "No plugins found - use \"Manage plugins...\"", false);
+    {
+        alert ("No plugins found", "Use \"Manage plugins...\" (or Plugins... at the bottom right of the window) to scan for VST3 plugins first.");
+        return;
+    }
 
-    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&list.addButton),
-                        [this, &list, candidates, safe = juce::Component::SafePointer<PluginPanel> (this)] (int result)
-                        {
-                            if (safe == nullptr || result <= 0)
-                                return;
+    // a searchable list: type part of a name, a maker or a category
+    auto* tr = &track;
+    auto* eng = &engine;
+    auto* h = &host;
+    auto begin = beginEdit;
+    const bool midi = list.midi;
+    PluginList* listPtr = &list;
+    juce::Component::SafePointer<PluginPanel> safe (this);
 
-                            beginEdit();
-                            juce::String error;
-                            auto slot = host.createSlot (candidates[result - 1], engine, error);
-                            if (slot == nullptr)
-                            {
-                                alert ("Cannot load plugin", error);
-                                return;
-                            }
-                            if (list.midi) engine.addMidiFx (track, slot); else engine.addInsert (track, slot);
-                            host.showEditor (*slot);
-                            rebuild (list);
-                        });
+    juce::CallOutBox::launchAsynchronously (std::make_unique<PluginSearchPanel> (candidates, juce::String(),
+        [tr, eng, h, begin, candidates, midi, listPtr, safe] (int index)
+        {
+            if (index < 0 || index >= candidates.size())
+                return;
+
+            begin();
+            juce::String error;
+            auto slot = h->createSlot (candidates[index], *eng, error);
+            if (slot == nullptr)
+            {
+                juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Cannot load plugin", error);
+                return;
+            }
+            if (midi) eng->addMidiFx (*tr, slot); else eng->addInsert (*tr, slot);
+            h->showEditor (*slot);
+            if (safe != nullptr)
+                safe->rebuild (*listPtr);   // (the panel's list of plugins, if the panel is still open)
+        }),
+        list.addButton.getScreenBounds(), nullptr);
 }
 
 void PluginPanel::rebuild (PluginList& list)
@@ -443,7 +463,7 @@ int PluginPanel::layoutAll (bool apply)
         place (instrumentLabel, line.removeFromLeft (74));
         place (instrumentEdit, line.removeFromRight (50));
         line.removeFromRight (6);
-        place (instrumentBox, line);
+        place (instrumentButton, line);
         area.removeFromTop (6);
 
         auto inputLine = area.removeFromTop (30);

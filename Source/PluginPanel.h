@@ -38,7 +38,6 @@ private:
     std::vector<std::shared_ptr<PluginSlot>>& slotsOf (PluginList&);
     void rebuild (PluginList&);
     void addPluginMenu (PluginList&);
-    void chooseInstrument();
     void roleChanged();
     void rebuildRoutes();
     void routesChanged();
@@ -57,7 +56,9 @@ private:
     juce::ComboBox roleBox;
 
     juce::Label instrumentLabel { {}, "Instrument" };
-    juce::ComboBox instrumentBox;
+    juce::TextButton instrumentButton;   // the current instrument; a click opens the searchable list
+    void openInstrumentSearch();
+    void updateInstrumentButton();
     juce::TextButton instrumentEdit { "Edit" };
     juce::Array<juce::PluginDescription> instruments;
 
