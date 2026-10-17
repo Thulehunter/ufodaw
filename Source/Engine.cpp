@@ -887,6 +887,7 @@ ProjectState Engine::captureState() const
         ts.inserts = t->inserts;
         ts.midiFx = t->midiFx;
         ts.sequencer = t->sequencer;
+        ts.recordArmed = t->recordArmed;
         for (auto& route : t->midiOuts)
             for (size_t k = 0; k < tracks.size(); ++k)
                 if (tracks[k].get() == route.target)
@@ -967,6 +968,7 @@ void Engine::restoreState (const ProjectState& s)
     for (size_t i = 0; i < s.tracks.size(); ++i)   // MIDI routes point at tracks by index
     {
         fresh[i]->sequencer = s.tracks[i].sequencer;
+        fresh[i]->recordArmed = s.tracks[i].recordArmed;
         for (auto& [to, channel] : s.tracks[i].midiOuts)
             if (to >= 0 && to < (int) fresh.size() && to != (int) i)
                 fresh[i]->midiOuts.push_back ({ fresh[(size_t) to].get(), channel });

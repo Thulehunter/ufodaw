@@ -36,10 +36,18 @@ public:
                  std::function<void (Track&, juce::Component&)> onOpenPlugins,
                  std::function<void (Track&, juce::Component&)> onOpenAutomation,
                  std::function<double()> onPosition,
-                 std::function<void (Track&)> onOpenEditor)
+                 std::function<void (Track&)> onOpenEditor,
+                 std::function<void (Track&)> onToggleArm)
         : track (t), remove (std::move (onRemove)), beginEdit (std::move (onBeginEdit)), openPlugins (std::move (onOpenPlugins)),
-          openAutomation (std::move (onOpenAutomation)), position (std::move (onPosition)), openEditor (std::move (onOpenEditor))
+          openAutomation (std::move (onOpenAutomation)), position (std::move (onPosition)), openEditor (std::move (onOpenEditor)),
+          toggleArm (std::move (onToggleArm))
     {
+        // record-arm: audio tracks only; the next audio recording goes into the armed track
+        armButton.setTooltip ("Record arm: the next recording goes into this track (click Record at the bottom, or press R)");
+        armButton.onClick = [this] { toggleArm (track); };
+        addChildComponent (armButton);
+        armButton.setVisible (track.type == Track::Type::Audio);
+
         nameLabel.setInterceptsMouseClicks (false, false);   // so double-clicking the name reaches the header
         nameLabel.setText (track.name, juce::dontSendNotification);
         nameLabel.setFont (juce::FontOptions (14.0f, juce::Font::bold));
@@ -141,6 +149,11 @@ public:
         vstButton.setBounds (top.removeFromRight (38));
         top.removeFromRight (4);
         autoButton.setBounds (top.removeFromRight (26));
+        if (armButton.isVisible())
+        {
+            armButton.setBounds (top.removeFromLeft (22));
+            top.removeFromLeft (4);
+        }
         nameLabel.setBounds (top);
         c.removeFromTop (4);
         auto buttons = c.removeFromRight (56);
@@ -187,6 +200,14 @@ public:
             autoButton.repaint();
         }
 
+        if (track.recordArmed != armShown)
+        {
+            armShown = track.recordArmed;
+            armButton.setColour (juce::TextButton::buttonColourId, armShown ? Theme::redBright : Theme::buttonOff);
+            armButton.setColour (juce::TextButton::textColourOffId, armShown ? Theme::text : Theme::redDim);
+            armButton.repaint();
+        }
+
         const bool hasPlugins = track.instrument != nullptr || ! track.inserts.empty();
         if (hasPlugins != vstShownActive)
         {
@@ -208,12 +229,14 @@ private:
     std::function<void (Track&, juce::Component&)> openAutomation;
     std::function<double()> position;
     std::function<void (Track&)> openEditor;
+    std::function<void (Track&)> toggleArm;
+    bool armShown = false;
     float shown = 0.0f;
 
     juce::Label nameLabel;
     juce::Slider volume;
     PanSlider pan;
-    juce::TextButton muteButton { "M" }, soloButton { "S" }, deleteButton { "x" }, fxButton { "FX" }, vstButton { "VST" }, autoButton { "A" };
+    juce::TextButton muteButton { "M" }, soloButton { "S" }, deleteButton { "x" }, fxButton { "FX" }, vstButton { "VST" }, autoButton { "A" }, armButton { juce::String::fromUTF8 ("\xe2\x97\x8f") };
 };
 
 //==============================================================================
@@ -414,6 +437,16 @@ public:
 
             g.setColour (sel ? Theme::text : Theme::text.withAlpha (0.35f));
             g.drawRoundedRectangle (r.toFloat(), 4.0f, sel ? 2.0f : 1.0f);
+        }
+
+        // an audio track without clips says what can be done with it
+        if (track.type == Track::Type::Audio && clips.empty() && track.autoEditId.isEmpty())
+        {
+            g.setColour (track.recordArmed ? Theme::redBright : Theme::textFaint);
+            g.setFont (juce::FontOptions (13.0f));
+            g.drawText (track.recordArmed ? "Armed (red dot): press Record at the bottom to record into this track, or drop audio files here."
+                                          : "Empty audio track: drop audio files here, or click the dot next to the name and record.",
+                        14, 0, juce::jmax (200, getWidth() - 20), getHeight(), juce::Justification::centredLeft);
         }
 
         paintAutomation (g, pps);
@@ -1013,7 +1046,7 @@ MainComponent::MainComponent()
     pauseButton.onClick  = [this] { pausePlayback(); };
     stopButton.onClick   = [this] { stopPlayback(); };
     recordButton.onClick = [this] { toggleRecording(); };
-    addButton.onClick = [this] { addTrackDialog(); };
+    addButton.onClick = [this] { addTrackMenu(); };
     addMidiButton.onClick = [this] { addMidiTrack (false); };
     addDrumButton.onClick = [this] { addMidiTrack (true); };
     addAndMakeVisible (addDrumButton);
@@ -1058,7 +1091,7 @@ MainComponent::MainComponent()
     timeLabel.setTooltip ("Playhead position (minutes:seconds)");
 
     // hover hints for everything in the top bar
-    addButton.setTooltip ("Add an audio track from a file (you can also drag audio files into the window)");
+    addButton.setTooltip ("Add an audio track: an empty one to record on, or from audio files (you can also drag files into the window)");
     addMidiButton.setTooltip ("Add a synth track: play notes, or draw them in the piano roll");
     addDrumButton.setTooltip ("Add a drum track: click steps in a grid, or load your own samples per pad");
     openButton.setTooltip ("Open a project (Ctrl+O)");
@@ -1122,7 +1155,11 @@ void MainComponent::selectClip (Track* t, int id)
     selClip = id;
 
     if (t != nullptr && id >= 0 && engine.isMidiClip (*t, id))
+    {
+        for (int i = 0; i < engine.getNumTracks(); ++i)   // working on a MIDI clip: the next recording is MIDI
+            engine.getTrack (i)->recordArmed = false;
         showRoll (t, id);
+    }
     else if (rollVisible)
         roll->showClip (roll->getTrack(), roll->getClipId());   // also drops the selected note
 
@@ -1639,7 +1676,8 @@ void MainComponent::addTrackUI (Track& t)
        [this] (Track& tr, juce::Component& anchor) { openPlugins (tr, anchor); },
        [this] (Track& tr, juce::Component& anchor) { openAutomation (tr, anchor); },
        [this] { return engine.getPositionSeconds(); },
-       [this] (Track& tr) { openInstrumentEditor (tr); }));
+       [this] (Track& tr) { openInstrumentEditor (tr); },
+       [this] (Track& tr) { armAudioTrack (tr, ! tr.recordArmed); }));
     headerHolder.addAndMakeVisible (header);
 
     auto* lane = lanes.add (new TrackLane (*this, t));
@@ -2083,8 +2121,14 @@ void MainComponent::toggleRecording()
         return;
     }
 
-    // A MIDI track is armed: record the notes that are played, not the audio input
-    if (auto* armed = armedTrack.load())
+    // an armed audio track (red dot) takes the recording; otherwise it becomes a new track
+    Track* audioArmed = nullptr;
+    for (int i = 0; i < engine.getNumTracks() && audioArmed == nullptr; ++i)
+        if (auto* candidate = engine.getTrack (i); candidate->type == Track::Type::Audio && candidate->recordArmed)
+            audioArmed = candidate;
+
+    // A MIDI track is armed (and no audio track is): record the notes that are played, not the audio input
+    if (auto* armed = audioArmed == nullptr ? armedTrack.load() : nullptr)
     {
         {
             const juce::ScopedLock sl (midiRecLock);
@@ -2119,6 +2163,7 @@ void MainComponent::toggleRecording()
         return;
     }
 
+    recAudioTrack = audioArmed;
     recStartSeconds = engine.getPositionSeconds();
     startPlayback();   // recording only captures while the transport runs
 }
@@ -2168,7 +2213,7 @@ void MainComponent::finishMidiRecording()
     clipsChanged();
 }
 
-// Closes the recording file and puts it on a new track at the position where recording began.
+// Closes the recording file and puts it on the armed audio track (or a new track) where recording began.
 void MainComponent::finishRecording()
 {
     if (midiRecording)
@@ -2183,19 +2228,63 @@ void MainComponent::finishRecording()
     engine.stopRecording();
 
     beginEdit();
-    auto* t = engine.addTrack (recordingFile.getFileNameWithoutExtension());
-    if (engine.addClipFromFile (*t, recordingFile, recStartSeconds) < 0)
+    Track* t = recAudioTrack;
+    recAudioTrack = nullptr;
+    const bool intoArmedTrack = t != nullptr && engine.indexOfTrack (t) >= 0 && t->type == Track::Type::Audio;
+    if (! intoArmedTrack)
+        t = engine.addTrack (recordingFile.getFileNameWithoutExtension());
+
+    const int id = engine.addClipFromFile (*t, recordingFile, recStartSeconds);
+    if (id < 0)
     {
-        engine.removeTrack (t);
+        if (! intoArmedTrack)
+            engine.removeTrack (t);
         recordingFile.deleteFile();
         cancelEdit();
         return;
     }
-    addTrackUI (*t);
+
+    if (! intoArmedTrack)
+        addTrackUI (*t);
+    selectClip (t, id);
     clipsChanged();
 }
 
 //==============================================================================
+// "+ Track" asks what kind of audio track: a new empty one (to record on or drop files into), or one per file.
+void MainComponent::addTrackMenu()
+{
+    juce::PopupMenu menu;
+    menu.addItem (1, "Empty audio track");
+    menu.addItem (2, "Audio track from file(s)...");
+    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&addButton), [this] (int result)
+    {
+        if (result == 1) addEmptyAudioTrack();
+        if (result == 2) addTrackDialog();
+    });
+}
+
+void MainComponent::addEmptyAudioTrack()
+{
+    int count = 1;
+    for (int i = 0; i < engine.getNumTracks(); ++i)
+        if (engine.getTrack (i)->type == Track::Type::Audio)
+            ++count;
+
+    beginEdit();
+    auto* t = engine.addTrack ("Audio " + juce::String (count));
+    addTrackUI (*t);
+    armAudioTrack (*t, true);   // ready to record straight away
+    clipsChanged();
+}
+
+void MainComponent::armAudioTrack (Track& t, bool armed)
+{
+    for (int i = 0; i < engine.getNumTracks(); ++i)
+        engine.getTrack (i)->recordArmed = false;
+    t.recordArmed = armed && t.type == Track::Type::Audio;
+}
+
 void MainComponent::addTrackDialog()
 {
     chooser = std::make_unique<juce::FileChooser> ("Choose audio files", juce::File(), "*.wav;*.aif;*.aiff;*.flac;*.mp3;*.ogg");
@@ -2210,12 +2299,13 @@ void MainComponent::addTrackDialog()
                           });
 }
 
-// With one file and a target track the audio becomes a clip on that track at `time`;
-// otherwise every file gets its own new track starting at 0.
+// Dropped on an audio track, the files become clips on that track, one after the other from `time`
+// (handy for an empty track); otherwise every file gets its own new track starting at 0.
 void MainComponent::importFiles (const juce::StringArray& paths, Track* target, double time)
 {
     juce::StringArray failed;
-    const bool intoTrack = target != nullptr && target->type == Track::Type::Audio && paths.size() == 1;
+    const bool intoTrack = target != nullptr && target->type == Track::Type::Audio;
+    double nextStart = time;
     beginEdit();
 
     for (auto& p : paths)
@@ -2223,8 +2313,17 @@ void MainComponent::importFiles (const juce::StringArray& paths, Track* target, 
         const juce::File f (p);
         if (intoTrack)
         {
-            const int id = engine.addClipFromFile (*target, f, time);
-            if (id >= 0) selectClip (target, id); else failed.add (p);
+            const int id = engine.addClipFromFile (*target, f, nextStart);
+            Clip added;
+            if (id >= 0 && engine.getClip (*target, id, added))
+            {
+                nextStart = added.end();
+                selectClip (target, id);
+            }
+            else
+            {
+                failed.add (p);
+            }
         }
         else
         {

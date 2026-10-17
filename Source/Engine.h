@@ -139,6 +139,7 @@ struct Track
 
     // MIDI routing: the notes a plugin instrument (a sequencer such as Stochas) sends out go to another
     // MIDI track instead of being heard from this one.
+    bool recordArmed = false;                               // audio tracks: the next audio recording goes into this track
     bool sequencer = false;                                 // UI role: this track's plugin is a note source (Stochas...), not a sound
     std::vector<MidiRoute> midiOuts;                        // tracks that play the notes this track's plugin sends
     juce::MidiBuffer routedMidi;                            // notes other tracks sent here during the current block
@@ -184,6 +185,7 @@ struct TrackState
     };
     std::vector<LaneState> autoLanes;   // includes "volume" and "pan"
     bool sequencer = false;
+    bool recordArmed = false;
     std::vector<std::pair<int, int>> midiOuts;   // (index of the target track, channel) of each MIDI route
     std::vector<std::shared_ptr<PluginSlot>> midiFx;
     std::shared_ptr<DrumKit> kit;

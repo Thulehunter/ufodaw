@@ -148,6 +148,9 @@ private:
     void clearTracksUI();
     void layoutContent();
     void addTrackDialog();
+    void addTrackMenu();                       // "+ Track": an empty audio track, or audio from files
+    void addEmptyAudioTrack();
+    void armAudioTrack (Track&, bool armed);   // only one audio track is armed at a time
     void addMidiTrack (bool drums = false);
     void undo();
     void redo();
@@ -235,6 +238,7 @@ private:
     std::vector<HeldNote> heldNotes;
     std::vector<Note> recordedNotes;   // start = absolute timeline seconds until the clip is created
     Track* recMidiTrack = nullptr;
+    Track* recAudioTrack = nullptr;   // the armed audio track an audio recording goes into (null: a new track)
     std::vector<ProjectState> undoStack, redoStack;
     TransportButton rewindButton { TransportButton::Rewind, "Rewind (Enter)" },
                     playButton   { TransportButton::Play,   "Play (Space)" },

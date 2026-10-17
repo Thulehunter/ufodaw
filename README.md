@@ -85,6 +85,8 @@ An arpeggiator or similar plugin that should change the notes of one track goes 
 | Record (audio, or MIDI when a MIDI track is armed) | `R` |
 | Loop on / off | `L` (`Shift+L` loops the selected clip) |
 | Set the loop region | right-drag on the ruler |
+| Add an empty audio track | **+ Track** > *Empty audio track* (it starts armed for recording); drop audio files on it later, several files go one after the other |
+| Record into a specific audio track | click the red dot left of the track name to arm it, then **Record** (`R`). Without an armed track the recording becomes a new track |
 | Move the playhead | click or drag on the ruler / empty lane |
 | Split clip(s) at the playhead | `S` |
 | Delete clip / note | `Delete` |
