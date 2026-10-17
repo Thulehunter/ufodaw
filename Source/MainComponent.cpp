@@ -333,12 +333,13 @@ MainComponent::MainComponent()
 
     setWantsKeyboardFocus (true);
 
-    deviceManager.initialiseWithDefaultDevices (0, 2);
+    deviceManager.initialiseWithDefaultDevices (2, 2);
     player.setSource (&engine);
     deviceManager.addAudioCallback (&player);
 
-    for (auto* b : { &rewindButton, &playButton, &addButton, &openButton, &saveButton, &saveAsButton, &exportButton,
-                     &zoomOutButton, &zoomInButton })
+    for (juce::Component* b : std::initializer_list<juce::Component*> {
+             &rewindButton, &playButton, &pauseButton, &stopButton, &recordButton, &addButton,
+             &openButton, &saveButton, &saveAsButton, &exportButton, &zoomOutButton, &zoomInButton })
         addAndMakeVisible (b);
     addAndMakeVisible (metroButton);
     addAndMakeVisible (snapButton);
@@ -347,12 +348,11 @@ MainComponent::MainComponent()
     addAndMakeVisible (masterSlider);
     addAndMakeVisible (timeLabel);
 
-    rewindButton.onClick = [this] { engine.setPositionSeconds (0.0); };
-    playButton.onClick = [this]
-    {
-        if (engine.isPlaying()) engine.stop(); else engine.play();
-        playButton.setButtonText (engine.isPlaying() ? "Pause" : "Play");
-    };
+    rewindButton.onClick = [this] { engine.setPositionSeconds (0.0); playStartSeconds = 0.0; };
+    playButton.onClick   = [this] { startPlayback(); };
+    pauseButton.onClick  = [this] { pausePlayback(); };
+    stopButton.onClick   = [this] { stopPlayback(); };
+    recordButton.onClick = [this] { toggleRecording(); };
     addButton.onClick = [this] { addTrackDialog(); };
     metroButton.onClick = [this] { engine.metronome = metroButton.getToggleState(); };
     snapButton.setToggleState (true, juce::dontSendNotification);
@@ -492,7 +492,7 @@ void MainComponent::layoutContent()
 
     const int y0 = topBarHeight + rulerHeight;
     const int laneW = getWidth() - controlsWidth;
-    laneViewport.setBounds (controlsWidth, y0, laneW, getHeight() - y0);
+    laneViewport.setBounds (controlsWidth, y0, laneW, getHeight() - y0 - bottomBarHeight);
     ruler->setBounds (controlsWidth, topBarHeight, laneW, rulerHeight);
 
     const int visibleW = laneViewport.getMaximumVisibleWidth();
@@ -515,10 +515,6 @@ void MainComponent::layoutContent()
 void MainComponent::resized()
 {
     auto top = getLocalBounds().removeFromTop (topBarHeight).reduced (8, 10);
-    rewindButton.setBounds (top.removeFromLeft (40));
-    top.removeFromLeft (6);
-    playButton.setBounds (top.removeFromLeft (70));
-    top.removeFromLeft (6);
     addButton.setBounds (top.removeFromLeft (80));
     top.removeFromLeft (16);
     timeLabel.setBounds (top.removeFromLeft (170));
@@ -537,6 +533,17 @@ void MainComponent::resized()
     exportButton.setBounds (top.removeFromLeft (90));
     masterSlider.setBounds (top.removeFromRight (150));
 
+    // transport: centred along the bottom
+    constexpr int tb = 44, gap = 10;
+    const int rowW = 5 * tb + 4 * gap;
+    int bx = (getWidth() - rowW) / 2;
+    const int by = getHeight() - bottomBarHeight + (bottomBarHeight - tb) / 2;
+    for (auto* b : std::initializer_list<juce::Component*> { &rewindButton, &playButton, &pauseButton, &stopButton, &recordButton })
+    {
+        b->setBounds (bx, by, tb, tb);
+        bx += tb + gap;
+    }
+
     // snap + zoom live in the corner above the track headers
     auto corner = juce::Rectangle<int> (0, topBarHeight, controlsWidth, rulerHeight).reduced (6, 2);
     snapButton.setBounds (corner.removeFromLeft (70));
@@ -550,6 +557,11 @@ void MainComponent::resized()
 void MainComponent::paint (juce::Graphics& g)
 {
     g.fillAll (juce::Colour (0xff1b1d22));
+
+    g.setColour (juce::Colour (0xff24272e));
+    g.fillRect (0, getHeight() - bottomBarHeight, getWidth(), bottomBarHeight);
+    g.setColour (juce::Colour (0xff0b0c0e));
+    g.drawHorizontalLine (getHeight() - bottomBarHeight, 0.0f, (float) getWidth());
 
     auto m = juce::Rectangle<int> (getWidth() - 158, 8, 150, 4);
     g.setColour (juce::Colours::black);
@@ -621,8 +633,9 @@ bool MainComponent::keyPressed (const juce::KeyPress& k)
         return false;
     }
 
-    if (k == juce::KeyPress::spaceKey)  { playButton.triggerClick(); return true; }
+    if (k == juce::KeyPress::spaceKey)  { if (engine.isPlaying()) pausePlayback(); else startPlayback(); return true; }
     if (k == juce::KeyPress::returnKey) { rewindButton.triggerClick(); return true; }
+    if (k.getKeyCode() == 'R' && ! mods.isAnyModifierKeyDown()) { toggleRecording(); return true; }
     if (k == juce::KeyPress::deleteKey || k == juce::KeyPress::backspaceKey) { deleteSelected(); return true; }
     if (k.getKeyCode() == 'S' && ! mods.isAnyModifierKeyDown()) { splitAtPlayhead(); return true; }
     return false;
@@ -640,7 +653,97 @@ void MainComponent::timerCallback()
     for (auto* h : headers)
         h->tick();
 
+    const bool recording = engine.isRecording();
+    playButton.setLit (engine.isPlaying());
+    pauseButton.setLit (! engine.isPlaying() && p > 0.0);
+    recordButton.setLit (recording && (juce::Time::getMillisecondCounter() / 500) % 2 == 0);   // blinks
+
     repaint();
+}
+
+//==============================================================================
+// Transport. Play/Pause keep the position; Stop returns to where playback started
+// (or to the beginning if the transport is already stopped).
+void MainComponent::startPlayback()
+{
+    if (! engine.isPlaying())
+    {
+        playStartSeconds = engine.getPositionSeconds();
+        engine.play();
+    }
+}
+
+void MainComponent::pausePlayback()
+{
+    finishRecording();
+    engine.stop();
+}
+
+void MainComponent::stopPlayback()
+{
+    finishRecording();
+    if (engine.isPlaying())
+    {
+        engine.stop();
+        engine.setPositionSeconds (playStartSeconds);
+    }
+    else
+    {
+        engine.setPositionSeconds (0.0);
+        playStartSeconds = 0.0;
+    }
+}
+
+void MainComponent::toggleRecording()
+{
+    if (engine.isRecording())
+    {
+        finishRecording();   // keeps playing, like most DAWs
+        return;
+    }
+
+    auto* device = deviceManager.getCurrentAudioDevice();
+    const int inputs = device != nullptr ? device->getActiveInputChannels().countNumberOfSetBits() : 0;
+    if (inputs == 0)
+    {
+        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "No audio input",
+                                                "No input device is available. Check your microphone or interface and "
+                                                "Windows' microphone privacy settings.");
+        return;
+    }
+
+    recordingFile = juce::File::getSpecialLocation (juce::File::userDocumentsDirectory)
+                        .getChildFile ("MiniDAW Recordings")
+                        .getChildFile ("Recording " + juce::Time::getCurrentTime().formatted ("%Y-%m-%d %H-%M-%S") + ".wav");
+
+    if (! engine.startRecording (recordingFile, juce::jmin (inputs, 2)))
+    {
+        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Cannot record",
+                                                "Could not create " + recordingFile.getFullPathName());
+        return;
+    }
+
+    recStartSeconds = engine.getPositionSeconds();
+    startPlayback();   // recording only captures while the transport runs
+}
+
+// Closes the recording file and puts it on a new track at the position where recording began.
+void MainComponent::finishRecording()
+{
+    if (! engine.isRecording())
+        return;
+
+    engine.stopRecording();
+
+    auto* t = engine.addTrack (recordingFile.getFileNameWithoutExtension());
+    if (engine.addClipFromFile (*t, recordingFile, recStartSeconds) < 0)
+    {
+        engine.removeTrack (t);
+        recordingFile.deleteFile();
+        return;
+    }
+    addTrackUI (*t);
+    clipsChanged();
 }
 
 //==============================================================================
@@ -780,9 +883,10 @@ void MainComponent::loadProject (const juce::File& file)
         return;
     }
 
+    finishRecording();
     engine.stop();
-    playButton.setButtonText ("Play");
     engine.setPositionSeconds (0.0);
+    playStartSeconds = 0.0;
     clearTracksUI();
 
     engine.bpm = (float) (double) root.getProperty ("bpm", 120.0);
@@ -858,8 +962,8 @@ void MainComponent::exportDialog()
                               if (f == juce::File())
                                   return;
 
+                              finishRecording();
                               engine.stop();
-                              playButton.setButtonText ("Play");
                               f = f.withFileExtension ("wav");
                               const bool ok = engine.renderToFile (f, engine.getTotalLengthSeconds() + 0.5, false);
                               juce::AlertWindow::showMessageBoxAsync (ok ? juce::MessageBoxIconType::InfoIcon

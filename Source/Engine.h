@@ -41,6 +41,7 @@ class Engine : public juce::AudioSource
 {
 public:
     Engine();
+    ~Engine() override;
 
     void prepareToPlay (int samplesPerBlockExpected, double sampleRate) override;
     void releaseResources() override {}
@@ -70,6 +71,11 @@ public:
     // Mixes the whole project offline (faster than realtime) into a 24-bit stereo WAV.
     bool renderToFile (const juce::File&, double lengthSeconds, bool withMetronome);
 
+    // Records the audio input (while the transport plays) straight to a 24-bit WAV on a background thread.
+    bool startRecording (const juce::File&, int numChannels);
+    void stopRecording();
+    bool isRecording() const { return activeWriter.load() != nullptr; }
+
     void play()  { playing = true; }
     void stop()  { playing = false; }
     bool isPlaying() const { return playing; }
@@ -92,6 +98,11 @@ private:
     mutable juce::CriticalSection lock;
     std::vector<std::unique_ptr<Track>> tracks;
     int nextClipId = 1;
+
+    juce::TimeSliceThread writerThread { "MiniDAW audio writer" };
+    std::unique_ptr<juce::AudioFormatWriter::ThreadedWriter> threadedWriter;
+    std::atomic<juce::AudioFormatWriter::ThreadedWriter*> activeWriter { nullptr };
+    juce::SpinLock recLock;
 
     std::atomic<bool> playing { false };
     std::atomic<juce::int64> positionSamples { 0 };

@@ -21,6 +21,63 @@ public:
     }
 };
 
+// Round icon-style transport button. `lit` shows an active state (playing, recording, ...).
+class TransportButton : public juce::Button
+{
+public:
+    enum Shape { Rewind, Play, Pause, Stop, Record };
+
+    TransportButton (Shape s, const juce::String& tooltip) : juce::Button (tooltip), shape (s)
+    {
+        setTooltip (tooltip);
+        setMouseClickGrabsKeyboardFocus (false);
+    }
+
+    void setLit (bool shouldBeLit)
+    {
+        if (lit != shouldBeLit)
+        {
+            lit = shouldBeLit;
+            repaint();
+        }
+    }
+
+    void paintButton (juce::Graphics& g, bool over, bool down) override
+    {
+        auto b = getLocalBounds().toFloat().reduced (2.0f);
+        g.setColour (juce::Colour (down ? 0xff4a505c : over ? 0xff3a3f49 : 0xff2b2f37));
+        g.fillEllipse (b);
+        g.setColour (juce::Colour (0xff0b0c0e));
+        g.drawEllipse (b, 1.0f);
+
+        juce::Colour c (0xffc8ccd4);
+        if (shape == Play && lit)   c = juce::Colour (0xff3ddc84);
+        if (shape == Pause && lit)  c = juce::Colour (0xffffc247);
+        if (shape == Record)        c = lit ? juce::Colour (0xffff4d4d) : juce::Colour (0xffb04a4a);
+        g.setColour (c);
+
+        const auto r = b.reduced (b.getWidth() * 0.28f);
+        const float cy = r.getCentreY();
+        juce::Path p;
+        switch (shape)
+        {
+            case Play:   p.addTriangle (r.getX() + r.getWidth() * 0.1f, r.getY(), r.getX() + r.getWidth() * 0.1f, r.getBottom(),
+                                        r.getRight(), cy); break;
+            case Pause:  p.addRectangle (r.getX() + r.getWidth() * 0.05f, r.getY(), r.getWidth() * 0.32f, r.getHeight());
+                         p.addRectangle (r.getRight() - r.getWidth() * 0.37f, r.getY(), r.getWidth() * 0.32f, r.getHeight()); break;
+            case Stop:   p.addRectangle (r); break;
+            case Record: p.addEllipse (r); break;
+            case Rewind: p.addRectangle (r.getX(), r.getY(), r.getWidth() * 0.15f, r.getHeight());
+                         p.addTriangle (r.getRight(), r.getY(), r.getRight(), r.getBottom(), r.getX() + r.getWidth() * 0.25f, cy); break;
+        }
+        g.fillPath (p);
+    }
+
+private:
+    Shape shape;
+    bool lit = false;
+};
+
 class MainComponent : public juce::Component,
                       public juce::FileDragAndDropTarget,
                       private juce::Timer
@@ -41,6 +98,7 @@ public:
     static constexpr int stripHeight = 84;
     static constexpr int topBarHeight = 56;
     static constexpr int rulerHeight = 26;
+    static constexpr int bottomBarHeight = 60;
 
     // ---- Used by the timeline components
     Engine& getEngine() { return engine; }
@@ -66,6 +124,12 @@ private:
     void layoutContent();
     void addTrackDialog();
 
+    void startPlayback();
+    void pausePlayback();
+    void stopPlayback();
+    void toggleRecording();
+    void finishRecording();
+
     void splitAtPlayhead();
     void deleteSelected();
     void duplicateSelected();
@@ -80,7 +144,16 @@ private:
     juce::AudioSourcePlayer player;
     Engine engine;
 
-    juce::TextButton rewindButton { "|<" }, playButton { "Play" }, addButton { "+ Track" };
+    juce::TextButton addButton { "+ Track" };
+    TransportButton rewindButton { TransportButton::Rewind, "Rewind (Enter)" },
+                    playButton   { TransportButton::Play,   "Play (Space)" },
+                    pauseButton  { TransportButton::Pause,  "Pause (Space)" },
+                    stopButton   { TransportButton::Stop,   "Stop" },
+                    recordButton { TransportButton::Record, "Record (R)" };
+    juce::TooltipWindow tooltipWindow { this };
+    double playStartSeconds = 0.0;
+    double recStartSeconds = 0.0;
+    juce::File recordingFile;
     juce::TextButton openButton { "Open" }, saveButton { "Save" }, saveAsButton { "Save As" }, exportButton { "Export WAV" };
     juce::TextButton zoomOutButton { "-" }, zoomInButton { "+" };
     juce::ToggleButton snapButton { "Snap" };

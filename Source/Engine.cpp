@@ -5,6 +5,47 @@
 Engine::Engine()
 {
     formats.registerBasicFormats();
+    writerThread.startThread();
+}
+
+Engine::~Engine()
+{
+    stopRecording();
+    writerThread.stopThread (2000);
+}
+
+bool Engine::startRecording (const juce::File& file, int numChannels)
+{
+    stopRecording();
+    file.getParentDirectory().createDirectory();
+    file.deleteFile();
+
+    std::unique_ptr<juce::FileOutputStream> stream (file.createOutputStream());
+    if (stream == nullptr)
+        return false;
+
+    juce::WavAudioFormat wav;
+    std::unique_ptr<juce::AudioFormatWriter> writer (wav.createWriterFor (stream.get(), sampleRate,
+                                                                         (unsigned int) juce::jlimit (1, 2, numChannels), 24, {}, 0));
+    if (writer == nullptr)
+        return false;
+    stream.release(); // the writer owns the stream now
+
+    threadedWriter = std::make_unique<juce::AudioFormatWriter::ThreadedWriter> (writer.release(), writerThread, 32768);
+    {
+        const juce::SpinLock::ScopedLockType sl (recLock);
+        activeWriter = threadedWriter.get();
+    }
+    return true;
+}
+
+void Engine::stopRecording()
+{
+    {
+        const juce::SpinLock::ScopedLockType sl (recLock);
+        activeWriter = nullptr;
+    }
+    threadedWriter.reset();   // flushes what is left and closes the file
 }
 
 void Engine::prepareToPlay (int, double newRate)
@@ -207,6 +248,20 @@ double Engine::getTotalLengthSeconds() const
 
 void Engine::getNextAudioBlock (const juce::AudioSourceChannelInfo& info)
 {
+    // The buffer still holds the device input here, so take it before clearing it for output.
+    if (playing)
+    {
+        const juce::SpinLock::ScopedTryLockType rl (recLock);
+        if (rl.isLocked())
+            if (auto* w = activeWriter.load())
+            {
+                const float* in[2];
+                in[0] = info.buffer->getReadPointer (0, info.startSample);
+                in[1] = info.buffer->getNumChannels() > 1 ? info.buffer->getReadPointer (1, info.startSample) : in[0];
+                w->write (in, info.numSamples);
+            }
+    }
+
     info.clearActiveBufferRegion();
 
     const juce::ScopedTryLock sl (lock);
