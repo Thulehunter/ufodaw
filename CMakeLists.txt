@@ -24,6 +24,9 @@ FetchContent_Declare(rubberband
 FetchContent_MakeAvailable(rubberband)
 
 juce_add_gui_app(UFODAW PRODUCT_NAME "UFODAW"
+    BUNDLE_ID "io.github.thulehunter.ufodaw"
+    MICROPHONE_PERMISSION_ENABLED TRUE
+    MICROPHONE_PERMISSION_TEXT "UFODAW needs the audio input to record."
     ICON_BIG "${CMAKE_CURRENT_SOURCE_DIR}/Resources/icon.png")
 
 target_sources(UFODAW PRIVATE
