@@ -12,6 +12,7 @@ struct Track
     juce::AudioBuffer<float> audio;
     double fileRate = 44100.0;
     double startSeconds = 0.0;
+    juce::File sourceFile;
 
     std::atomic<float> gain { 0.8f };
     std::atomic<float> pan { 0.0f };
@@ -36,8 +37,13 @@ public:
     // Message thread
     Track* addTrackFromFile (const juce::File&);
     void removeTrack (Track*);
+    void removeAllTracks();
     int getNumTracks() const;
     Track* getTrack (int index) const;
+    double getTotalLengthSeconds() const;
+
+    // Mixes the whole project offline (faster than realtime) into a 24-bit stereo WAV.
+    bool renderToFile (const juce::File&, double lengthSeconds, bool withMetronome);
 
     void play()  { playing = true; }
     void stop()  { playing = false; }
@@ -52,6 +58,9 @@ public:
     std::atomic<float> masterLevel { 0.0f };
 
 private:
+    // Caller must hold `lock`; adds into outL/outR (which must be pre-cleared).
+    void mixBlock (float* outL, float* outR, int numSamples, juce::int64 pos, bool withMetronome);
+
     juce::AudioFormatManager formats;
     juce::CriticalSection lock;
     std::vector<std::unique_ptr<Track>> tracks;

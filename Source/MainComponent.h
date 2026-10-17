@@ -27,7 +27,13 @@ private:
     void timerCallback() override;
     void addTrackDialog();
     void addTrack (const juce::File&);
+    void addStrip (Track&);
     void removeStrip (TrackStrip*);
+    void saveProject (const juce::File&);
+    void saveProjectAs();
+    void loadProject (const juce::File&);
+    void openProjectDialog();
+    void exportDialog();
     void layoutStrips();
     juce::Rectangle<int> laneArea() const;
 
@@ -36,6 +42,8 @@ private:
     Engine engine;
 
     juce::TextButton rewindButton { "|<" }, playButton { "Play" }, addButton { "+ Track" };
+    juce::TextButton openButton { "Open" }, saveButton { "Save" }, saveAsButton { "Save As" }, exportButton { "Export WAV" };
+    juce::File currentProject;
     juce::ToggleButton metroButton { "Metronome" };
     juce::Label bpmLabel { {}, "BPM" }, timeLabel;
     juce::Slider bpmSlider { juce::Slider::LinearBar, juce::Slider::TextBoxLeft };

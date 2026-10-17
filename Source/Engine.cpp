@@ -20,6 +20,7 @@ Track* Engine::addTrackFromFile (const juce::File& file)
 
     auto track = std::make_unique<Track>();
     track->name = file.getFileNameWithoutExtension();
+    track->sourceFile = file;
     track->fileRate = reader->sampleRate;
     track->audio.setSize ((int) juce::jmin<juce::int64> (reader->numChannels, 2), (int) reader->lengthInSamples);
     reader->read (&track->audio, 0, (int) reader->lengthInSamples, 0, true, true);
@@ -64,9 +65,12 @@ void Engine::getNextAudioBlock (const juce::AudioSourceChannelInfo& info)
 
     auto* outL = info.buffer->getWritePointer (0, info.startSample);
     auto* outR = info.buffer->getNumChannels() > 1 ? info.buffer->getWritePointer (1, info.startSample) : nullptr;
-    const auto n = info.numSamples;
-    const auto pos = positionSamples.load();
+    mixBlock (outL, outR, info.numSamples, positionSamples.load(), metronome);
+    positionSamples += info.numSamples;
+}
 
+void Engine::mixBlock (float* outL, float* outR, int n, juce::int64 pos, bool withMetronome)
+{
     bool anySolo = false;
     for (auto& t : tracks)
         anySolo = anySolo || t->solo;
@@ -106,7 +110,7 @@ void Engine::getNextAudioBlock (const juce::AudioSourceChannelInfo& info)
         t->level = peak * g;
     }
 
-    if (metronome)
+    if (withMetronome)
     {
         const double samplesPerBeat = sampleRate * 60.0 / juce::jmax (20.0f, bpm.load());
         for (int i = 0; i < n; ++i)
@@ -145,6 +149,51 @@ void Engine::getNextAudioBlock (const juce::AudioSourceChannelInfo& info)
         }
     }
     masterLevel = mp;
+}
 
-    positionSamples += n;
+bool Engine::renderToFile (const juce::File& file, double seconds, bool withMetronome)
+{
+    if (seconds <= 0.0)
+        return false;
+
+    file.deleteFile();
+    std::unique_ptr<juce::FileOutputStream> stream (file.createOutputStream());
+    if (stream == nullptr)
+        return false;
+
+    juce::WavAudioFormat wav;
+    std::unique_ptr<juce::AudioFormatWriter> writer (wav.createWriterFor (stream.get(), sampleRate, 2, 24, {}, 0));
+    if (writer == nullptr)
+        return false;
+    stream.release(); // the writer owns the stream now
+
+    const juce::ScopedLock sl (lock);
+    constexpr int blockSize = 1024;
+    juce::AudioBuffer<float> buffer (2, blockSize);
+    const auto total = (juce::int64) (seconds * sampleRate);
+
+    for (juce::int64 done = 0; done < total; done += blockSize)
+    {
+        const int n = (int) juce::jmin<juce::int64> (blockSize, total - done);
+        buffer.clear();
+        mixBlock (buffer.getWritePointer (0), buffer.getWritePointer (1), n, done, withMetronome);
+        if (! writer->writeFromAudioSampleBuffer (buffer, 0, n))
+            return false;
+    }
+    return true;
+}
+
+void Engine::removeAllTracks()
+{
+    const juce::ScopedLock sl (lock);
+    tracks.clear();
+}
+
+double Engine::getTotalLengthSeconds() const
+{
+    const juce::ScopedLock sl (lock);
+    double end = 0.0;
+    for (auto& t : tracks)
+        end = juce::jmax (end, t->startSeconds + t->lengthSeconds());
+    return end;
 }

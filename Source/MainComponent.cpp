@@ -26,11 +26,13 @@ public:
         addAndMakeVisible (pan);
 
         muteButton.setClickingTogglesState (true);
+        muteButton.setToggleState (track.mute, juce::dontSendNotification);
         muteButton.setColour (juce::TextButton::buttonOnColourId, juce::Colours::orangered);
         muteButton.onClick = [this] { track.mute = muteButton.getToggleState(); };
         addAndMakeVisible (muteButton);
 
         soloButton.setClickingTogglesState (true);
+        soloButton.setToggleState (track.solo, juce::dontSendNotification);
         soloButton.setColour (juce::TextButton::buttonOnColourId, juce::Colours::gold);
         soloButton.onClick = [this] { track.solo = soloButton.getToggleState(); };
         addAndMakeVisible (soloButton);
@@ -132,15 +134,20 @@ private:
 //==============================================================================
 MainComponent::MainComponent()
 {
-    setSize (1100, 560);
+    setSize (1250, 560);
     setWantsKeyboardFocus (true);
 
     deviceManager.initialiseWithDefaultDevices (0, 2);
     player.setSource (&engine);
     deviceManager.addAudioCallback (&player);
 
-    for (auto* b : { &rewindButton, &playButton, &addButton })
+    for (auto* b : { &rewindButton, &playButton, &addButton, &openButton, &saveButton, &saveAsButton, &exportButton })
         addAndMakeVisible (b);
+
+    openButton.onClick   = [this] { openProjectDialog(); };
+    saveButton.onClick   = [this] { if (currentProject != juce::File()) saveProject (currentProject); else saveProjectAs(); };
+    saveAsButton.onClick = [this] { saveProjectAs(); };
+    exportButton.onClick = [this] { exportDialog(); };
     addAndMakeVisible (metroButton);
     addAndMakeVisible (bpmLabel);
     addAndMakeVisible (bpmSlider);
@@ -193,19 +200,168 @@ void MainComponent::addTrackDialog()
                           });
 }
 
+void MainComponent::addStrip (Track& t)
+{
+    auto* strip = strips.add (new TrackStrip (t, [this] (TrackStrip* s) { removeStrip (s); }));
+    stripHolder.addAndMakeVisible (strip);
+    layoutStrips();
+}
+
 void MainComponent::addTrack (const juce::File& file)
 {
     if (auto* t = engine.addTrackFromFile (file))
+        addStrip (*t);
+    else
+        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon,
+                                                "Cannot open file", file.getFullPathName());
+}
+
+//==============================================================================
+void MainComponent::saveProject (const juce::File& file)
+{
+    const auto baseDir = file.getParentDirectory();
+
+    juce::Array<juce::var> trackList;
+    for (int i = 0; i < engine.getNumTracks(); ++i)
     {
-        auto* strip = strips.add (new TrackStrip (*t, [this] (TrackStrip* s) { removeStrip (s); }));
-        stripHolder.addAndMakeVisible (strip);
-        layoutStrips();
+        auto* t = engine.getTrack (i);
+        auto* o = new juce::DynamicObject();
+        o->setProperty ("file", t->sourceFile.getRelativePathFrom (baseDir));
+        o->setProperty ("gain", (double) t->gain.load());
+        o->setProperty ("pan", (double) t->pan.load());
+        o->setProperty ("mute", t->mute.load());
+        o->setProperty ("solo", t->solo.load());
+        o->setProperty ("start", t->startSeconds);
+        trackList.add (juce::var (o));
+    }
+
+    auto* root = new juce::DynamicObject();
+    root->setProperty ("version", 1);
+    root->setProperty ("bpm", (double) engine.bpm.load());
+    root->setProperty ("masterGain", (double) engine.masterGain.load());
+    root->setProperty ("metronome", engine.metronome.load());
+    root->setProperty ("tracks", trackList);
+
+    if (file.replaceWithText (juce::JSON::toString (juce::var (root))))
+    {
+        currentProject = file;
+        if (auto* w = getTopLevelComponent())
+            w->setName ("MiniDAW - " + file.getFileNameWithoutExtension());
     }
     else
     {
         juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon,
-                                                "Cannot open file", file.getFullPathName());
+                                                "Cannot save project", file.getFullPathName());
     }
+}
+
+void MainComponent::saveProjectAs()
+{
+    chooser = std::make_unique<juce::FileChooser> ("Save project", currentProject, "*.mdaw");
+    chooser->launchAsync (juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles
+                              | juce::FileBrowserComponent::warnAboutOverwriting,
+                          [this] (const juce::FileChooser& fc)
+                          {
+                              auto f = fc.getResult();
+                              if (f != juce::File())
+                                  saveProject (f.withFileExtension ("mdaw"));
+                          });
+}
+
+void MainComponent::openProjectDialog()
+{
+    chooser = std::make_unique<juce::FileChooser> ("Open project", currentProject, "*.mdaw");
+    chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+                          [this] (const juce::FileChooser& fc)
+                          {
+                              auto f = fc.getResult();
+                              if (f.existsAsFile())
+                                  loadProject (f);
+                          });
+}
+
+void MainComponent::loadProject (const juce::File& file)
+{
+    auto root = juce::JSON::parse (file);
+    if (! root.isObject() || ! root["tracks"].isArray())
+    {
+        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon,
+                                                "Cannot open project", file.getFullPathName());
+        return;
+    }
+
+    engine.stop();
+    playButton.setButtonText ("Play");
+    engine.setPositionSeconds (0.0);
+    strips.clear();             // strips reference tracks, so they go first
+    engine.removeAllTracks();
+
+    engine.bpm = (float) (double) root.getProperty ("bpm", 120.0);
+    engine.masterGain = (float) (double) root.getProperty ("masterGain", 0.9);
+    engine.metronome = (bool) root.getProperty ("metronome", false);
+    bpmSlider.setValue (engine.bpm, juce::dontSendNotification);
+    masterSlider.setValue (engine.masterGain, juce::dontSendNotification);
+    metroButton.setToggleState (engine.metronome, juce::dontSendNotification);
+
+    juce::StringArray missing;
+    const auto baseDir = file.getParentDirectory();
+
+    for (auto& item : *root["tracks"].getArray())
+    {
+        const auto audioFile = baseDir.getChildFile (item["file"].toString());
+        if (auto* t = engine.addTrackFromFile (audioFile))
+        {
+            t->gain = (float) (double) item.getProperty ("gain", 0.8);
+            t->pan = (float) (double) item.getProperty ("pan", 0.0);
+            t->mute = (bool) item.getProperty ("mute", false);
+            t->solo = (bool) item.getProperty ("solo", false);
+            t->startSeconds = (double) item.getProperty ("start", 0.0);
+            addStrip (*t);
+        }
+        else
+        {
+            missing.add (audioFile.getFullPathName());
+        }
+    }
+
+    currentProject = file;
+    if (auto* w = getTopLevelComponent())
+        w->setName ("MiniDAW - " + file.getFileNameWithoutExtension());
+    layoutStrips();
+
+    if (missing.size() > 0)
+        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon,
+                                                "Some audio files were not found",
+                                                missing.joinIntoString ("\n"));
+}
+
+void MainComponent::exportDialog()
+{
+    if (engine.getNumTracks() == 0)
+    {
+        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::InfoIcon,
+                                                "Nothing to export", "Add a track first.");
+        return;
+    }
+
+    chooser = std::make_unique<juce::FileChooser> ("Export WAV", currentProject.withFileExtension ("wav"), "*.wav");
+    chooser->launchAsync (juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles
+                              | juce::FileBrowserComponent::warnAboutOverwriting,
+                          [this] (const juce::FileChooser& fc)
+                          {
+                              auto f = fc.getResult();
+                              if (f == juce::File())
+                                  return;
+
+                              engine.stop();
+                              playButton.setButtonText ("Play");
+                              f = f.withFileExtension ("wav");
+                              const bool ok = engine.renderToFile (f, engine.getTotalLengthSeconds() + 0.5, false);
+                              juce::AlertWindow::showMessageBoxAsync (ok ? juce::MessageBoxIconType::InfoIcon
+                                                                         : juce::MessageBoxIconType::WarningIcon,
+                                                                      ok ? "Export finished" : "Export failed",
+                                                                      f.getFullPathName());
+                          });
 }
 
 void MainComponent::removeStrip (TrackStrip* s)
@@ -257,6 +413,14 @@ void MainComponent::resized()
     bpmSlider.setBounds (top.removeFromLeft (70));
     top.removeFromLeft (10);
     metroButton.setBounds (top.removeFromLeft (110));
+    top.removeFromLeft (16);
+    openButton.setBounds (top.removeFromLeft (56));
+    top.removeFromLeft (4);
+    saveButton.setBounds (top.removeFromLeft (56));
+    top.removeFromLeft (4);
+    saveAsButton.setBounds (top.removeFromLeft (64));
+    top.removeFromLeft (4);
+    exportButton.setBounds (top.removeFromLeft (90));
     masterSlider.setBounds (top.removeFromRight (150));
 
     viewport.setBounds (0, topBarHeight, getWidth(), getHeight() - topBarHeight);
@@ -309,6 +473,8 @@ bool MainComponent::keyPressed (const juce::KeyPress& k)
 {
     if (k == juce::KeyPress::spaceKey)  { playButton.triggerClick(); return true; }
     if (k == juce::KeyPress::returnKey) { rewindButton.triggerClick(); return true; }
+    if (k == juce::KeyPress ('s', juce::ModifierKeys::commandModifier, 0)) { saveButton.triggerClick(); return true; }
+    if (k == juce::KeyPress ('o', juce::ModifierKeys::commandModifier, 0)) { openButton.triggerClick(); return true; }
     return false;
 }
 
