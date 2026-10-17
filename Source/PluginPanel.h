@@ -61,6 +61,11 @@ private:
     juce::TextButton instrumentEdit { "Edit" };
     juce::Array<juce::PluginDescription> instruments;
 
+    // Which MIDI input (keyboard, e-drum...) and channel this track listens to and records from.
+    juce::Label inputLabel { {}, "MIDI input" };
+    juce::ComboBox inputBox, inputChannelBox;
+    juce::StringArray inputIds;   // identifier of each choice in inputBox, by item id - 2
+
     // Sequencer role: which tracks play the notes, and which MIDI channel each one listens to.
     struct RouteRow
     {

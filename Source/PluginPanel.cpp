@@ -60,6 +60,40 @@ PluginPanel::PluginPanel (Track& t, Engine& e, PluginHost& h, std::function<void
         };
         addAndMakeVisible (instrumentEdit);
 
+        // MIDI input: every input, or one device; and every channel, or one
+        inputBox.addItem ("All MIDI inputs", 1);
+        int selectedInput = 1;
+        for (auto& d : juce::MidiInput::getAvailableDevices())
+        {
+            inputIds.add (d.identifier);
+            inputBox.addItem (d.name, 1 + inputIds.size());
+            if (d.identifier == track.midiInputId)
+                selectedInput = 1 + inputIds.size();
+        }
+        if (track.midiInputId.isNotEmpty() && selectedInput == 1)   // chosen earlier, but not connected now
+        {
+            inputIds.add (track.midiInputId);
+            inputBox.addItem ("(not connected)", 1 + inputIds.size());
+            selectedInput = 1 + inputIds.size();
+        }
+        inputBox.setSelectedId (selectedInput, juce::dontSendNotification);
+        inputBox.setTooltip ("The track plays and records only what this input sends. Arm it with the red dot, or select its clip.");
+        inputBox.onChange = [this]
+        {
+            beginEdit();
+            const int id = inputBox.getSelectedId();
+            track.midiInputId = id >= 2 ? inputIds[id - 2] : juce::String();
+        };
+        addAndMakeVisible (inputLabel);
+        addAndMakeVisible (inputBox);
+
+        inputChannelBox.addItem ("All channels", 1);
+        for (int ch = 1; ch <= 16; ++ch)
+            inputChannelBox.addItem ("Channel " + juce::String (ch), 1 + ch);
+        inputChannelBox.setSelectedId (1 + juce::jlimit (0, 16, track.midiInputChannel), juce::dontSendNotification);
+        inputChannelBox.onChange = [this] { beginEdit(); track.midiInputChannel = inputChannelBox.getSelectedId() - 1; };
+        addAndMakeVisible (inputChannelBox);
+
         routeHeading.setText ("Play the notes on these tracks", juce::dontSendNotification);
         routeHeading.setFont (juce::FontOptions (13.0f, juce::Font::bold));
         routeHint.setText ("Channel: \"All\" passes the notes on unchanged. A channel number sends only that MIDI channel "
@@ -410,6 +444,13 @@ int PluginPanel::layoutAll (bool apply)
         place (instrumentEdit, line.removeFromRight (50));
         line.removeFromRight (6);
         place (instrumentBox, line);
+        area.removeFromTop (6);
+
+        auto inputLine = area.removeFromTop (30);
+        place (inputLabel, inputLine.removeFromLeft (74));
+        place (inputChannelBox, inputLine.removeFromRight (120));
+        inputLine.removeFromRight (6);
+        place (inputBox, inputLine);
         area.removeFromTop (8);
 
         if (track.sequencer)

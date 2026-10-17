@@ -24,7 +24,12 @@ A small digital audio workstation for Windows, written in C++17 with [JUCE](http
   that names every key and note, lights up the keys that sound (live or during playback) and scrolls to the clip's notes
   ("Show notes" brings them back).
 - **Drum tracks** - 8-pad drum kit with generated sounds, a **step sequencer**, and your own samples per pad (right-click a pad).
-- **MIDI input** - any connected keyboard plays the selected MIDI track and can be recorded; the computer keyboard works as a piano too ("Keys").
+- **MIDI input per track** - a MIDI track listens to every MIDI input, or to one device and channel (VST panel > *MIDI input*), so a
+  keyboard can play the synth and an e-drum the drum track at the same time. Arm several MIDI tracks with their red dot and they
+  record together, each from its own input (also together with armed audio tracks). The computer keyboard ("Keys") plays the selected track.
+- **Controllers** - mod wheel, expression, sustain and other pedals, hi-hat pedal, pitch bend and aftertouch are recorded with the
+  notes, played back to plugin instruments and hardware, and edited in the lane under the piano roll (pick the controller in the lane box:
+  click adds a point, drag moves it, right-click deletes). The built-in synth ignores them.
 - **Effects per track** - 3-band EQ, compressor, delay, reverb.
 - **VST3 hosting** - instruments and effects, with their own editor windows; plugin states are saved in the project.
 - **MIDI routing** - a sequencer plugin on one track can play the synth (built-in, drum kit or VST) of one or more other tracks; plugins receive tempo, bar position and play state from the DAW.
@@ -167,6 +172,8 @@ An arpeggiator or similar plugin that should change the notes of one track goes 
 | Latency compensation | **Audio...** > *Recording latency*: automatic, measured with a cable from an output to an input, plus a manual offset |
 | MIDI clock to hardware | **Audio...** > *MIDI clock*: tick the outputs that should follow the tempo |
 | Punch in/out | turn on **Punch** (`P`); the region is the selected clip, or two bars at the playhead. Change it with **Shift + right-drag** on the ruler (red). Press Record: playback starts a bar before the region, records inside it, and the recording closes itself at the punch-out |
+| Record a keyboard and an e-drum together | arm both MIDI tracks with their red dot, set each track's *MIDI input* in its VST panel, press Record |
+| Edit a mod wheel / pedal / pitch bend | piano roll: the box in the lane under the notes (Velocity by default) lists the controllers |
 | Record several takes | turn on **Loop** (set the loop with right-drag on the ruler) and press Record; stop when you have enough. Pick takes with right-click > *Choose take*; `S` splits all takes of a clip at the playhead for comping |
 | Tune an instrument | **Tuner** at the bottom right; pick the input (defaults to the armed track's input) |
 | Choose a track's input | click the input button on the audio track (e.g. *In: 1+2*): mono inputs, stereo pairs, or *Audio settings...* |

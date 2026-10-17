@@ -390,11 +390,26 @@ public:
         repaint();
     }
 
+    // -1: velocity bars; otherwise the lane shows one controller of the clip (a CC number, or CcEvent::kPitchBend / kAftertouch)
+    void setMode (int newMode)
+    {
+        mode = newMode;
+        ccActive = -1;
+        repaint();
+    }
+    int getMode() const { return mode; }
+
     void paint (juce::Graphics& g) override
     {
         g.fillAll (Theme::rowDark);
         if (! load())
             return;
+
+        if (mode >= 0)
+        {
+            paintCc (g);
+            return;
+        }
 
         g.setColour (Theme::text.withAlpha (0.06f));
         for (float f : { 0.25f, 0.5f, 0.75f })
@@ -420,6 +435,12 @@ public:
         if (! load())
             return;
 
+        if (mode >= 0)
+        {
+            ccMouseDown (e);
+            return;
+        }
+
         float best = 8.0f;   // pick the bar closest to the click, within a few pixels
         for (int i = 0; i < (int) clip.notes.size(); ++i)
         {
@@ -440,6 +461,11 @@ public:
 
     void mouseDrag (const juce::MouseEvent& e) override
     {
+        if (mode >= 0)
+        {
+            ccMouseDrag (e);
+            return;
+        }
         if (active < 0 || ! load())
             return;
 
@@ -456,9 +482,152 @@ public:
         setVelocity (touched, v);
     }
 
-    void mouseUp (const juce::MouseEvent&) override { active = -1; }
+    void mouseUp (const juce::MouseEvent&) override { active = -1; ccActive = -1; }
 
 private:
+    //----------------------------------------------------------------------------- controller lane
+    // The events of the shown controller are drawn as a stepped line (a controller keeps its value until the next event) with a
+    // dot per event. Click an empty spot to add one, drag a dot to move it, right-click a dot to delete it.
+    int ccX (const CcEvent& e) const { return (int) std::round ((clip.start + e.time) * main.getPixelsPerSecond()) - main.getScrollX() + 1; }
+    float ccY (float v) const { return 4.0f + (1.0f - juce::jlimit (0.0f, 1.0f, v)) * (float) (getHeight() - 8); }
+    float ccValueAt (int y) const { return juce::jlimit (0.0f, 1.0f, 1.0f - ((float) y - 4.0f) / (float) (getHeight() - 8)); }
+
+    void paintCc (juce::Graphics& g)
+    {
+        g.setColour (Theme::text.withAlpha (0.06f));
+        for (float f : { 0.25f, 0.5f, 0.75f })
+            g.drawHorizontalLine ((int) ccY (f), 0.0f, (float) getWidth());
+        if (mode == CcEvent::kPitchBend)   // the centre of the wheel
+        {
+            g.setColour (Theme::text.withAlpha (0.2f));
+            g.drawHorizontalLine ((int) ccY (0.5f), 0.0f, (float) getWidth());
+        }
+
+        std::vector<const CcEvent*> events;
+        for (auto& e : clip.ccs)
+            if (e.controller == mode)
+                events.push_back (&e);
+
+        if (events.empty())
+        {
+            g.setColour (Theme::textFaint);
+            g.setFont (juce::FontOptions (12.5f));
+            g.drawText ("Nothing recorded for this controller. Click to add a point, drag it to move, right-click to delete.",
+                        juce::Rectangle<int> (12, 0, getWidth() - 24, getHeight()), juce::Justification::centredLeft);
+            return;
+        }
+
+        juce::Path line;
+        for (size_t i = 0; i < events.size(); ++i)
+        {
+            const float x = (float) ccX (*events[i]), y = ccY (events[i]->value);
+            if (i == 0)
+                line.startNewSubPath ((float) ccX (*events[0]), y);
+            else
+                line.lineTo (x, ccY (events[i - 1]->value));   // holds the old value until here...
+            line.lineTo (x, y);                                // ...then jumps
+        }
+        line.lineTo ((float) getWidth(), ccY (events.back()->value));
+        g.setColour (Theme::yellow.withAlpha (0.8f));
+        g.strokePath (line, juce::PathStrokeType (1.5f));
+
+        for (auto* e : events)
+        {
+            g.setColour (Theme::yellow);
+            g.fillEllipse ((float) ccX (*e) - 3.5f, ccY (e->value) - 3.5f, 7.0f, 7.0f);
+        }
+    }
+
+    int ccNearest (const juce::MouseEvent& e) const
+    {
+        int best = -1;
+        float bestDistance = 10.0f;
+        for (int i = 0; i < (int) clip.ccs.size(); ++i)
+        {
+            if (clip.ccs[(size_t) i].controller != mode)
+                continue;
+            const float dx = (float) (ccX (clip.ccs[(size_t) i]) - e.x), dy = ccY (clip.ccs[(size_t) i].value) - (float) e.y;
+            const float d = std::sqrt (dx * dx + dy * dy);
+            if (d < bestDistance)
+            {
+                bestDistance = d;
+                best = i;
+            }
+        }
+        return best;
+    }
+
+    void ccCommit (std::vector<CcEvent> events)
+    {
+        if (! gestureEdited)
+        {
+            main.beginEdit();
+            gestureEdited = true;
+        }
+        main.getEngine().setMidiCcs (*track, clipId, std::move (events));
+        roll.repaintGrid();
+    }
+
+    void ccMouseDown (const juce::MouseEvent& e)
+    {
+        ccActive = ccNearest (e);
+
+        if (e.mods.isPopupMenu())   // right-click deletes the dot under the mouse
+        {
+            if (ccActive >= 0)
+            {
+                auto events = clip.ccs;
+                events.erase (events.begin() + ccActive);
+                ccCommit (std::move (events));
+            }
+            ccActive = -1;
+            return;
+        }
+
+        if (ccActive >= 0)
+            return;
+
+        // an empty spot: a new event there (snapped to the grid unless Alt is held), which can be dragged right away
+        const double t = (e.x + main.getScrollX()) / main.getPixelsPerSecond();
+        const double snapped = e.mods.isAltDown() ? t : main.snapTime (t);
+        CcEvent ev;
+        ev.controller = mode;
+        ev.time = juce::jlimit (0.0, juce::jmax (0.0, clip.length - 0.001), snapped - clip.start);
+        ev.value = ccValueAt (e.y);
+        auto events = clip.ccs;
+        events.push_back (ev);
+        std::stable_sort (events.begin(), events.end(), [] (const CcEvent& a, const CcEvent& b) { return a.time < b.time; });
+        ccCommit (events);
+        load();
+        ccActive = ccFind (ev);
+    }
+
+    int ccFind (const CcEvent& ev) const
+    {
+        for (int i = 0; i < (int) clip.ccs.size(); ++i)
+            if (clip.ccs[(size_t) i].controller == ev.controller && clip.ccs[(size_t) i].time == ev.time && clip.ccs[(size_t) i].value == ev.value)
+                return i;
+        return -1;
+    }
+
+    void ccMouseDrag (const juce::MouseEvent& e)
+    {
+        if (ccActive < 0 || ccActive >= (int) clip.ccs.size() || ! load() || ccActive >= (int) clip.ccs.size())
+            return;
+
+        auto events = clip.ccs;
+        auto ev = events[(size_t) ccActive];
+        const double t = (e.x + main.getScrollX()) / main.getPixelsPerSecond();
+        const double snapped = e.mods.isAltDown() ? t : main.snapTime (t);
+        ev.time = juce::jlimit (0.0, juce::jmax (0.0, clip.length - 0.001), snapped - clip.start);
+        ev.value = ccValueAt (e.y);
+        events[(size_t) ccActive] = ev;
+        std::stable_sort (events.begin(), events.end(), [] (const CcEvent& a, const CcEvent& b) { return a.time < b.time; });
+        ccCommit (events);
+        load();
+        ccActive = ccFind (ev);
+    }
+
     bool load() { return track != nullptr && main.getEngine().getMidiClip (*track, clipId, clip); }
     int barX (const Note& n) const
     {
@@ -494,6 +663,8 @@ private:
     int active = -1;
     int lastX = 0;
     bool gestureEdited = false;
+    int mode = -1;        // -1 velocity bars, else the controller shown
+    int ccActive = -1;    // index in clip.ccs of the event being dragged
 };
 
 //==============================================================================
@@ -503,6 +674,24 @@ PianoRoll::PianoRoll (MainComponent& m) : main (m)
     grid = std::make_unique<Grid> (*this);
     velocity = std::make_unique<Velocity> (*this);
     addAndMakeVisible (*velocity);
+
+    // the lane under the notes: velocity, or a controller of the clip (recorded from a mod wheel, pedal, pitch wheel... or drawn)
+    laneBox.addItem ("Velocity", 1);
+    laneBox.addSeparator();
+    const std::pair<int, const char*> common[] = { { 1, "Mod wheel (CC1)" }, { 11, "Expression (CC11)" }, { 7, "Volume (CC7)" }, { 10, "Pan (CC10)" },
+                                                    { 64, "Sustain pedal (CC64)" }, { 4, "Foot controller / hi-hat (CC4)" }, { 2, "Breath (CC2)" },
+                                                    { 74, "Filter cutoff (CC74)" }, { CcEvent::kPitchBend, "Pitch bend" }, { CcEvent::kAftertouch, "Aftertouch" } };
+    for (auto& [controller, name] : common)
+        laneBox.addItem (name, 100 + controller);
+    laneBox.setSelectedId (1, juce::dontSendNotification);
+    laneBox.setTooltip ("What the lane under the notes shows: the velocity of each note, or a controller of this clip");
+    laneBox.onChange = [this]
+    {
+        const int id = laneBox.getSelectedId();
+        velocity->setMode (id >= 100 ? id - 100 : -1);
+        repaint();
+    };
+    addAndMakeVisible (laneBox);
 
     title.setFont (juce::FontOptions (13.0f, juce::Font::bold));
     addAndMakeVisible (title);
@@ -554,6 +743,7 @@ void PianoRoll::showClip (Track* t, int id)
     clipId = id;
     grid->setClip (t, id);
     velocity->setClip (t, id);
+    refreshLaneChoices();
     toolbarShowsPlugin = ! (t != nullptr && t->instrument != nullptr);   // force updateToolbar() to apply
     updateToolbar();
 
@@ -569,6 +759,17 @@ void PianoRoll::showClip (Track* t, int id)
             scrollToNotes();   // (waits for the panel's layout if it is not sized yet)
     }
     repaint();
+}
+
+void PianoRoll::refreshLaneChoices()
+{
+    MidiClip clip;
+    if (track == nullptr || ! main.getEngine().getMidiClip (*track, clipId, clip))
+        return;
+
+    for (auto& cc : clip.ccs)
+        if (laneBox.indexOfItemId (100 + cc.controller) < 0)   // a controller that is not in the usual list: "CC 21"
+            laneBox.addItem ("CC " + juce::String (cc.controller), 100 + cc.controller);
 }
 
 std::bitset<128> PianoRoll::activePitches()
@@ -659,8 +860,9 @@ void PianoRoll::paint (juce::Graphics& g)
     g.setColour (Theme::panel);
     g.fillRect (labelArea);
     g.setColour (Theme::text.withAlpha (0.6f));
-    g.setFont (12.0f);
-    g.drawText ("Velocity (drag the bars)", labelArea.reduced (12, 0), juce::Justification::centredLeft);
+    g.setFont (11.5f);
+    g.drawText (velocity->getMode() < 0 ? "drag the bars" : "click: add, drag: move, right-click: delete",
+                labelArea.withTrimmedTop (36).reduced (12, 0), juce::Justification::centredLeft);
     g.setColour (Theme::border);
     g.drawHorizontalLine (getHeight() - velocityHeight, 0.0f, (float) getWidth());
 }
@@ -685,6 +887,7 @@ void PianoRoll::resized()
     cutoffLabel.setBounds (bar.removeFromLeft (46));
     cutoff.setBounds (bar.removeFromLeft (130));
 
+    laneBox.setBounds (12, getHeight() - velocityHeight + 8, MainComponent::controlsWidth - 24, 24);
     viewport.setBounds (0, toolbarHeight, getWidth(), juce::jmax (0, getHeight() - toolbarHeight - velocityHeight));
     velocity->setBounds (MainComponent::controlsWidth, getHeight() - velocityHeight,
                          juce::jmax (0, getWidth() - MainComponent::controlsWidth), velocityHeight);

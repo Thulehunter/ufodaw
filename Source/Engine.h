@@ -49,12 +49,24 @@ struct Note
     float velocity = 0.8f;
 };
 
+// A controller value in a MIDI clip: a mod wheel move, the expression or sustain pedal, the pitch bend, the aftertouch.
+// controller 0..127 = the MIDI CC number, kPitchBend, kAftertouch (channel pressure); value 0..1 (pitch bend: 0.5 = centre).
+struct CcEvent
+{
+    static constexpr int kPitchBend = 128, kAftertouch = 129;
+
+    double time = 0.0;       // seconds, relative to the start of the clip (like notes)
+    int controller = 1;
+    float value = 0.0f;
+};
+
 struct MidiClip
 {
     int id = 0;
     double start = 0.0;      // position on the timeline (seconds)
     double length = 4.0;
     std::vector<Note> notes;
+    std::vector<CcEvent> ccs;   // sorted by time
 
     double end() const { return start + length; }
 };
@@ -168,6 +180,9 @@ struct Track
     int inputFirst = 0;                                     // audio tracks: first of the device's enabled input channels this track listens to...
     int inputCount = 2;                                     // ...and how many (1 = mono, 2 = a stereo pair)
     bool monitor = false;                                   // armed audio tracks: also play the input through the track (not saved: off after loading)
+    juce::String midiInputId;                               // MIDI tracks: the MIDI input (device identifier) this track listens to; empty = every input
+    int midiInputChannel = 0;                               // ...and the MIDI channel (1..16), 0 = all
+    bool midiArmed = false;                                 // MIDI tracks: live MIDI plays this track and is recorded into it (besides the selected track)
     bool sequencer = false;                                 // UI role: this track's plugin is a note source (Stochas...), not a sound
     std::vector<MidiRoute> midiOuts;                        // tracks that play the notes this track's plugin sends
     std::vector<ExternalRoute> externalOuts;                // hardware that plays them (or the track's own notes: it then makes no sound itself)
@@ -230,6 +245,9 @@ struct TrackState
     std::vector<LaneState> autoLanes;   // includes "volume" and "pan"
     bool sequencer = false;
     bool recordArmed = false;
+    juce::String midiInputId;
+    int midiInputChannel = 0;
+    bool midiArmed = false;
     int inputFirst = 0, inputCount = 2;
     std::vector<std::pair<int, int>> midiOuts;   // (index of the target track, channel) of each MIDI route
     bool bus = false;
@@ -308,6 +326,7 @@ public:
     bool getMidiClip (const Track&, int clipId, MidiClip& out) const;
     bool isMidiClip (const Track&, int clipId) const;
     bool setMidiNotes (Track&, int clipId, std::vector<Note> notes);
+    bool setMidiCcs (Track&, int clipId, std::vector<CcEvent> ccs);   // sorted by time on the way in
     bool setMidiClipLength (Track&, int clipId, double lengthSeconds);
 
     // ---- Message thread: editing that works on audio and MIDI clips alike
@@ -369,6 +388,8 @@ public:
     // Audition a note on a MIDI track's synth (works while the transport is stopped).
     // Safe to call from any thread (UI, MIDI input).
     void previewNote (const Track&, int pitch, bool on, float velocity = 0.8f);
+    // A controller moved live (mod wheel, pedal, pitch bend...): goes to the track's plugin instrument or hardware.
+    void previewController (const Track&, int controller, float value01);
 
     double getTotalLengthSeconds() const;
     double getRenderTailSeconds() const;   // extra time to render after the last clip (delay/reverb tails)
@@ -468,7 +489,18 @@ private:
         int pitch = 0;
         bool on = false;
         float velocity = 0.8f;
+        int controller = -1;   // >= 0: a controller message (CcEvent numbering) with `velocity` as its value, not a note
     };
+
+    // Controller events of the clips (and nothing else) in the block being rendered, like noteEvents.
+    struct CcBlockEvent
+    {
+        int offset;
+        int controller;
+        float value;
+    };
+    std::vector<CcBlockEvent> ccEvents;
+    static juce::MidiMessage controllerMessage (int channel, int controller, float value01);
 
     // Caller must hold `lock`; adds into outL/outR (which must be pre-cleared).
     // `running` is false when only synth tails/previews should be rendered.

@@ -1,6 +1,7 @@
 #include "Engine.h"
 #include <algorithm>
 #include <cmath>
+#include <map>
 
 namespace
 {
@@ -199,7 +200,10 @@ void Engine::externalAllNotesOff (const Track& t)
         if (route.port < 0)
             continue;
         for (int ch = route.outChannel > 0 ? route.outChannel : 1; ch <= (route.outChannel > 0 ? route.outChannel : 16); ++ch)
+        {
             externalMidi.send (route.port, juce::MidiMessage::allNotesOff (ch), now);
+            externalMidi.send (route.port, juce::MidiMessage::controllerEvent (ch, 64, 0), now);   // sustain up
+        }
     }
 }
 
@@ -826,6 +830,17 @@ bool Engine::setMidiNotes (Track& t, int id, std::vector<Note> notes)
     return true;
 }
 
+bool Engine::setMidiCcs (Track& t, int id, std::vector<CcEvent> ccs)
+{
+    std::stable_sort (ccs.begin(), ccs.end(), [] (const CcEvent& a, const CcEvent& b) { return a.time < b.time; });
+    const juce::ScopedLock sl (lock);
+    auto* c = findMidiClip (t, id);
+    if (c == nullptr)
+        return false;
+    c->ccs = std::move (ccs);
+    return true;
+}
+
 bool Engine::setMidiClipLength (Track& t, int id, double length)
 {
     const juce::ScopedLock sl (lock);
@@ -953,6 +968,31 @@ int Engine::splitClip (Track& t, int id, double at)
             }
         }
         m->notes = std::move (left);
+
+        // Controller moves are split at the cut too; the right part starts with the value each controller had there.
+        std::vector<CcEvent> leftCcs;
+        std::map<int, float> lastBefore;
+        bool exactAtCut[130] = {};
+        for (auto& cc : m->ccs)
+        {
+            if (cc.time < cut)
+            {
+                leftCcs.push_back (cc);
+                lastBefore[cc.controller] = cc.value;
+            }
+            else
+            {
+                auto moved = cc;
+                moved.time -= cut;
+                right.ccs.push_back (moved);
+                if (moved.time < 1.0e-9 && juce::isPositiveAndBelow (cc.controller, 130))
+                    exactAtCut[cc.controller] = true;
+            }
+        }
+        for (auto& [controller, value] : lastBefore)
+            if (! exactAtCut[controller])
+                right.ccs.insert (right.ccs.begin(), { 0.0, controller, value });
+        m->ccs = std::move (leftCcs);
         m->length = cut;   // `m` is not used after the push_back below
 
         const int newId = right.id;
@@ -1060,6 +1100,8 @@ void Engine::setTempoMap (const TempoMap& newMap, bool retimeMidi)
                     n.start = juce::jmax (0.0, a - newStart);
                     n.length = juce::jmax (0.01, b - a);
                 }
+                for (auto& cc : clip.ccs)
+                    cc.time = juce::jmax (0.0, move (oldStart + cc.time) - newStart);
                 clip.start = newStart;
                 clip.length = juce::jmax (0.1, newEnd - newStart);
             }
@@ -1345,6 +1387,9 @@ TrackState Engine::captureTrack (const Track& t) const
     ts.midiFx = t.midiFx;
     ts.sequencer = t.sequencer;
     ts.recordArmed = t.recordArmed;
+    ts.midiInputId = t.midiInputId;
+    ts.midiInputChannel = t.midiInputChannel;
+    ts.midiArmed = t.midiArmed;
     ts.externalOuts = t.externalOuts;
     ts.inputFirst = t.inputFirst;
     ts.inputCount = t.inputCount;
@@ -1386,6 +1431,9 @@ void Engine::applyTrackState (Track& t, const TrackState& ts)
     t.kit = ts.kit;
     t.sequencer = ts.sequencer;
     t.recordArmed = ts.recordArmed;
+    t.midiInputId = ts.midiInputId;
+    t.midiInputChannel = ts.midiInputChannel;
+    t.midiArmed = ts.midiArmed;
     t.externalOuts = ts.externalOuts;
     t.inputFirst = ts.inputFirst;
     t.inputCount = ts.inputCount;
@@ -1514,6 +1562,32 @@ void Engine::previewNote (const Track& t, int pitch, bool on, float velocity)
     previewFifo.finishedWrite (n1 + n2);
 }
 
+void Engine::previewController (const Track& t, int controller, float value01)
+{
+    const juce::SpinLock::ScopedLockType sl (previewWriteLock);
+    int s1, n1, s2, n2;
+    previewFifo.prepareToWrite (1, s1, n1, s2, n2);
+    PreviewEvent e;
+    e.track = &t;
+    e.controller = controller;
+    e.velocity = value01;
+    if (n1 > 0)
+        previewQueue[(size_t) s1] = e;
+    else if (n2 > 0)
+        previewQueue[(size_t) s2] = e;
+    previewFifo.finishedWrite (n1 + n2);
+}
+
+juce::MidiMessage Engine::controllerMessage (int channel, int controller, float value01)
+{
+    const float v = juce::jlimit (0.0f, 1.0f, value01);
+    if (controller == CcEvent::kPitchBend)
+        return juce::MidiMessage::pitchWheel (channel, (int) std::lround (v * 16383.0f));
+    if (controller == CcEvent::kAftertouch)
+        return juce::MidiMessage::channelPressureChange (channel, (int) std::lround (v * 127.0f));
+    return juce::MidiMessage::controllerEvent (channel, juce::jlimit (0, 127, controller), (int) std::lround (v * 127.0f));
+}
+
 void Engine::drainPreviewEvents()
 {
     int s1, n1, s2, n2;
@@ -1524,6 +1598,16 @@ void Engine::drainPreviewEvents()
         for (auto& t : tracks)
             if (t.get() == e.track)
             {
+                if (e.controller >= 0)   // a controller moved live: only plugin instruments and hardware care
+                {
+                    const auto m = controllerMessage (1, e.controller, e.velocity);
+                    if (t->instrument != nullptr)
+                        t->liveMidi.addEvent (m, 0);
+                    else if (! t->externalOuts.empty())
+                        forwardExternal (*t, m, 0);
+                    return;
+                }
+
                 if (! t->externalOuts.empty() && t->instrument == nullptr)   // notes played live go to the hardware
                 {
                     forwardExternal (*t, e.on ? juce::MidiMessage::noteOn (1, e.pitch, e.velocity)
@@ -1613,6 +1697,7 @@ void Engine::releaseAllNotes (Track& t)
     if (t.instrument != nullptr)
     {
         t.liveMidi.addEvent (juce::MidiMessage::allNotesOff (1), 0);
+        t.liveMidi.addEvent (juce::MidiMessage::controllerEvent (1, 64, 0), 0);   // a sustain pedal does not stay down
         t.pluginTailSamples = juce::jmax (t.pluginTailSamples, 2.0 * sampleRate);
     }
 }
@@ -2008,11 +2093,13 @@ void Engine::addCountInClicks (float* outL, float* outR, int n)
 void Engine::collectNoteEvents (Track& t, int n, juce::int64 pos, bool running)
 {
     noteEvents.clear();
+    ccEvents.clear();
 
     if (running)
     {
         const double blockEnd = (double) (pos + n);
         for (auto& clip : t.midiClips)
+        {
             for (auto& note : clip.notes)
             {
                 if (note.start >= clip.length)
@@ -2025,6 +2112,16 @@ void Engine::collectNoteEvents (Track& t, int n, juce::int64 pos, bool running)
                 if (off >= (double) pos && off < blockEnd)
                     noteEvents.push_back ({ (int) (off - (double) pos), false, note.pitch, 0.0f });
             }
+
+            for (auto& cc : clip.ccs)   // controller moves recorded or drawn in the clip
+            {
+                if (cc.time >= clip.length)
+                    continue;
+                const double at = (clip.start + cc.time) * sampleRate;
+                if (at >= (double) pos && at < blockEnd)
+                    ccEvents.push_back ({ (int) (at - (double) pos), cc.controller, cc.value });
+            }
+        }
     }
 
     // notes that other tracks (a plugin sequencer) routed here during this block
@@ -2046,9 +2143,13 @@ void Engine::collectNoteEvents (Track& t, int n, juce::int64 pos, bool running)
     // A track without a plugin instrument that sends to hardware: its notes (after the MIDI effects) go out here.
     // (With a plugin instrument it is the plugin's output that goes out, see runMidiSource.)
     if (t.instrument == nullptr && ! t.externalOuts.empty())
+    {
         for (auto& e : noteEvents)
             forwardExternal (t, e.on ? juce::MidiMessage::noteOn (e.channel, e.pitch, e.velocity)
                                      : juce::MidiMessage::noteOff (e.channel, e.pitch), e.offset);
+        for (auto& c : ccEvents)
+            forwardExternal (t, controllerMessage (1, c.controller, c.value), c.offset);
+    }
 }
 
 // Samples of delay the plugins in a track add (reported by the plugins themselves).
@@ -2141,6 +2242,8 @@ void Engine::renderPluginInstrument (Track& t, int n, float* outL, float* outR)
     for (auto& e : noteEvents)
         midiScratch.addEvent (e.on ? juce::MidiMessage::noteOn (e.channel, e.pitch, e.velocity)
                                    : juce::MidiMessage::noteOff (e.channel, e.pitch), e.offset);
+    for (auto& c : ccEvents)
+        midiScratch.addEvent (controllerMessage (1, c.controller, c.value), c.offset);
 
     buf.clear (0, n);
     juce::AudioBuffer<float> view (buf.getArrayOfWritePointers(), channels, n);   // wraps, no allocation

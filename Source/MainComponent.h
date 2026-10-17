@@ -6,6 +6,7 @@
 #include "PluginHost.h"
 #include "Theme.h"
 #include "Tuner.h"
+#include <map>
 
 // Settings shared by the track headers and the lanes
 namespace UiSettings
@@ -180,6 +181,7 @@ private:
     void openRouting (Track&, juce::Component& anchor);      // output (master or a bus) and sends of a track
     void openQuantize (Track&, int clipId);                  // quantize / swing / humanize the notes of a MIDI clip
     void armAudioTrack (Track&, bool armed);   // several audio tracks can be armed: all of them record at once
+    void armTrack (Track&);                    // toggles the red dot: audio tracks record, MIDI tracks listen to their MIDI input and record
     void openInputMenu (Track&, juce::Component& anchor);   // pick the audio interface input(s) of an audio track
     void addMidiTrack (bool drums = false);
     void undo();
@@ -290,11 +292,28 @@ private:
     int pianoKeyPitch[16] = {};
 
     struct HeldNote { int pitch; double start; float velocity; };
+    struct MidiRec   // what one MIDI track is recording; times are absolute timeline seconds until the clip is created
+    {
+        Track* track = nullptr;
+        std::vector<HeldNote> held;
+        std::vector<Note> notes;
+        std::vector<CcEvent> ccs;
+        std::map<int, std::pair<double, float>> lastCc;   // per controller: when and what was last kept (thins out dense streams)
+    };
     juce::CriticalSection midiRecLock;
     std::atomic<bool> midiRecording { false };
-    std::vector<HeldNote> heldNotes;
-    std::vector<Note> recordedNotes;   // start = absolute timeline seconds until the clip is created
-    Track* recMidiTrack = nullptr;
+    std::vector<MidiRec> midiRecs;   // guarded by midiRecLock
+
+    // Where live MIDI goes: the selected MIDI track and every MIDI track armed with its red dot, each with the input it listens to.
+    // Rebuilt on the message thread, read on the MIDI thread.
+    struct LiveTarget { Track* track = nullptr; juce::String deviceId; int channel = 0; };
+    juce::CriticalSection liveTargetsLock;
+    std::vector<LiveTarget> liveTargets;
+    void refreshLiveTargets();
+    void routeLiveMidi (const juce::String& sourceId, const juce::MidiMessage&);   // MIDI thread
+    void liveEvent (Track*, const juce::MidiMessage&);                              // plays it on the track and records it
+    bool beginMidiRecording (bool includeSelected);   // sets up midiRecs for the MIDI tracks that record: those armed with their dot, and
+                                                      // the selected one if asked; false (and not recording) when there is none
     struct PendingRecording   // one audio file being recorded: into an armed track, or into a new one (track == nullptr)
     {
         Track* track = nullptr;

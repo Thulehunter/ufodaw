@@ -53,10 +53,13 @@ public:
         const bool audioTrack = track.type == Track::Type::Audio && ! track.bus;   // (a bus has no input to record)
 
         // record-arm: audio tracks only; the next audio recording goes into the armed track
-        armButton.setTooltip ("Record arm: the next recording goes into this track (click Record at the bottom, or press R)");
+        armButton.setTooltip (track.type == Track::Type::Midi
+                                  ? "Record arm: this track plays and records the MIDI of its input (set it in the VST panel; default: every input). "
+                                    "Arm several MIDI tracks to record a keyboard and an e-drum at once."
+                                  : "Record arm: the next recording goes into this track (click Record at the bottom, or press R)");
         armButton.onClick = [this] { toggleArm (track); };
         addChildComponent (armButton);
-        armButton.setVisible (audioTrack);
+        armButton.setVisible (audioTrack || (track.type == Track::Type::Midi && ! isMaster));
 
         // fourth row: audio tracks pick their input here (and can monitor it); MIDI tracks show what plays them
         rowButton.setTooltip (track.bus ? "A bus: it plays what other tracks send or route to it (the Out button on those tracks)"
@@ -338,9 +341,10 @@ public:
             }
         }
 
-        if (track.recordArmed != armShown)
+        const bool armedNow = track.type == Track::Type::Midi ? track.midiArmed : track.recordArmed;
+        if (armedNow != armShown)
         {
-            armShown = track.recordArmed;
+            armShown = armedNow;
             armButton.setColour (juce::TextButton::buttonColourId, armShown ? Theme::redBright : Theme::buttonOff);
             armButton.setColour (juce::TextButton::textColourOffId, armShown ? Theme::text : Theme::redDim);
             armButton.repaint();
@@ -1622,6 +1626,7 @@ void MainComponent::updateArmedTrack()
         t = roll->getTrack();
     }
     armedTrack = t;
+    refreshLiveTargets();
 
     statusLabel.setText (audioInfoText + "\n"
                              + "MIDI in: " + (midiInputText.isEmpty() ? juce::String ("none") : midiInputText)
@@ -1748,49 +1753,137 @@ void MainComponent::openAudioSettings()
     options.launchAsync();
 }
 
-void MainComponent::MidiForwarder::handleIncomingMidiMessage (juce::MidiInput*, const juce::MidiMessage& m)
+void MainComponent::MidiForwarder::handleIncomingMidiMessage (juce::MidiInput* source, const juce::MidiMessage& m)
 {
-    if (m.isNoteOn())       owner.liveNote (m.getNoteNumber(), true, m.getFloatVelocity());
-    else if (m.isNoteOff()) owner.liveNote (m.getNoteNumber(), false, 0.0f);
+    owner.routeLiveMidi (source != nullptr ? source->getIdentifier() : juce::String(), m);
 }
 
-// May run on the MIDI thread: plays the note on the armed synth and, while recording, remembers it.
+// MIDI thread. A message from one input goes to every target that listens to that input (and channel).
+void MainComponent::routeLiveMidi (const juce::String& sourceId, const juce::MidiMessage& m)
+{
+    if (m.isNoteOnOrOff() && juce::isPositiveAndBelow (m.getNoteNumber(), 128))   // which keys are down, so the piano roll can light them
+    {
+        auto& mask = m.getNoteNumber() < 64 ? liveMaskLow : liveMaskHigh;
+        const unsigned long long bit = 1ull << (m.getNoteNumber() & 63);
+        if (m.isNoteOn()) mask.fetch_or (bit); else mask.fetch_and (~bit);
+    }
+
+    if (! (m.isNoteOnOrOff() || m.isController() || m.isPitchWheel() || m.isChannelPressure()))
+        return;
+
+    std::vector<LiveTarget> targets;
+    {
+        const juce::ScopedLock sl (liveTargetsLock);
+        targets = liveTargets;
+    }
+    for (auto& t : targets)
+    {
+        if (t.deviceId.isNotEmpty() && t.deviceId != sourceId)
+            continue;
+        if (t.channel > 0 && m.getChannel() != t.channel)
+            continue;
+        liveEvent (t.track, m);
+    }
+}
+
+// The computer keyboard: plays the selected MIDI track.
 void MainComponent::liveNote (int pitch, bool on, float velocity)
 {
-    if (juce::isPositiveAndBelow (pitch, 128))   // remember which keys are down, so the piano roll can light them up
+    if (juce::isPositiveAndBelow (pitch, 128))
     {
         auto& mask = pitch < 64 ? liveMaskLow : liveMaskHigh;
         const unsigned long long bit = 1ull << (pitch & 63);
         if (on) mask.fetch_or (bit); else mask.fetch_and (~bit);
     }
 
-    auto* t = armedTrack.load();
+    if (auto* t = armedTrack.load())
+        liveEvent (t, on ? juce::MidiMessage::noteOn (1, pitch, velocity) : juce::MidiMessage::noteOff (1, pitch));
+}
+
+// May run on the MIDI thread: plays the message on the track and, while recording, remembers it.
+void MainComponent::liveEvent (Track* t, const juce::MidiMessage& m)
+{
     if (t == nullptr)
         return;
 
-    engine.previewNote (*t, pitch, on, velocity);
-    if (! midiRecording || engine.isCountingIn())   // (notes played during the count-in are heard, not recorded)
+    int controller = -1;
+    float value = 0.0f;
+    if (m.isController())          { controller = m.getControllerNumber(); value = (float) m.getControllerValue() / 127.0f; }
+    else if (m.isPitchWheel())     { controller = CcEvent::kPitchBend;     value = (float) m.getPitchWheelValue() / 16383.0f; }
+    else if (m.isChannelPressure()) { controller = CcEvent::kAftertouch;    value = (float) m.getChannelPressureValue() / 127.0f; }
+
+    if (m.isNoteOnOrOff())
+        engine.previewNote (*t, m.getNoteNumber(), m.isNoteOn(), m.getFloatVelocity());
+    else if (controller >= 0)
+        engine.previewController (*t, controller, value);
+
+    if (! midiRecording || engine.isCountingIn())   // (what is played during the count-in is heard, not recorded)
         return;
 
     const double now = engine.getPositionSeconds();
     const juce::ScopedLock sl (midiRecLock);
-    if (on)
+    MidiRec* rec = nullptr;
+    for (auto& r : midiRecs)
+        if (r.track == t)
+            rec = &r;
+    if (rec == nullptr)
+        return;
+
+    if (controller >= 0)
     {
-        heldNotes.push_back ({ pitch, now, velocity });
+        // thin out dense streams (a pitch wheel sends hundreds of values a second): keep one every 10 ms, or a bigger jump
+        const auto found = rec->lastCc.find (controller);
+        if (found == rec->lastCc.end() || now - found->second.first >= 0.01 || std::abs (value - found->second.second) >= 0.02f)
+        {
+            rec->ccs.push_back ({ now, controller, value });
+            rec->lastCc[controller] = { now, value };
+        }
         return;
     }
-    for (auto it = heldNotes.begin(); it != heldNotes.end(); ++it)
-        if (it->pitch == pitch)
+
+    if (m.isNoteOn())
+    {
+        rec->held.push_back ({ m.getNoteNumber(), now, m.getFloatVelocity() });
+        return;
+    }
+    for (auto it = rec->held.begin(); it != rec->held.end(); ++it)
+        if (it->pitch == m.getNoteNumber())
         {
             Note n;
-            n.pitch = pitch;
+            n.pitch = m.getNoteNumber();
             n.start = it->start;
             n.length = juce::jmax (0.02, now - it->start);
             n.velocity = it->velocity;
-            recordedNotes.push_back (n);
-            heldNotes.erase (it);
+            rec->notes.push_back (n);
+            rec->held.erase (it);
             return;
         }
+}
+
+// Rebuilds the list of tracks that live MIDI goes to; cheap, called on the timer and whenever the selection changes.
+void MainComponent::refreshLiveTargets()
+{
+    std::vector<LiveTarget> targets;
+    auto add = [&] (Track* t)
+    {
+        if (t == nullptr || t->type != Track::Type::Midi)
+            return;
+        for (auto& existing : targets)
+            if (existing.track == t)
+                return;
+        targets.push_back ({ t, t->midiInputId, t->midiInputChannel });
+    };
+    add (armedTrack.load());   // the selected MIDI track listens (as before), through its own input choice
+    for (int i = 0; i < engine.getNumTracks(); ++i)
+        if (auto* t = engine.getTrack (i); t != nullptr && t->midiArmed)
+            add (t);
+
+    const juce::ScopedLock sl (liveTargetsLock);
+    const auto same = liveTargets.size() == targets.size()
+                      && std::equal (targets.begin(), targets.end(), liveTargets.begin(), [] (auto& a, auto& b)
+                                     { return a.track == b.track && a.deviceId == b.deviceId && a.channel == b.channel; });
+    if (! same)
+        liveTargets = std::move (targets);
 }
 
 void MainComponent::showRoll (Track* t, int clipId)
@@ -2301,7 +2394,7 @@ std::unique_ptr<TrackHeader> MainComponent::makeHeader (Track& t, bool master)
        [this] (Track& tr, juce::Component& anchor) { openAutomation (tr, anchor); },
        [this] { return engine.getPositionSeconds(); },
        [this] (Track& tr) { openInstrumentEditor (tr); },
-       [this] (Track& tr) { armAudioTrack (tr, ! tr.recordArmed); },
+       [this] (Track& tr) { armTrack (tr); },
        [this] (Track& tr, juce::Component& anchor) { openInputMenu (tr, anchor); },
        [this] (Track& tr, juce::Component& anchor) { openRouting (tr, anchor); },
        master);
@@ -2942,6 +3035,8 @@ void MainComponent::timerCallback()
 {
     const double p = engine.getPositionSeconds();
     const int mins = (int) (p / 60.0);
+    refreshLiveTargets();   // picks up red-dot arming and input choices made anywhere
+
     if (juce::Time::getMillisecondCounter() - lastAutosaveMs > 120000u)   // every two minutes
     {
         lastAutosaveMs = juce::Time::getMillisecondCounter();
@@ -3024,17 +3119,10 @@ void MainComponent::toggleRecording()
         if (auto* candidate = engine.getTrack (i); candidate->type == Track::Type::Audio && candidate->recordArmed)
             audioArmed = candidate;
 
-    // A MIDI track is armed (and no audio track is): record the notes that are played, not the audio input
-    if (auto* armed = audioArmed == nullptr ? armedTrack.load() : nullptr)
+    // MIDI tracks are armed and no audio track is: record what is played, not the audio input
+    if (audioArmed == nullptr && beginMidiRecording (true))
     {
-        {
-            const juce::ScopedLock sl (midiRecLock);
-            heldNotes.clear();
-            recordedNotes.clear();
-        }
-        recMidiTrack = armed;
         recStartSeconds = engine.getPositionSeconds();
-        midiRecording = true;
         if (! engine.isPlaying())
             engine.startCountIn (UiSettings::countInBars);   // clicks first; the notes are recorded once the transport runs
         startPlayback();
@@ -3085,6 +3173,8 @@ void MainComponent::toggleRecording()
         return;
     }
 
+    beginMidiRecording (false);   // MIDI tracks armed with their red dot record at the same time as the audio
+
     // Punch: from a stop (or from after the region) start a bar ahead of it, so there is a run-up.
     if (engine.punchEnabled && engine.punchOut > engine.punchIn && ! engine.isPlaying()
         && engine.getPositionSeconds() > engine.punchIn - 0.001)
@@ -3109,57 +3199,113 @@ void MainComponent::finishMidiRecording()
     midiRecording = false;
     const double now = engine.getPositionSeconds();
 
-    std::vector<Note> notes;
+    std::vector<MidiRec> recs;
     {
         const juce::ScopedLock sl (midiRecLock);
-        for (auto& h : heldNotes)   // notes still held when recording stops end here
+        for (auto& r : midiRecs)
         {
-            Note n;
-            n.pitch = h.pitch;
-            n.start = h.start;
-            n.length = juce::jmax (0.02, now - h.start);
-            n.velocity = h.velocity;
-            recordedNotes.push_back (n);
+            for (auto& h : r.held)   // notes still held when recording stops end here
+            {
+                Note n;
+                n.pitch = h.pitch;
+                n.start = h.start;
+                n.length = juce::jmax (0.02, now - h.start);
+                n.velocity = h.velocity;
+                r.notes.push_back (n);
+            }
+            r.held.clear();
         }
-        heldNotes.clear();
-        notes.swap (recordedNotes);
+        recs.swap (midiRecs);
     }
 
-    auto* t = recMidiTrack;
-    recMidiTrack = nullptr;
-    if (notes.empty() || t == nullptr || engine.indexOfTrack (t) < 0)
-        return;
-
+    // every track that recorded something gets a clip, starting on the bar where recording began and lasting whole bars
     const int startBar = tempoMap.barAtSeconds (recStartSeconds);
     const double clipStart = tempoMap.barStartSeconds (startBar);
-    double end = 0.0;
-    for (auto& n : notes)
-    {
-        n.start = juce::jmax (0.0, n.start - clipStart);
-        end = juce::jmax (end, n.start + n.length);
-    }
-    // the clip lasts a whole number of bars (at least one)
-    const double absoluteEnd = clipStart + end;
-    int endBar = tempoMap.barAtSeconds (absoluteEnd);
-    if (absoluteEnd > tempoMap.barStartSeconds (endBar) + 1.0e-6)
-        ++endBar;
-    const double clipLength = tempoMap.barStartSeconds (juce::jmax (startBar + 1, endBar)) - clipStart;
 
     beginEdit();
-    const int id = engine.addMidiClip (*t, clipStart, clipLength);
-    engine.setMidiNotes (*t, id, std::move (notes));
-    selectClip (t, id);
+    Track* selectTrack = nullptr;
+    int selectId = -1;
+    for (auto& r : recs)
+    {
+        if ((r.notes.empty() && r.ccs.empty()) || r.track == nullptr || engine.indexOfTrack (r.track) < 0)
+            continue;
+
+        double end = 0.0;
+        for (auto& n : r.notes)
+        {
+            n.start = juce::jmax (0.0, n.start - clipStart);
+            end = juce::jmax (end, n.start + n.length);
+        }
+        for (auto& cc : r.ccs)
+        {
+            cc.time = juce::jmax (0.0, cc.time - clipStart);
+            end = juce::jmax (end, cc.time);
+        }
+
+        const double absoluteEnd = clipStart + end;
+        int endBar = tempoMap.barAtSeconds (absoluteEnd);
+        if (absoluteEnd > tempoMap.barStartSeconds (endBar) + 1.0e-6)
+            ++endBar;
+        const double clipLength = tempoMap.barStartSeconds (juce::jmax (startBar + 1, endBar)) - clipStart;
+
+        const int id = engine.addMidiClip (*r.track, clipStart, clipLength);
+        engine.setMidiNotes (*r.track, id, std::move (r.notes));
+        engine.setMidiCcs (*r.track, id, std::move (r.ccs));
+        if (selectTrack == nullptr)
+        {
+            selectTrack = r.track;
+            selectId = id;
+        }
+    }
+
+    if (selectTrack == nullptr)
+    {
+        cancelEdit();   // nothing was played
+        return;
+    }
+    selectClip (selectTrack, selectId);
     clipsChanged();
+}
+
+// MIDI tracks that record: the ones armed with their red dot, and (when asked) the selected track.
+bool MainComponent::beginMidiRecording (bool includeSelected)
+{
+    std::vector<MidiRec> recs;
+    auto add = [&] (Track* t)
+    {
+        if (t == nullptr || t->type != Track::Type::Midi)
+            return;
+        for (auto& r : recs)
+            if (r.track == t)
+                return;
+        MidiRec r;
+        r.track = t;
+        recs.push_back (std::move (r));
+    };
+    if (includeSelected)
+        add (armedTrack.load());
+    for (int i = 0; i < engine.getNumTracks(); ++i)
+        if (auto* t = engine.getTrack (i); t != nullptr && t->midiArmed)
+            add (t);
+
+    if (recs.empty())
+        return false;
+
+    {
+        const juce::ScopedLock sl (midiRecLock);
+        midiRecs = std::move (recs);
+    }
+    recStartSeconds = engine.getPositionSeconds();
+    refreshLiveTargets();   // (the selected track must be a live target, whatever the timer did last)
+    midiRecording = true;
+    return true;
 }
 
 // Closes the recording file and puts it on the armed audio track (or a new track) where recording began.
 void MainComponent::finishRecording()
 {
     if (midiRecording)
-    {
-        finishMidiRecording();
-        return;
-    }
+        finishMidiRecording();   // (audio that is recorded at the same time is finished below)
 
     if (! engine.isRecording())
         return;
@@ -3336,6 +3482,19 @@ void MainComponent::addEmptyAudioTrack()
 void MainComponent::armAudioTrack (Track& t, bool armed)
 {
     t.recordArmed = armed && t.type == Track::Type::Audio;
+}
+
+void MainComponent::armTrack (Track& t)
+{
+    if (t.type == Track::Type::Midi)
+    {
+        t.midiArmed = ! t.midiArmed;
+        refreshLiveTargets();
+    }
+    else
+    {
+        armAudioTrack (t, ! t.recordArmed);
+    }
 }
 
 // The inputs of the audio interface that are switched on (Audio... window), as names: choose one for this track, or a pair.
@@ -3516,6 +3675,19 @@ void MainComponent::saveProject (const juce::File& file, bool asAutosave)
                 mo->setProperty ("start", m.start);
                 mo->setProperty ("length", m.length);
                 mo->setProperty ("notes", noteList);
+                if (! m.ccs.empty())
+                {
+                    juce::Array<juce::var> ccList;   // compact: [time, controller, value] per event
+                    for (auto& cc : m.ccs)
+                    {
+                        juce::Array<juce::var> e;
+                        e.add (cc.time);
+                        e.add (cc.controller);
+                        e.add ((double) cc.value);
+                        ccList.add (juce::var (e));
+                    }
+                    mo->setProperty ("ccs", ccList);
+                }
                 midiList.add (juce::var (mo));
             }
             o->setProperty ("midiClips", midiList);
@@ -3532,6 +3704,18 @@ void MainComponent::saveProject (const juce::File& file, bool asAutosave)
             }
         }
         writeEffectsAndAutomation (*o, *t);   // effects, plugins, automation
+        if (t->type == Track::Type::Midi)
+        {
+            if (t->midiInputId.isNotEmpty())
+            {
+                o->setProperty ("midiInput", t->midiInputId);
+                for (auto& d : juce::MidiInput::getAvailableDevices())
+                    if (d.identifier == t->midiInputId)
+                        o->setProperty ("midiInputName", d.name);
+            }
+            if (t->midiInputChannel > 0)
+                o->setProperty ("midiChannel", t->midiInputChannel);
+        }
         o->setProperty ("sequencer", t->sequencer);
         o->setProperty ("inputFirst", t->inputFirst);   // audio tracks: the interface input(s) it records from
         o->setProperty ("inputCount", t->inputCount);
@@ -3869,7 +4053,29 @@ void MainComponent::loadProject (const juce::File& file)
                             notes.push_back (n);
                         }
                     engine.setMidiNotes (*t, id, std::move (notes));
+
+                    std::vector<CcEvent> ccs;
+                    if (auto* ccArray = mv["ccs"].getArray())
+                        for (auto& ev : *ccArray)
+                            if (auto* e = ev.getArray(); e != nullptr && e->size() >= 3)
+                                ccs.push_back ({ (double) (*e)[0], (int) (*e)[1], (float) (double) (*e)[2] });
+                    if (! ccs.empty())
+                        engine.setMidiCcs (*t, id, std::move (ccs));
                 }
+
+            // the MIDI input this track listens to; a device that was renamed or got a new identifier is found by its name
+            t->midiInputChannel = juce::jlimit (0, 16, (int) item.getProperty ("midiChannel", 0));
+            auto inputId = item.getProperty ("midiInput", "").toString();
+            if (inputId.isNotEmpty())
+            {
+                const auto devices = juce::MidiInput::getAvailableDevices();
+                const bool known = std::any_of (devices.begin(), devices.end(), [&] (auto& d) { return d.identifier == inputId; });
+                if (! known)
+                    for (auto& d : devices)
+                        if (d.name == item.getProperty ("midiInputName", "").toString())
+                            inputId = d.identifier;
+            }
+            t->midiInputId = inputId;
         }
         else if (auto* clipArray = item["clips"].getArray())
         {
