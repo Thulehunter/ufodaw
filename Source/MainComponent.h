@@ -91,6 +91,8 @@ public:
     void paintOverChildren (juce::Graphics&) override;
     void resized() override;
     bool keyPressed (const juce::KeyPress&) override;
+    bool keyStateChanged (bool isKeyDown) override;
+    void focusLost (FocusChangeType) override;
 
     bool isInterestedInFileDrag (const juce::StringArray&) override { return true; }
     void filesDropped (const juce::StringArray& files, int, int) override { importFiles (files, nullptr, 0.0); }
@@ -137,6 +139,12 @@ private:
     void showRoll (Track*, int clipId);
     void hideRoll();
 
+    // ---- Live MIDI (hardware keyboard or computer keys) -> synth of the armed track
+    void enableAllMidiInputs();
+    void updateArmedTrack();
+    void liveNote (int pitch, bool on, float velocity);
+    void finishMidiRecording();
+
     void startPlayback();
     void pausePlayback();
     void stopPlayback();
@@ -153,14 +161,40 @@ private:
     void openProjectDialog();
     void exportDialog();
 
+    struct MidiForwarder : public juce::MidiInputCallback
+    {
+        explicit MidiForwarder (MainComponent& o) : owner (o) {}
+        void handleIncomingMidiMessage (juce::MidiInput*, const juce::MidiMessage&) override;   // MIDI thread
+        MainComponent& owner;
+    };
+
     juce::AudioDeviceManager deviceManager;
     juce::AudioSourcePlayer player;
     Engine engine;
+    MidiForwarder midiForwarder { *this };
+    juce::MidiDeviceListConnection midiListConnection;
 
     juce::TextButton addButton { "+ Track" }, addMidiButton { "+ MIDI Track" };
     std::unique_ptr<PianoRoll> roll;
     bool rollVisible = false;
     juce::TextButton undoButton { "Undo" }, redoButton { "Redo" };
+
+    // The MIDI track that live notes go to: the selected MIDI clip's track, or the open piano roll's.
+    // Read from the MIDI thread, so it is atomic; the pointer is only ever compared / passed by address.
+    std::atomic<Track*> armedTrack { nullptr };
+    juce::Label statusLabel;
+    juce::String midiInputText;
+    juce::ToggleButton keysButton { "Keys" };   // computer keyboard as piano
+    int pianoOctave = 0;
+    bool pianoKeyDown[16] = {};
+    int pianoKeyPitch[16] = {};
+
+    struct HeldNote { int pitch; double start; float velocity; };
+    juce::CriticalSection midiRecLock;
+    std::atomic<bool> midiRecording { false };
+    std::vector<HeldNote> heldNotes;
+    std::vector<Note> recordedNotes;   // start = absolute timeline seconds until the clip is created
+    Track* recMidiTrack = nullptr;
     std::vector<ProjectState> undoStack, redoStack;
     TransportButton rewindButton { TransportButton::Rewind, "Rewind (Enter)" },
                     playButton   { TransportButton::Play,   "Play (Space)" },

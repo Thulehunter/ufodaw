@@ -503,14 +503,15 @@ void Engine::restoreState (const ProjectState& s)
 //==============================================================================
 // Note preview (UI thread -> audio thread)
 
-void Engine::previewNote (const Track& t, int pitch, bool on)
+void Engine::previewNote (const Track& t, int pitch, bool on, float velocity)
 {
+    const juce::SpinLock::ScopedLockType sl (previewWriteLock);
     int s1, n1, s2, n2;
     previewFifo.prepareToWrite (1, s1, n1, s2, n2);
     if (n1 > 0)
-        previewQueue[(size_t) s1] = { &t, pitch, on };
+        previewQueue[(size_t) s1] = { &t, pitch, on, velocity };
     else if (n2 > 0)
-        previewQueue[(size_t) s2] = { &t, pitch, on };
+        previewQueue[(size_t) s2] = { &t, pitch, on, velocity };
     previewFifo.finishedWrite (n1 + n2);
 }
 
@@ -524,7 +525,7 @@ void Engine::drainPreviewEvents()
         for (auto& t : tracks)
             if (t.get() == e.track && t->voices != nullptr)
             {
-                if (e.on) t->voices->noteOn (e.pitch, 0.8f); else t->voices->noteOff (e.pitch);
+                if (e.on) t->voices->noteOn (e.pitch, e.velocity); else t->voices->noteOff (e.pitch);
                 return;
             }
     };

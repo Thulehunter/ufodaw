@@ -477,6 +477,19 @@ MainComponent::MainComponent()
     player.setSource (&engine);
     deviceManager.addAudioCallback (&player);
 
+    deviceManager.addMidiInputDeviceCallback ({}, &midiForwarder);   // all enabled MIDI inputs
+    midiListConnection = juce::MidiDeviceListConnection::make ([this] { enableAllMidiInputs(); });   // hot-plugging
+    statusLabel.setFont (juce::FontOptions (12.0f));
+    statusLabel.setColour (juce::Label::textColourId, juce::Colours::white.withAlpha (0.6f));
+    addAndMakeVisible (statusLabel);
+
+    keysButton.setTooltip ("Play the armed MIDI track with the computer keyboard: A W S E D F T G Y H U J K O L P. "
+                           "Z / X change octave. While on, those letters are not shortcuts.");
+    keysButton.setWantsKeyboardFocus (false);
+    keysButton.onClick = [this] { grabKeyboardFocus(); };
+    addAndMakeVisible (keysButton);
+    enableAllMidiInputs();
+
     for (juce::Component* b : std::initializer_list<juce::Component*> {
              &rewindButton, &playButton, &pauseButton, &stopButton, &recordButton, &addButton, &addMidiButton,
              &openButton, &saveButton, &saveAsButton, &exportButton, &undoButton, &redoButton, &zoomOutButton, &zoomInButton })
@@ -543,6 +556,8 @@ MainComponent::MainComponent()
 MainComponent::~MainComponent()
 {
     stopTimer();
+    midiListConnection = {};
+    deviceManager.removeMidiInputDeviceCallback ({}, &midiForwarder);
     deviceManager.removeAudioCallback (&player);
     player.setSource (nullptr);
 }
@@ -567,7 +582,80 @@ void MainComponent::selectClip (Track* t, int id)
         showRoll (t, id);
     else if (rollVisible)
         roll->showClip (roll->getTrack(), roll->getClipId());   // also drops the selected note
+
+    updateArmedTrack();
     repaint();
+}
+
+void MainComponent::enableAllMidiInputs()
+{
+    juce::StringArray names;
+    for (auto& d : juce::MidiInput::getAvailableDevices())
+    {
+        deviceManager.setMidiInputDeviceEnabled (d.identifier, true);
+        if (deviceManager.isMidiInputDeviceEnabled (d.identifier))
+            names.add (d.name);
+    }
+    midiInputText = names.joinIntoString (", ");
+    updateArmedTrack();
+}
+
+// The track that live notes (and MIDI recording) go to.
+void MainComponent::updateArmedTrack()
+{
+    Track* t = nullptr;
+    if (selTrack != nullptr)
+    {
+        if (selTrack->type == Track::Type::Midi)
+            t = selTrack;
+    }
+    else if (rollVisible && roll->getTrack() != nullptr)
+    {
+        t = roll->getTrack();
+    }
+    armedTrack = t;
+
+    statusLabel.setText ("MIDI in: " + (midiInputText.isEmpty() ? juce::String ("none") : midiInputText)
+                             + "    Armed: " + (t != nullptr ? t->name : juce::String ("none (select a MIDI clip)")),
+                         juce::dontSendNotification);
+}
+
+void MainComponent::MidiForwarder::handleIncomingMidiMessage (juce::MidiInput*, const juce::MidiMessage& m)
+{
+    if (m.isNoteOn())       owner.liveNote (m.getNoteNumber(), true, m.getFloatVelocity());
+    else if (m.isNoteOff()) owner.liveNote (m.getNoteNumber(), false, 0.0f);
+}
+
+// May run on the MIDI thread: plays the note on the armed synth and, while recording, remembers it.
+void MainComponent::liveNote (int pitch, bool on, float velocity)
+{
+    auto* t = armedTrack.load();
+    if (t == nullptr)
+        return;
+
+    engine.previewNote (*t, pitch, on, velocity);
+    if (! midiRecording)
+        return;
+
+    const double now = engine.getPositionSeconds();
+    const juce::ScopedLock sl (midiRecLock);
+    if (on)
+    {
+        heldNotes.push_back ({ pitch, now, velocity });
+        return;
+    }
+    for (auto it = heldNotes.begin(); it != heldNotes.end(); ++it)
+        if (it->pitch == pitch)
+        {
+            Note n;
+            n.pitch = pitch;
+            n.start = it->start;
+            n.length = juce::jmax (0.02, now - it->start);
+            n.velocity = it->velocity;
+            recordedNotes.push_back (n);
+            heldNotes.erase (it);
+            return;
+        }
 }
 
 void MainComponent::showRoll (Track* t, int clipId)
@@ -585,6 +673,7 @@ void MainComponent::hideRoll()
         return;
     rollVisible = false;
     layoutContent();
+    updateArmedTrack();
 }
 
 void MainComponent::addMidiTrack()
@@ -710,6 +799,7 @@ void MainComponent::restoreSnapshot (const ProjectState& state)
         }
 
     updateUndoButtons();
+    updateArmedTrack();   // the old Track pointer is gone
     clipsChanged();
 }
 
@@ -813,6 +903,10 @@ void MainComponent::resized()
     redoButton.setBounds (top.removeFromLeft (50));
     masterSlider.setBounds (top.removeFromRight (150));
 
+    // bottom bar: MIDI/armed status on the left, computer-keys toggle on the right
+    statusLabel.setBounds (10, getHeight() - bottomBarHeight + 8, juce::jmax (100, getWidth() / 2 - 150), bottomBarHeight - 16);
+    keysButton.setBounds (getWidth() - 100, getHeight() - bottomBarHeight + 18, 90, 24);
+
     // transport: centred along the bottom
     constexpr int tb = 44, gap = 10;
     const int rowW = 5 * tb + 4 * gap;
@@ -914,10 +1008,65 @@ void MainComponent::duplicateSelected()
     }
 }
 
+namespace
+{
+    // Computer keyboard as a piano: index in this string == semitones above the base C
+    const char pianoKeyChars[] = "AWSEDFTGYHUJKOLP";
+}
+
+bool MainComponent::keyStateChanged (bool)
+{
+    if (! keysButton.getToggleState())
+        return false;
+
+    const auto mods = juce::ModifierKeys::currentModifiers;
+    const bool blocked = mods.isCommandDown() || mods.isAltDown();
+    bool handled = false;
+
+    for (int i = 0; i < 16; ++i)
+    {
+        const bool down = ! blocked && juce::KeyPress::isKeyCurrentlyDown (pianoKeyChars[i]);
+        if (down && ! pianoKeyDown[i])
+        {
+            pianoKeyDown[i] = true;
+            pianoKeyPitch[i] = juce::jlimit (0, 127, 60 + 12 * pianoOctave + i);
+            liveNote (pianoKeyPitch[i], true, 0.8f);
+            handled = true;
+        }
+        else if (! down && pianoKeyDown[i])
+        {
+            pianoKeyDown[i] = false;
+            liveNote (pianoKeyPitch[i], false, 0.0f);
+            handled = true;
+        }
+    }
+    return handled;
+}
+
+void MainComponent::focusLost (FocusChangeType)
+{
+    for (int i = 0; i < 16; ++i)   // don't leave notes hanging when keys are released elsewhere
+        if (pianoKeyDown[i])
+        {
+            pianoKeyDown[i] = false;
+            liveNote (pianoKeyPitch[i], false, 0.0f);
+        }
+}
+
 bool MainComponent::keyPressed (const juce::KeyPress& k)
 {
     const auto mods = k.getModifiers();
     const auto ch = juce::CharacterFunctions::toLowerCase (k.getTextCharacter());
+
+    if (keysButton.getToggleState() && ! mods.isCommandDown() && ! mods.isAltDown())
+    {
+        const int code = k.getKeyCode();
+        if (code == 'Z') { pianoOctave = juce::jmax (-3, pianoOctave - 1); return true; }
+        if (code == 'X') { pianoOctave = juce::jmin (3, pianoOctave + 1); return true; }
+        for (int i = 0; i < 16; ++i)
+            if (code == pianoKeyChars[i])
+                return true;   // played in keyStateChanged(); not a shortcut
+    }
 
     if (mods.isCommandDown())
     {
@@ -957,7 +1106,7 @@ void MainComponent::timerCallback()
             hideRoll();
     }
 
-    const bool recording = engine.isRecording();
+    const bool recording = engine.isRecording() || midiRecording;
     playButton.setLit (engine.isPlaying());
     pauseButton.setLit (! engine.isPlaying() && p > 0.0);
     recordButton.setLit (recording && (juce::Time::getMillisecondCounter() / 500) % 2 == 0);   // blinks
@@ -1000,9 +1149,24 @@ void MainComponent::stopPlayback()
 
 void MainComponent::toggleRecording()
 {
-    if (engine.isRecording())
+    if (engine.isRecording() || midiRecording)
     {
         finishRecording();   // keeps playing, like most DAWs
+        return;
+    }
+
+    // A MIDI track is armed: record the notes that are played, not the audio input
+    if (auto* armed = armedTrack.load())
+    {
+        {
+            const juce::ScopedLock sl (midiRecLock);
+            heldNotes.clear();
+            recordedNotes.clear();
+        }
+        recMidiTrack = armed;
+        recStartSeconds = engine.getPositionSeconds();
+        midiRecording = true;
+        startPlayback();
         return;
     }
 
@@ -1031,9 +1195,60 @@ void MainComponent::toggleRecording()
     startPlayback();   // recording only captures while the transport runs
 }
 
+// Turns the notes played during MIDI recording into a clip on the armed track, starting on the bar
+// where recording began and lasting a whole number of bars.
+void MainComponent::finishMidiRecording()
+{
+    midiRecording = false;
+    const double now = engine.getPositionSeconds();
+
+    std::vector<Note> notes;
+    {
+        const juce::ScopedLock sl (midiRecLock);
+        for (auto& h : heldNotes)   // notes still held when recording stops end here
+        {
+            Note n;
+            n.pitch = h.pitch;
+            n.start = h.start;
+            n.length = juce::jmax (0.02, now - h.start);
+            n.velocity = h.velocity;
+            recordedNotes.push_back (n);
+        }
+        heldNotes.clear();
+        notes.swap (recordedNotes);
+    }
+
+    auto* t = recMidiTrack;
+    recMidiTrack = nullptr;
+    if (notes.empty() || t == nullptr || engine.indexOfTrack (t) < 0)
+        return;
+
+    const double bar = barSeconds();
+    const double clipStart = std::floor (recStartSeconds / bar) * bar;
+    double end = 0.0;
+    for (auto& n : notes)
+    {
+        n.start = juce::jmax (0.0, n.start - clipStart);
+        end = juce::jmax (end, n.start + n.length);
+    }
+    const double clipLength = juce::jmax (1.0, std::ceil (end / bar)) * bar;
+
+    beginEdit();
+    const int id = engine.addMidiClip (*t, clipStart, clipLength);
+    engine.setMidiNotes (*t, id, std::move (notes));
+    selectClip (t, id);
+    clipsChanged();
+}
+
 // Closes the recording file and puts it on a new track at the position where recording began.
 void MainComponent::finishRecording()
 {
+    if (midiRecording)
+    {
+        finishMidiRecording();
+        return;
+    }
+
     if (! engine.isRecording())
         return;
 

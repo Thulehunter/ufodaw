@@ -134,7 +134,8 @@ public:
     void restoreState (const ProjectState&);
 
     // Audition a note on a MIDI track's synth (works while the transport is stopped).
-    void previewNote (const Track&, int pitch, bool on);
+    // Safe to call from any thread (UI, MIDI input).
+    void previewNote (const Track&, int pitch, bool on, float velocity = 0.8f);
 
     double getTotalLengthSeconds() const;
     double getRenderTailSeconds() const;   // extra time to render after the last clip (delay/reverb tails)
@@ -173,6 +174,7 @@ private:
         const Track* track = nullptr;
         int pitch = 0;
         bool on = false;
+        float velocity = 0.8f;
     };
 
     // Caller must hold `lock`; adds into outL/outR (which must be pre-cleared).
@@ -200,6 +202,7 @@ private:
 
     // UI -> audio thread queue for note previews
     static constexpr int previewQueueSize = 64;
+    juce::SpinLock previewWriteLock;   // the fifo has one writer at a time: UI thread or MIDI thread
     juce::AbstractFifo previewFifo { previewQueueSize };
     std::array<PreviewEvent, previewQueueSize> previewQueue;
 
