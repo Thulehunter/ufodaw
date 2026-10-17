@@ -42,6 +42,9 @@ Steinberg's ASIO SDK, which cannot be shipped with the sources:
 3. Build again (`cmake -S . -B build`, then `cmake --build build --config Release`). The configure step prints
    `ASIO support: ON`, and *ASIO* appears as a driver type in the Audio window.
 
+Once the SDK is in `third_party\`, every build you make there has ASIO on (it is detected on each configure, Debug and
+Release alike), and `scripts\package.ps1` refuses to make a package without it (use `-NoAsio` to build one on purpose).
+
 Notes: Windows lets a program use one ASIO driver at a time. To use two interfaces together, use *Windows Audio*
 (input and output can be different devices there) or an aggregate driver from the interface maker. Distributing a build
 that includes ASIO means following Steinberg's ASIO license (the SDK is also offered under the GPLv3).
