@@ -2,6 +2,22 @@
 #include <algorithm>
 #include <cmath>
 
+namespace
+{
+    // Room for half a second of plugin delay compensation per track
+    void sizeDelayBuffers (Track& t, double rate)
+    {
+        const size_t size = (size_t) (rate * 0.5) + 2;
+        if (t.pdcL.size() != size)
+        {
+            t.pdcL.assign (size, 0.0f);
+            t.pdcR.assign (size, 0.0f);
+            t.pdcPos = 0;
+            t.pdcDelay = 0;
+        }
+    }
+}
+
 Engine::Engine()
 {
     formats.registerBasicFormats();
@@ -37,10 +53,13 @@ void Engine::prepareToPlay (int samplesPerBlock, double newRate)
             t->voices->prepare (newRate);
         if (t->kit != nullptr)
             t->kit->prepare (newRate);
+        sizeDelayBuffers (*t, newRate);
         t->fxState->prepare (newRate);
         if (t->instrument != nullptr)
             preparePlugin (*t->instrument);
         for (auto& p : t->inserts)
+            preparePlugin (*p);
+        for (auto& p : t->midiFx)
             preparePlugin (*p);
     }
 }
@@ -69,16 +88,44 @@ juce::Optional<juce::AudioPlayHead::PositionInfo> Engine::PlayHead::getPosition(
     return info;
 }
 
-void Engine::setMidiOut (Track& source, Track* target)
+void Engine::setMidiOuts (Track& source, std::vector<Track*> targets)
 {
     const juce::ScopedLock sl (lock);
-    if (target == &source || (target != nullptr && target->type != Track::Type::Midi))
-        target = nullptr;
-    source.midiOut = target;
-    source.routedMidi.clear();
+
+    std::vector<Track*> valid;
+    for (auto* t : targets)
+        if (t != nullptr && t != &source && t->type == Track::Type::Midi
+            && std::find (valid.begin(), valid.end(), t) == valid.end())
+            valid.push_back (t);
+
+    // whatever was playing over the old routes fades out
+    for (auto* old : source.midiOuts)
+        releaseAllNotes (*old);
     releaseAllNotes (source);
-    if (target != nullptr)
-        releaseAllNotes (*target);   // anything still sounding on the old route fades out
+    source.midiOuts = std::move (valid);
+    source.routedMidi.clear();
+}
+
+void Engine::addMidiFx (Track& t, std::shared_ptr<PluginSlot> slot)
+{
+    const juce::ScopedLock sl (lock);
+    t.midiFx.push_back (std::move (slot));
+}
+
+void Engine::removeMidiFx (Track& t, int index)
+{
+    std::shared_ptr<PluginSlot> removed;   // released after the lock
+    {
+        const juce::ScopedLock sl (lock);
+        if (! juce::isPositiveAndBelow (index, (int) t.midiFx.size()))
+            return;
+        removed = std::move (t.midiFx[(size_t) index]);
+        t.midiFx.erase (t.midiFx.begin() + index);
+        t.autoLanes.erase (std::remove_if (t.autoLanes.begin(), t.autoLanes.end(),
+                                           [&] (auto& lane) { return lane->plugin == removed; }),
+                           t.autoLanes.end());
+        releaseAllNotes (t);
+    }
 }
 
 // Makes a plugin stereo where it can, prepares it for the current sample rate/block size and sizes its buffer.
@@ -181,6 +228,7 @@ Track* Engine::addTrack (const juce::String& name, Track::Type type)
     track->name = name;
     track->type = type;
     track->routedMidi.ensureSize (4096);
+    sizeDelayBuffers (*track, sampleRate);
     track->fxState = std::make_unique<TrackFx>();
     track->fxState->prepare (sampleRate);
     if (type == Track::Type::Midi)
@@ -237,8 +285,8 @@ void Engine::removeTrack (Track* t)
 {
     const juce::ScopedLock sl (lock);
     for (auto& other : tracks)
-        if (other->midiOut == t)
-            other->midiOut = nullptr;   // nobody keeps sending to a track that is going away
+        other->midiOuts.erase (std::remove (other->midiOuts.begin(), other->midiOuts.end(), t),
+                               other->midiOuts.end());   // nobody keeps sending to a track that is going away
     tracks.erase (std::remove_if (tracks.begin(), tracks.end(),
                                   [t] (auto& p) { return p.get() == t; }),
                   tracks.end());
@@ -647,6 +695,9 @@ ParamAutomation* Engine::ensureLane (Track& t, const juce::String& id)
             for (auto& p : t.inserts)
                 if (p->key == key)
                     slot = p;
+            for (auto& p : t.midiFx)
+                if (p->key == key)
+                    slot = p;
 
             if (slot != nullptr && juce::isPositiveAndBelow (index, slot->instance->getParameters().size()))
             {
@@ -689,6 +740,8 @@ std::vector<AutoTarget> Engine::listAutomationTargets (const Track& t) const
         addPlugin (*t.instrument, t.instrument->description.name + " (instrument)");
     for (auto& p : t.inserts)
         addPlugin (*p, p->description.name);
+    for (auto& p : t.midiFx)
+        addPlugin (*p, p->description.name + " (MIDI effect)");
     return out;
 }
 
@@ -830,9 +883,10 @@ ProjectState Engine::captureState() const
         ts.synthValues[4] = t->synth.cutoff;
         ts.instrument = t->instrument;
         ts.inserts = t->inserts;
+        ts.midiFx = t->midiFx;
         for (size_t k = 0; k < tracks.size(); ++k)
-            if (tracks[k].get() == t->midiOut)
-                ts.midiOutIndex = (int) k;
+            if (std::find (t->midiOuts.begin(), t->midiOuts.end(), tracks[k].get()) != t->midiOuts.end())
+                ts.midiOutIndices.push_back ((int) k);
         ts.autoLanes.push_back ({ "volume", t->autoVolume.points, t->autoVolume.active.load() });
         ts.autoLanes.push_back ({ "pan", t->autoPan.points, t->autoPan.active.load() });
         for (auto& lane : t->autoLanes)
@@ -872,6 +926,7 @@ void Engine::restoreState (const ProjectState& s)
 
         t->instrument = ts.instrument;
         t->inserts = ts.inserts;
+        t->midiFx = ts.midiFx;
         t->kit = ts.kit;
         // lanes last: they bind to the effect/synth parameters and plugins assigned above
         for (auto& ls : ts.autoLanes)
@@ -901,14 +956,15 @@ void Engine::restoreState (const ProjectState& s)
             t->voices->prepare (sampleRate);
         }
         t->routedMidi.ensureSize (4096);
+        sizeDelayBuffers (*t, sampleRate);
         fresh.push_back (std::move (t));
     }
 
     for (size_t i = 0; i < s.tracks.size(); ++i)   // MIDI routes point at tracks by index
     {
-        const int to = s.tracks[i].midiOutIndex;
-        if (to >= 0 && to < (int) fresh.size() && to != (int) i)
-            fresh[i]->midiOut = fresh[(size_t) to].get();
+        for (int to : s.tracks[i].midiOutIndices)
+            if (to >= 0 && to < (int) fresh.size() && to != (int) i)
+                fresh[i]->midiOuts.push_back (fresh[(size_t) to].get());
     }
 
     bpm = s.bpm;
@@ -991,6 +1047,11 @@ void Engine::silenceSynths()
             t->instrument->instance->reset();
         for (auto& p : t->inserts)
             p->instance->reset();
+        for (auto& p : t->midiFx)
+            p->instance->reset();
+        std::fill (t->pdcL.begin(), t->pdcL.end(), 0.0f);
+        std::fill (t->pdcR.begin(), t->pdcR.end(), 0.0f);
+        t->routedMidi.clear();
         t->liveMidi.clear();
         t->pluginTailSamples = 0.0;
     }
@@ -1075,6 +1136,11 @@ void Engine::getNextAudioBlock (const juce::AudioSourceChannelInfo& info)
                 releaseAllNotes (*t);
                 if (t->fx.hasTail())
                     t->fxState->reset();   // don't replay the tail of wherever we were before
+                if (t->pdcDelay != 0)
+                {
+                    std::fill (t->pdcL.begin(), t->pdcL.end(), 0.0f);
+                    std::fill (t->pdcR.begin(), t->pdcR.end(), 0.0f);
+                }
             }
         wasRunning = true;
     }
@@ -1166,6 +1232,84 @@ void Engine::collectNoteEvents (Track& t, int n, juce::int64 pos, bool running)
     // note-offs go first at the same sample so a repeated pitch retriggers cleanly
     std::sort (noteEvents.begin(), noteEvents.end(), [] (const NoteEvent& a, const NoteEvent& b)
                { return a.offset != b.offset ? a.offset < b.offset : (! a.on && b.on); });
+
+    if (! t.midiFx.empty() && (running || ! noteEvents.empty()))
+        applyMidiFx (t, n);
+}
+
+// Samples of delay the plugins in a track add (reported by the plugins themselves).
+int Engine::trackLatency (const Track& t)
+{
+    int latency = 0;
+    if (t.instrument != nullptr && t.midiOuts.empty())
+        latency += t.instrument->instance->getLatencySamples();
+    for (auto& p : t.inserts)
+        if (! p->bypass)
+            latency += p->instance->getLatencySamples();
+    return juce::jmax (0, latency);
+}
+
+// Delays a track's stereo signal by `delay` samples (at most the length of its delay buffer).
+void Engine::applyDelay (Track& t, float* l, float* r, int n, int delay)
+{
+    const int size = (int) t.pdcL.size();
+    if (size == 0)
+        return;
+
+    delay = juce::jlimit (0, size - 1, delay);
+    if (delay != t.pdcDelay)   // a change would otherwise replay whatever is left in the buffer
+    {
+        std::fill (t.pdcL.begin(), t.pdcL.end(), 0.0f);
+        std::fill (t.pdcR.begin(), t.pdcR.end(), 0.0f);
+        t.pdcDelay = delay;
+    }
+
+    int pos = t.pdcPos;
+    for (int i = 0; i < n; ++i)
+    {
+        t.pdcL[(size_t) pos] = l[i];
+        t.pdcR[(size_t) pos] = r[i];
+        int read = pos - delay;
+        if (read < 0)
+            read += size;
+        l[i] = t.pdcL[(size_t) read];
+        r[i] = t.pdcR[(size_t) read];
+        if (++pos >= size)
+            pos = 0;
+    }
+    t.pdcPos = pos;
+}
+
+// MIDI plugins in a track (arpeggiators, chord generators...): the notes pass through each of them in turn.
+void Engine::applyMidiFx (Track& t, int n)
+{
+    midiScratch.clear();
+    for (auto& e : noteEvents)
+        midiScratch.addEvent (e.on ? juce::MidiMessage::noteOn (1, e.pitch, e.velocity)
+                                   : juce::MidiMessage::noteOff (1, e.pitch), e.offset);
+
+    for (auto& slot : t.midiFx)
+    {
+        auto& buf = slot->scratch;
+        const int channels = buf.getNumChannels();
+        if (slot->bypass || channels < 1 || n > buf.getNumSamples())
+            continue;
+
+        buf.clear (0, n);
+        juce::AudioBuffer<float> view (buf.getArrayOfWritePointers(), channels, n);
+        slot->instance->processBlock (view, midiScratch);   // notes in, notes out (in place)
+    }
+
+    noteEvents.clear();
+    for (const auto meta : midiScratch)
+    {
+        const auto m = meta.getMessage();
+        const int offset = juce::jlimit (0, juce::jmax (0, n - 1), meta.samplePosition);
+        if (m.isNoteOn())       noteEvents.push_back ({ offset, true, m.getNoteNumber(), m.getFloatVelocity() });
+        else if (m.isNoteOff()) noteEvents.push_back ({ offset, false, m.getNoteNumber(), 0.0f });
+    }
+    std::sort (noteEvents.begin(), noteEvents.end(), [] (const NoteEvent& a, const NoteEvent& b)
+               { return a.offset != b.offset ? a.offset < b.offset : (! a.on && b.on); });
 }
 
 // Hosted VST3 instrument: feed it this block's MIDI and take its stereo output.
@@ -1217,7 +1361,8 @@ void Engine::runMidiSource (Track& t, int n)
     {
         const auto m = meta.getMessage();
         if (m.isNoteOnOrOff())
-            t.midiOut->routedMidi.addEvent (m, juce::jlimit (0, juce::jmax (0, n - 1), meta.samplePosition));
+            for (auto* target : t.midiOuts)
+                target->routedMidi.addEvent (m, juce::jlimit (0, juce::jmax (0, n - 1), meta.samplePosition));
     }
 }
 
@@ -1292,13 +1437,17 @@ void Engine::mixBlock (float* outL, float* outR, int n, juce::int64 pos, bool wi
     playHead.samples = pos;
     playHead.playing = running;
 
+    int maxLatency = 0;
+    for (auto& t : tracks)
+        maxLatency = juce::jmax (maxLatency, trackLatency (*t));
+
     // MIDI routing first: sequencer tracks run and fill the routedMidi of the tracks they play,
     // so those tracks find their notes waiting when they are rendered below.
     for (auto& t : tracks)
         t->routedMidi.clear();
     const int routeN = juce::jmin (n, (int) trackL.size());
     for (auto& t : tracks)
-        if (t->type == Track::Type::Midi && t->instrument != nullptr && t->midiOut != nullptr)
+        if (t->type == Track::Type::Midi && t->instrument != nullptr && ! t->midiOuts.empty())
         {
             if (running)
                 t->pluginTailSamples = 3.0 * sampleRate;
@@ -1350,7 +1499,7 @@ void Engine::mixBlock (float* outL, float* outR, int n, juce::int64 pos, bool wi
 
         if (t->type == Track::Type::Midi)
         {
-            if (t->instrument != nullptr && t->midiOut != nullptr)
+            if (t->instrument != nullptr && ! t->midiOuts.empty())
             {
                 // sequencer track: it makes no sound itself, its notes were routed to another track above
             }
@@ -1418,12 +1567,29 @@ void Engine::mixBlock (float* outL, float* outR, int n, juce::int64 pos, bool wi
             }
         }
 
-        if (t->fx.anyOn())
-            t->fxState->process (bufL, bufR, nn, t->fx);
+        // Effects and inserts run in slices of 64 samples when this track has automation on them, so the
+        // envelope is followed smoothly instead of once per audio block.
+        bool sliced = false;
+        if (running)
+            for (auto& lane : t->autoLanes)
+                sliced = sliced || (lane->active && ! lane->points.empty());
+        const int slice = sliced ? 64 : juce::jmax (1, nn);
+        for (int s = 0; s < nn; s += slice)
+        {
+            const int len = juce::jmin (slice, nn - s);
+            if (sliced)
+                applyAutomation (*t, (double) (pos + s) / sampleRate);
+            if (t->fx.anyOn())
+                t->fxState->process (bufL + s, bufR + s, len, t->fx);
+            for (auto& p : t->inserts)
+                if (! p->bypass)
+                    processInsert (*p, bufL + s, bufR + s, len);
+        }
 
-        for (auto& p : t->inserts)
-            if (! p->bypass)
-                processInsert (*p, bufL, bufR, nn);
+        // plugin delay compensation: tracks without (or with less) plugin latency wait for the slowest one
+        const int delay = maxLatency - trackLatency (*t);
+        if (delay > 0 || t->pdcDelay != 0)
+            applyDelay (*t, bufL, bufR, nn, delay);
 
         const float ramp = nn > 0 ? 1.0f / (float) nn : 0.0f;
         for (int i = 0; i < nn; ++i)

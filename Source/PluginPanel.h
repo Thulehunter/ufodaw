@@ -4,8 +4,9 @@
 #include "Engine.h"
 #include "PluginHost.h"
 
-// VST3 plugins of one track: the instrument (MIDI tracks) and the effect inserts.
-// Shown in a callout from the track header; every change applies immediately.
+// VST3 plugins of one track, shown in a callout from the track header; every change applies immediately.
+//  - MIDI tracks: the instrument, where a plugin sequencer's notes go (MIDI out) and MIDI effects before the instrument
+//  - every track: audio effect inserts after the built-in effects
 class PluginPanel : public juce::Component
 {
 public:
@@ -23,31 +24,43 @@ private:
         juce::TextButton remove { "x" };
     };
 
-    void rebuild();
+    // A list of plugins with an "add" button: either the MIDI effects or the audio inserts of the track.
+    struct PluginList
+    {
+        bool midi = false;
+        int maxRows = 5;
+        juce::Label heading, hint;
+        std::vector<std::unique_ptr<Row>> rows;
+        juce::TextButton addButton;
+    };
+
+    void setupList (PluginList&, const juce::String& title, const juce::String& addText, bool midi, int maxRows);
+    std::vector<std::shared_ptr<PluginSlot>>& slotsOf (PluginList&);
+    void rebuild (PluginList&);
+    void addPluginMenu (PluginList&);
     void chooseInstrument();
-    void addEffectMenu();
+    void showMidiOutMenu();
+    void updateMidiOutText();
+    int layoutAll (bool apply);
     void alert (const juce::String& title, const juce::String& message);
 
     Track& track;
     Engine& engine;
     PluginHost& host;
     std::function<void()> beginEdit;
+    bool isMidi = false;
 
     juce::Label instrumentLabel { {}, "Instrument" };
     juce::ComboBox instrumentBox;
     juce::TextButton instrumentEdit { "Edit" };
     juce::Array<juce::PluginDescription> instruments;
 
-    // Where the notes of a plugin sequencer (Stochas, ...) go: another MIDI track plays them.
+    // Where the notes of a plugin sequencer (Stochas, ...) go: other MIDI tracks play them.
     juce::Label midiOutLabel { {}, "MIDI out" };
-    juce::ComboBox midiOutBox;
-    std::vector<Track*> midiTargets;
-    void chooseMidiOut();
+    juce::TextButton midiOutButton;
 
-    juce::Label insertsLabel { {}, "Effects (after the built-in chain)" };
-    std::vector<std::unique_ptr<Row>> rows;
-    juce::Label hint;
-    juce::TextButton addButton { "+ Add effect plugin..." }, manageButton { "Manage plugins..." };
+    PluginList midiFxList, insertList;
+    juce::TextButton manageButton { "Manage plugins..." };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (PluginPanel)
 };

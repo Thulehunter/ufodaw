@@ -1156,6 +1156,11 @@ juce::var MainComponent::pluginsToVar (const Track& t) const
     for (auto& p : t.inserts)
         list.add (pluginHost.slotToVar (*p));
     o->setProperty ("inserts", list);
+
+    juce::Array<juce::var> midiFxList;
+    for (auto& p : t.midiFx)
+        midiFxList.add (pluginHost.slotToVar (*p));
+    o->setProperty ("midiFx", midiFxList);
     return juce::var (o);
 }
 
@@ -1181,6 +1186,15 @@ void MainComponent::pluginsFromVar (Track& t, const juce::var& trackVar, juce::S
                 engine.addInsert (t, slot);
             else
                 problems.add (t.name + ": " + error);
+        }
+
+    if (auto* midiFx = plugins["midiFx"].getArray())
+        for (auto& v : *midiFx)
+        {
+            if (auto slot = pluginHost.slotFromVar (v, engine, error))
+                engine.addMidiFx (t, slot);
+            else
+                problems.add (t.name + " (MIDI effect): " + error);
         }
 }
 
@@ -1352,6 +1366,8 @@ void MainComponent::removeTrackUI (Track* t)
             if (t->instrument != nullptr)
                 pluginHost.closeEditorsFor (t->instrument.get());
             for (auto& p : t->inserts)
+                pluginHost.closeEditorsFor (p.get());
+            for (auto& p : t->midiFx)
                 pluginHost.closeEditorsFor (p.get());
             headers.remove (i);
             lanes.remove (i);
@@ -1950,7 +1966,10 @@ void MainComponent::saveProject (const juce::File& file)
         t->fx.forEachBool ([fo] (const char* name, std::atomic<bool>& v) { fo->setProperty (name, v.load()); });
         o->setProperty ("fx", juce::var (fo));
         o->setProperty ("plugins", pluginsToVar (*t));
-        o->setProperty ("midiOut", t->midiOut != nullptr ? engine.indexOfTrack (t->midiOut) : -1);
+        juce::Array<juce::var> outs;
+        for (auto* target : t->midiOuts)
+            outs.add (engine.indexOfTrack (target));
+        o->setProperty ("midiOuts", outs);
 
         // automation, keyed by envelope id ("volume", "pan", "fx.reverbMix", "plugin:3:12", ...)
         auto* ao = new juce::DynamicObject();
@@ -2169,10 +2188,18 @@ void MainComponent::loadProject (const juce::File& file)
         int index = 0;
         for (auto& item : *root["tracks"].getArray())
         {
-            const int target = (int) item.getProperty ("midiOut", -1);
-            if (target >= 0)
-                if (auto* from = engine.getTrack (index); auto* to = engine.getTrack (target))
-                    engine.setMidiOut (*from, to);
+            std::vector<Track*> targets;
+            if (auto* outs = item["midiOuts"].getArray())
+                for (auto& v : *outs)
+                    if (auto* to = engine.getTrack ((int) v))
+                        targets.push_back (to);
+            if (item.hasProperty ("midiOut") && (int) item["midiOut"] >= 0)   // projects saved with a single route
+                if (auto* to = engine.getTrack ((int) item["midiOut"]))
+                    targets.push_back (to);
+
+            if (! targets.empty())
+                if (auto* from = engine.getTrack (index))
+                    engine.setMidiOuts (*from, targets);
             ++index;
         }
     }

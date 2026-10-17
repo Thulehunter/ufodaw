@@ -129,8 +129,15 @@ struct Track
 
     // MIDI routing: the notes a plugin instrument (a sequencer such as Stochas) sends out go to another
     // MIDI track instead of being heard from this one.
-    Track* midiOut = nullptr;
+    std::vector<Track*> midiOuts;                           // tracks that play the notes this track's plugin sends
     juce::MidiBuffer routedMidi;                            // notes other tracks sent here during the current block
+
+    // MIDI plugins (arpeggiators, chord tools...) that rework the notes before they reach the instrument
+    std::vector<std::shared_ptr<PluginSlot>> midiFx;
+
+    // Plugin delay compensation: this track is delayed so it lines up with tracks whose plugins add latency
+    std::vector<float> pdcL, pdcR;   // sized by Engine::sizeDelayBuffers (half a second)
+    int pdcPos = 0, pdcDelay = 0;
 
     std::atomic<float> gain { 0.8f };
     std::atomic<float> pan { 0.0f };
@@ -165,7 +172,8 @@ struct TrackState
         bool active = true;
     };
     std::vector<LaneState> autoLanes;   // includes "volume" and "pan"
-    int midiOutIndex = -1;              // index of the track this one sends MIDI to, or -1
+    std::vector<int> midiOutIndices;    // indices of the tracks this one sends MIDI to
+    std::vector<std::shared_ptr<PluginSlot>> midiFx;
     std::shared_ptr<DrumKit> kit;
     std::shared_ptr<PluginSlot> instrument;                 // plugins are shared with the live project,
     std::vector<std::shared_ptr<PluginSlot>> inserts;       // so undo restores which ones are present, not their settings
@@ -234,7 +242,9 @@ public:
     std::vector<juce::String> getAutomationIds (const Track&) const;         // lanes that have points
 
     // ---- Message thread: hosted plugins
-    void setMidiOut (Track& source, Track* target);             // null = this track plays its own sound; only MIDI tracks can be targets
+    void setMidiOuts (Track& source, std::vector<Track*> targets);   // empty = this track plays its own sound; only other MIDI tracks count
+    void addMidiFx (Track&, std::shared_ptr<PluginSlot>);
+    void removeMidiFx (Track&, int index);
     void preparePlugin (PluginSlot&);                           // layout + prepareToPlay for the current audio setup
     void setInstrument (Track&, std::shared_ptr<PluginSlot>);   // null = built-in synth
     void addInsert (Track&, std::shared_ptr<PluginSlot>);
@@ -306,7 +316,10 @@ private:
     void applyAutomation (Track&, double timeSeconds);
     void releaseAllNotes (Track&);                              // soft all-notes-off for the synth or plugin instrument
     void collectNoteEvents (Track&, int numSamples, juce::int64 pos, bool running);
-    void runMidiSource (Track&, int numSamples);                // plugin sequencer track: its MIDI output goes to Track::midiOut
+    void runMidiSource (Track&, int numSamples);                // plugin sequencer track: its MIDI output goes to Track::midiOuts
+    void applyMidiFx (Track&, int numSamples);                  // runs noteEvents through the track's MIDI plugins
+    static int trackLatency (const Track&);                     // samples of delay its plugins add
+    void applyDelay (Track&, float* l, float* r, int numSamples, int delaySamples);
     void renderDrumTrack (Track&, int numSamples, juce::int64 pos, bool running, float* scratch);
     void renderPluginInstrument (Track&, int numSamples, float* outL, float* outR);
     void processInsert (PluginSlot&, float* l, float* r, int numSamples);

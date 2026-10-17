@@ -2,15 +2,15 @@
 
 namespace
 {
-    constexpr int panelWidth = 460;
+    constexpr int panelWidth = 480;
     constexpr int rowH = 30;
-    constexpr int maxRows = 6;
+    constexpr int sectionGap = 12;
 }
 
 PluginPanel::PluginPanel (Track& t, Engine& e, PluginHost& h, std::function<void()> onBeginEdit)
     : track (t), engine (e), host (h), beginEdit (std::move (onBeginEdit))
 {
-    const bool isMidi = track.type == Track::Type::Midi;
+    isMidi = track.type == Track::Type::Midi;
 
     if (isMidi)
     {
@@ -50,34 +50,40 @@ PluginPanel::PluginPanel (Track& t, Engine& e, PluginHost& h, std::function<void
         };
         addAndMakeVisible (instrumentEdit);
 
-        midiOutBox.addItem ("None - this track plays its own sound", 1);
-        int selectedOut = 1;
-        for (int i = 0; i < engine.getNumTracks(); ++i)
-            if (auto* other = engine.getTrack (i); other != &track && other->type == Track::Type::Midi)
-            {
-                midiTargets.push_back (other);
-                midiOutBox.addItem ("Send notes to: " + other->name, 100 + (int) midiTargets.size() - 1);
-                if (track.midiOut == other)
-                    selectedOut = 100 + (int) midiTargets.size() - 1;
-            }
-        midiOutBox.setSelectedId (selectedOut, juce::dontSendNotification);
-        midiOutBox.setTooltip ("For a sequencer plugin (e.g. Stochas): the track whose synth should play the notes it makes");
-        midiOutBox.onChange = [this] { chooseMidiOut(); };
+        midiOutButton.setTooltip ("For a sequencer plugin (e.g. Stochas): the tracks whose synths should play the notes it makes");
+        midiOutButton.onClick = [this] { showMidiOutMenu(); };
+        updateMidiOutText();
         addAndMakeVisible (midiOutLabel);
-        addAndMakeVisible (midiOutBox);
+        addAndMakeVisible (midiOutButton);
+
+        setupList (midiFxList, "MIDI effects (before the instrument)", "+ Add MIDI effect...", true, 3);
     }
 
-    addAndMakeVisible (insertsLabel);
-    hint.setColour (juce::Label::textColourId, juce::Colours::white.withAlpha (0.55f));
-    addAndMakeVisible (hint);
-
-    addButton.onClick = [this] { addEffectMenu(); };
-    addAndMakeVisible (addButton);
+    setupList (insertList, "Audio effects (after the built-in effects)", "+ Add effect plugin...", false, 5);
     manageButton.onClick = [this] { host.showManager(); };
     addAndMakeVisible (manageButton);
 
-    rebuild();
-    setSize (panelWidth, (isMidi ? 90 : 0) + 40 + maxRows * rowH + 56);
+    setSize (panelWidth, layoutAll (false));
+}
+
+void PluginPanel::setupList (PluginList& list, const juce::String& title, const juce::String& addText, bool midi, int maxRows)
+{
+    list.midi = midi;
+    list.maxRows = maxRows;
+    list.heading.setText (title, juce::dontSendNotification);
+    list.heading.setFont (juce::FontOptions (13.0f, juce::Font::bold));
+    list.hint.setColour (juce::Label::textColourId, juce::Colours::white.withAlpha (0.55f));
+    list.addButton.setButtonText (addText);
+    list.addButton.onClick = [this, &list] { addPluginMenu (list); };
+    addAndMakeVisible (list.heading);
+    addAndMakeVisible (list.hint);
+    addAndMakeVisible (list.addButton);
+    rebuild (list);
+}
+
+std::vector<std::shared_ptr<PluginSlot>>& PluginPanel::slotsOf (PluginList& list)
+{
+    return list.midi ? track.midiFx : track.inserts;
 }
 
 void PluginPanel::alert (const juce::String& title, const juce::String& message)
@@ -112,78 +118,126 @@ void PluginPanel::chooseInstrument()
     host.showEditor (*slot);   // so the sound can be set up right away
 }
 
-void PluginPanel::chooseMidiOut()
+void PluginPanel::updateMidiOutText()
 {
-    const int id = midiOutBox.getSelectedId();
-    beginEdit();
-    engine.setMidiOut (track, id >= 100 ? midiTargets[(size_t) (id - 100)] : nullptr);
+    if (track.midiOuts.empty())
+    {
+        midiOutButton.setButtonText ("None - this track plays its own sound");
+        return;
+    }
+    juce::StringArray names;
+    for (auto* target : track.midiOuts)
+        names.add (target->name);
+    midiOutButton.setButtonText ("Notes go to: " + names.joinIntoString (", "));
 }
 
-void PluginPanel::addEffectMenu()
+// Tick the tracks that should play this track's notes (one pick per opening of the menu).
+void PluginPanel::showMidiOutMenu()
 {
-    juce::Array<juce::PluginDescription> effects;
+    std::vector<Track*> others;
+    juce::PopupMenu menu;
+    menu.addItem (1000, "None - this track plays its own sound", true, track.midiOuts.empty());
+    menu.addSeparator();
+    for (int i = 0; i < engine.getNumTracks(); ++i)
+        if (auto* other = engine.getTrack (i); other != &track && other->type == Track::Type::Midi)
+        {
+            others.push_back (other);
+            const bool ticked = std::find (track.midiOuts.begin(), track.midiOuts.end(), other) != track.midiOuts.end();
+            menu.addItem ((int) others.size(), other->name, true, ticked);
+        }
+    if (others.empty())
+        menu.addItem (-1, "Add another MIDI track first", false);
+
+    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&midiOutButton),
+                        [this, others, safe = juce::Component::SafePointer<PluginPanel> (this)] (int result)
+                        {
+                            if (safe == nullptr || result <= 0)
+                                return;
+
+                            auto targets = track.midiOuts;
+                            if (result == 1000)
+                            {
+                                targets.clear();
+                            }
+                            else
+                            {
+                                auto* picked = others[(size_t) result - 1];
+                                auto it = std::find (targets.begin(), targets.end(), picked);
+                                if (it == targets.end()) targets.push_back (picked); else targets.erase (it);
+                            }
+                            beginEdit();
+                            engine.setMidiOuts (track, targets);
+                            updateMidiOutText();
+                        });
+}
+
+void PluginPanel::addPluginMenu (PluginList& list)
+{
+    juce::Array<juce::PluginDescription> candidates;
     for (auto& d : host.getList().getTypes())
-        if (! d.isInstrument)
-            effects.add (d);
+        if (list.midi || ! d.isInstrument)   // MIDI effects can be flagged as anything; audio inserts are effects
+            candidates.add (d);
 
     juce::PopupMenu menu;
-    for (int i = 0; i < effects.size(); ++i)
-        menu.addItem (i + 1, effects[i].name + "  (" + effects[i].manufacturerName + ")");
-    if (effects.isEmpty())
-        menu.addItem (-1, "No effect plugins found - use \"Manage plugins...\"", false);
+    for (int i = 0; i < candidates.size(); ++i)
+        menu.addItem (i + 1, candidates[i].name + "  (" + candidates[i].manufacturerName + ")");
+    if (candidates.isEmpty())
+        menu.addItem (-1, "No plugins found - use \"Manage plugins...\"", false);
 
-    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&addButton),
-                        [this, effects, safe = juce::Component::SafePointer<PluginPanel> (this)] (int result)
+    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&list.addButton),
+                        [this, &list, candidates, safe = juce::Component::SafePointer<PluginPanel> (this)] (int result)
                         {
                             if (safe == nullptr || result <= 0)
                                 return;
 
                             beginEdit();
                             juce::String error;
-                            auto slot = host.createSlot (effects[result - 1], engine, error);
+                            auto slot = host.createSlot (candidates[result - 1], engine, error);
                             if (slot == nullptr)
                             {
                                 alert ("Cannot load plugin", error);
                                 return;
                             }
-                            engine.addInsert (track, slot);
+                            if (list.midi) engine.addMidiFx (track, slot); else engine.addInsert (track, slot);
                             host.showEditor (*slot);
-                            rebuild();
+                            rebuild (list);
                         });
 }
 
-void PluginPanel::rebuild()
+void PluginPanel::rebuild (PluginList& list)
 {
-    rows.clear();
+    list.rows.clear();
 
-    for (int i = 0; i < (int) track.inserts.size(); ++i)
+    auto& slots = slotsOf (list);
+    for (int i = 0; i < (int) slots.size(); ++i)
     {
-        auto slot = track.inserts[(size_t) i];
+        auto slot = slots[(size_t) i];
         auto row = std::make_unique<Row>();
         row->name.setText (slot->description.name, juce::dontSendNotification);
         row->edit.onClick = [this, slot] { host.showEditor (*slot); };
         row->bypass.setToggleState (slot->bypass, juce::dontSendNotification);
         row->bypass.onClick = [this, slot, b = &row->bypass] { beginEdit(); slot->bypass = b->getToggleState(); };
-        row->remove.onClick = [this, i, slot, safe = juce::Component::SafePointer<PluginPanel> (this)]
+        row->remove.onClick = [this, &list, i, slot, safe = juce::Component::SafePointer<PluginPanel> (this)]
         {
             // Deferred: the button being clicked belongs to the row that gets rebuilt.
-            juce::MessageManager::callAsync ([this, i, slot, safe]
+            juce::MessageManager::callAsync ([this, &list, i, slot, safe]
             {
                 if (safe == nullptr)
                     return;
                 beginEdit();
                 host.closeEditorsFor (slot.get());
-                engine.removeInsert (track, i);
-                rebuild();
+                if (list.midi) engine.removeMidiFx (track, i); else engine.removeInsert (track, i);
+                rebuild (list);
             });
         };
         for (auto* c : std::initializer_list<juce::Component*> { &row->name, &row->edit, &row->bypass, &row->remove })
             addAndMakeVisible (c);
-        rows.push_back (std::move (row));
+        list.rows.push_back (std::move (row));
     }
 
-    hint.setText (rows.empty() ? "No effect plugins on this track." : "", juce::dontSendNotification);
-    addButton.setEnabled ((int) rows.size() < maxRows);
+    list.hint.setText (list.rows.empty() ? "None yet." : "", juce::dontSendNotification);
+    list.addButton.setEnabled ((int) list.rows.size() < list.maxRows);
+    setSize (panelWidth, layoutAll (false));   // the callout follows the new height
     resized();
     repaint();
 }
@@ -193,41 +247,56 @@ void PluginPanel::paint (juce::Graphics& g)
     g.fillAll (juce::Colour (0xff24272e));
 }
 
-void PluginPanel::resized()
+// Lays everything out from the top; with apply == false it only measures. Returns the height needed.
+int PluginPanel::layoutAll (bool apply)
 {
-    auto area = getLocalBounds().reduced (12, 10);
+    auto area = juce::Rectangle<int> (0, 0, getWidth() > 0 ? getWidth() : panelWidth, 100000).reduced (12, 10);
+    auto place = [apply] (juce::Component& c, juce::Rectangle<int> r) { if (apply) c.setBounds (r); };
 
-    if (track.type == Track::Type::Midi)
+    auto layoutList = [&] (PluginList& list)
+    {
+        place (list.heading, area.removeFromTop (24));
+        place (list.hint, area.withHeight (rowH));
+        for (auto& row : list.rows)
+        {
+            auto line = area.removeFromTop (rowH).reduced (0, 2);
+            place (row->remove, line.removeFromRight (26));
+            line.removeFromRight (4);
+            place (row->bypass, line.removeFromRight (74));
+            place (row->edit, line.removeFromRight (50));
+            line.removeFromRight (6);
+            place (row->name, line);
+        }
+        if (list.rows.empty())
+            area.removeFromTop (rowH);   // room for the "None yet." hint
+        place (list.addButton, area.removeFromTop (28).removeFromLeft (200));
+        area.removeFromTop (sectionGap);
+    };
+
+    if (isMidi)
     {
         auto line = area.removeFromTop (30);
-        instrumentLabel.setBounds (line.removeFromLeft (74));
-        instrumentEdit.setBounds (line.removeFromRight (50));
+        place (instrumentLabel, line.removeFromLeft (74));
+        place (instrumentEdit, line.removeFromRight (50));
         line.removeFromRight (6);
-        instrumentBox.setBounds (line);
+        place (instrumentBox, line);
         area.removeFromTop (6);
 
         auto outLine = area.removeFromTop (30);
-        midiOutLabel.setBounds (outLine.removeFromLeft (74));
-        midiOutBox.setBounds (outLine);
-        area.removeFromTop (14);
+        place (midiOutLabel, outLine.removeFromLeft (74));
+        place (midiOutButton, outLine);
+        area.removeFromTop (sectionGap + 4);
+
+        layoutList (midiFxList);
     }
 
-    insertsLabel.setBounds (area.removeFromTop (24));
-    hint.setBounds (area.removeFromTop (rowH));
+    layoutList (insertList);
+    place (manageButton, area.removeFromTop (28).removeFromRight (150));
 
-    area.translate (0, -rowH);   // the hint line and the first row share the same spot
-    for (auto& row : rows)
-    {
-        auto line = area.removeFromTop (rowH).reduced (0, 2);
-        row->remove.setBounds (line.removeFromRight (26));
-        line.removeFromRight (4);
-        row->bypass.setBounds (line.removeFromRight (74));
-        row->edit.setBounds (line.removeFromRight (50));
-        line.removeFromRight (6);
-        row->name.setBounds (line);
-    }
-    area = getLocalBounds().reduced (12, 10).removeFromBottom (30);
-    manageButton.setBounds (area.removeFromRight (150));
-    area.removeFromRight (8);
-    addButton.setBounds (area.removeFromRight (190));
+    return area.getY() + 10 + 4;
+}
+
+void PluginPanel::resized()
+{
+    layoutAll (true);
 }

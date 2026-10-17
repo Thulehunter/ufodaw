@@ -11,7 +11,9 @@ A small digital audio workstation for Windows, written in C++17 with [JUCE](http
 - **MIDI input** - any connected keyboard plays the selected MIDI track and can be recorded; the computer keyboard works as a piano too ("Keys").
 - **Effects per track** - 3-band EQ, compressor, delay, reverb.
 - **VST3 hosting** - instruments and effects, with their own editor windows; plugin states are saved in the project.
-- **MIDI routing** - a sequencer plugin on one track can play the synth (built-in, drum kit or VST) of another track; plugins receive tempo, bar position and play state from the DAW.
+- **MIDI routing** - a sequencer plugin on one track can play the synth (built-in, drum kit or VST) of one or more other tracks; plugins receive tempo, bar position and play state from the DAW.
+- **MIDI effects** - arpeggiators, chord tools and other MIDI plugins can sit in front of a track's instrument.
+- **Plugin delay compensation** - tracks are delayed to line up with plugins that report latency (up to half a second).
 - **Automation** - breakpoint envelopes for volume, pan, every built-in effect parameter, the synth, and any parameter of a hosted VST3 plugin.
 - **Velocity editing** - velocity bars under the piano roll; Ctrl+drag a step in the drum sequencer.
 - **Mixer** - volume, pan, mute, solo, level meters, soft limiter on the master.
@@ -26,8 +28,10 @@ Download `MiniDAW-<version>-win64.zip` (see *Packaging*), unzip it and start `Mi
 1. Add two MIDI tracks (**+ MIDI**): one for the sequencer, one for the synth.
 2. On the synth track, open **VST** and pick your synthesizer as its instrument.
 3. On the sequencer track, open **VST** and pick the sequencer plugin as its instrument (plugins that are not flagged as instruments are listed under *Sequencers / MIDI effects / other*).
-4. Still in the sequencer track's VST panel, set **MIDI out** to the synth track.
+4. Still in the sequencer track's VST panel, set **MIDI out** to the synth track (you can tick several tracks, one pick per opening of the menu).
 5. Press play. The plugin gets the DAW's tempo and play position, and the notes it makes are played by the synth track. The sequencer track itself is silent.
+
+An arpeggiator or similar plugin that should change the notes of one track goes under **MIDI effects** in that track's VST panel instead.
 
 ## Keyboard and mouse
 
@@ -92,9 +96,9 @@ The audio thread never blocks: the UI edits the project under a lock that the au
 
 ## Known limitations
 
-- No latency compensation for plugins (lookahead limiters etc. run slightly late).
+- Delay compensation covers audio plugins (instrument and effect inserts) up to 0.5 s; plugins that change their latency while playing may cause a short glitch.
 - Changes made inside a plugin's own window are not part of undo.
-- Automation is applied once per audio block (steps, not a smooth ramp) except for volume and pan; while a parameter is automated its slider can still be moved but the envelope wins during playback.
+- Automation of effect and plugin parameters is applied every 64 samples (volume and pan are ramped); synth parameters are applied once per audio block. While a parameter is automated its slider can still be moved but the envelope wins during playback.
 - VST3 only (no VST2, CLAP or AU).
 - Windows only so far.
 
