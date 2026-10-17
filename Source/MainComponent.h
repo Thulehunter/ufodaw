@@ -107,6 +107,9 @@ public:
     // ---- Used by the timeline components
     Engine& getEngine() { return engine; }
     SyncViewport& getLaneViewport() { return laneViewport; }
+    juce::Component& getLaneHolder() { return laneHolder; }
+    Track* trackAtY (int yInLaneHolder) const;       // the track whose lane contains this y, or nullptr
+    void setLoopRegion (double startSeconds, double endSeconds);   // also switches looping on
     double getPixelsPerSecond() const { return pixelsPerSecond; }
     int getScrollX() const { return laneViewport.getViewPositionX(); }
     double beatSeconds() const;
@@ -144,6 +147,9 @@ private:
     void updateArmedTrack();
     void liveNote (int pitch, bool on, float velocity);
     void finishMidiRecording();
+
+    void toggleLoop();
+    void loopToSelection();
 
     void startPlayback();
     void pausePlayback();
@@ -201,6 +207,7 @@ private:
                     pauseButton  { TransportButton::Pause,  "Pause (Space)" },
                     stopButton   { TransportButton::Stop,   "Stop" },
                     recordButton { TransportButton::Record, "Record (R)" };
+    juce::TextButton loopButton { "Loop" };
     juce::TooltipWindow tooltipWindow { this };
     double playStartSeconds = 0.0;
     double recStartSeconds = 0.0;

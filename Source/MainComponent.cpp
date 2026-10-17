@@ -131,6 +131,18 @@ public:
         const double bar = main.barSeconds(), beat = main.beatSeconds();
         const double scroll = main.getScrollX();
 
+        auto& engine = main.getEngine();
+        const double loopA = engine.loopStart, loopB = engine.loopEnd;
+        if (loopB > loopA)
+        {
+            const int x1 = (int) (loopA * pps - scroll), x2 = (int) (loopB * pps - scroll);
+            const bool on = engine.loopEnabled;
+            g.setColour ((on ? juce::Colour (0xffe0922f) : juce::Colours::grey).withAlpha (on ? 0.35f : 0.22f));
+            g.fillRect (x1, 0, x2 - x1, getHeight());
+            g.setColour (on ? juce::Colour (0xffe0922f) : juce::Colours::grey);
+            g.fillRect (x1, getHeight() - 3, x2 - x1, 3);
+        }
+
         const int labelEvery = juce::jmax (1, (int) std::ceil (60.0 / (bar * pps)));
         const int firstBar = (int) std::floor (scroll / (bar * pps));
 
@@ -159,14 +171,37 @@ public:
         g.drawHorizontalLine (getHeight() - 1, 0.0f, (float) getWidth());
     }
 
-    void mouseDown (const juce::MouseEvent& e) override { move (e); }
-    void mouseDrag (const juce::MouseEvent& e) override { move (e); }
+    // left button: playhead; right button: drag out the loop region
+    void mouseDown (const juce::MouseEvent& e) override
+    {
+        loopDragging = e.mods.isPopupMenu();
+        if (loopDragging)
+            loopAnchor = main.snapTime (timeAt (e.x));
+        else
+            move (e);
+    }
+
+    void mouseDrag (const juce::MouseEvent& e) override
+    {
+        if (loopDragging)
+        {
+            const double t = main.snapTime (timeAt (e.x));
+            main.setLoopRegion (juce::jmin (loopAnchor, t), juce::jmax (loopAnchor, t));
+        }
+        else
+        {
+            move (e);
+        }
+    }
+
+    void mouseUp (const juce::MouseEvent&) override { loopDragging = false; }
 
 private:
-    void move (const juce::MouseEvent& e)
-    {
-        main.setPlayhead ((e.x + main.getScrollX()) / main.getPixelsPerSecond());
-    }
+    double timeAt (int x) const { return juce::jmax (0.0, (x + main.getScrollX()) / main.getPixelsPerSecond()); }
+    void move (const juce::MouseEvent& e) { main.setPlayhead (timeAt (e.x)); }
+
+    bool loopDragging = false;
+    double loopAnchor = 0.0;
 
     MainComponent& main;
 };
@@ -300,6 +335,7 @@ public:
                 continue;
 
             dragId = h.id;
+            dragTrack = &track;
             dragStart = h.start;
             dragLength = h.length;
             edited = false;
@@ -355,9 +391,25 @@ public:
                 main.beginEdit();
                 edited = true;
             }
-            main.getEngine().setMidiClipLength (track, dragId, newLength);
+            main.getEngine().setMidiClipLength (*dragTrack, dragId, newLength);
             main.clipsChanged();
             return;
+        }
+
+        // dragging up or down carries the clip to another track of the same kind
+        if (auto* target = main.trackAtY (e.getEventRelativeTo (&main.getLaneHolder()).y);
+            target != nullptr && target != dragTrack && target->type == dragTrack->type)
+        {
+            if (! edited)
+            {
+                main.beginEdit();
+                edited = true;
+            }
+            if (main.getEngine().moveClipToTrack (*dragTrack, *target, dragId))
+            {
+                dragTrack = target;
+                main.selectClip (dragTrack, dragId);
+            }
         }
 
         double newStart = t - grabOffset;
@@ -370,7 +422,7 @@ public:
             main.beginEdit();
             edited = true;
         }
-        main.getEngine().moveClip (track, dragId, newStart);
+        main.getEngine().moveClip (*dragTrack, dragId, newStart);
         main.clipsChanged();
     }
 
@@ -455,6 +507,7 @@ private:
     Track& track;
     std::map<int, Peaks> cache;
     int dragId = -1;
+    Track* dragTrack = nullptr;   // the track the dragged clip currently lives on
     bool resizing = false;
     bool edited = false;   // true once this drag has taken its undo snapshot
     double grabOffset = 0.0;
@@ -494,6 +547,12 @@ MainComponent::MainComponent()
              &rewindButton, &playButton, &pauseButton, &stopButton, &recordButton, &addButton, &addMidiButton,
              &openButton, &saveButton, &saveAsButton, &exportButton, &undoButton, &redoButton, &zoomOutButton, &zoomInButton })
         addAndMakeVisible (b);
+    loopButton.setClickingTogglesState (true);
+    loopButton.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xffe0922f));
+    loopButton.setTooltip ("Loop playback (L). Right-drag on the ruler sets the loop; Shift+L loops the selected clip.");
+    loopButton.setWantsKeyboardFocus (false);
+    loopButton.onClick = [this] { toggleLoop(); grabKeyboardFocus(); };
+    addAndMakeVisible (loopButton);
     undoButton.onClick = [this] { undo(); };
     redoButton.onClick = [this] { redo(); };
     updateUndoButtons();
@@ -691,6 +750,52 @@ void MainComponent::addMidiTrack()
     addTrackUI (*t);
     selectClip (t, id);   // opens the piano roll
     clipsChanged();
+}
+
+Track* MainComponent::trackAtY (int y) const
+{
+    if (y < 0)
+        return nullptr;
+    const int index = y / stripHeight;
+    return index < lanes.size() ? &lanes[index]->getTrack() : nullptr;
+}
+
+void MainComponent::setLoopRegion (double a, double b)
+{
+    if (b - a < beatSeconds() * 0.5)
+        return;
+    engine.loopStart = a;
+    engine.loopEnd = b;
+    engine.loopEnabled = true;
+    loopButton.setToggleState (true, juce::dontSendNotification);
+    ruler->repaint();
+    repaint();
+}
+
+void MainComponent::toggleLoop()
+{
+    const bool on = loopButton.getToggleState();
+    if (on && engine.loopEnd <= engine.loopStart)   // no region yet: use the project, at least 4 bars
+    {
+        const double bar = barSeconds();
+        engine.loopStart = 0.0;
+        engine.loopEnd = juce::jmax (4.0, std::ceil (engine.getTotalLengthSeconds() / bar)) * bar;
+    }
+    engine.loopEnabled = on;
+    ruler->repaint();
+    repaint();
+}
+
+void MainComponent::loopToSelection()
+{
+    if (selTrack == nullptr || selClip < 0)
+        return;
+    Clip a;
+    MidiClip m;
+    if (engine.getClip (*selTrack, selClip, a))
+        setLoopRegion (a.start, a.end());
+    else if (engine.getMidiClip (*selTrack, selClip, m))
+        setLoopRegion (m.start, m.end());
 }
 
 void MainComponent::setPlayhead (double seconds)
@@ -917,6 +1022,7 @@ void MainComponent::resized()
         b->setBounds (bx, by, tb, tb);
         bx += tb + gap;
     }
+    loopButton.setBounds (bx + 6, by + 8, 60, tb - 16);
 
     // snap + zoom live in the corner above the track headers
     auto corner = juce::Rectangle<int> (0, topBarHeight, controlsWidth, rulerHeight).reduced (6, 2);
@@ -946,6 +1052,19 @@ void MainComponent::paint (juce::Graphics& g)
 
 void MainComponent::paintOverChildren (juce::Graphics& g)
 {
+    // loop region, as a faint wash over the lanes
+    if (engine.loopEnabled && engine.loopEnd > engine.loopStart)
+    {
+        const auto lanesArea = laneViewport.getBounds();
+        const int x1 = juce::jmax (lanesArea.getX(), lanesArea.getX() + (int) (engine.loopStart * pixelsPerSecond) - getScrollX());
+        const int x2 = juce::jmin (lanesArea.getRight(), lanesArea.getX() + (int) (engine.loopEnd * pixelsPerSecond) - getScrollX());
+        if (x2 > x1)
+        {
+            g.setColour (juce::Colour (0xffe0922f).withAlpha (0.07f));
+            g.fillRect (x1, lanesArea.getY(), x2 - x1, lanesArea.getHeight());
+        }
+    }
+
     const int x = laneViewport.getX() + (int) (engine.getPositionSeconds() * pixelsPerSecond) - getScrollX();
     if (x >= laneViewport.getX() && x < laneViewport.getRight())
     {
@@ -1078,6 +1197,11 @@ bool MainComponent::keyPressed (const juce::KeyPress& k)
         return false;
     }
 
+    if (k.getKeyCode() == 'L' && ! mods.isAltDown())
+    {
+        if (mods.isShiftDown()) loopToSelection(); else loopButton.triggerClick();
+        return true;
+    }
     if (k == juce::KeyPress::spaceKey)  { if (engine.isPlaying()) pausePlayback(); else startPlayback(); return true; }
     if (k == juce::KeyPress::returnKey) { rewindButton.triggerClick(); return true; }
     if (k.getKeyCode() == 'R' && ! mods.isAnyModifierKeyDown()) { toggleRecording(); return true; }
@@ -1396,6 +1520,9 @@ void MainComponent::saveProject (const juce::File& file)
     root->setProperty ("bpm", (double) engine.bpm.load());
     root->setProperty ("masterGain", (double) engine.masterGain.load());
     root->setProperty ("metronome", engine.metronome.load());
+    root->setProperty ("loopEnabled", engine.loopEnabled.load());
+    root->setProperty ("loopStart", engine.loopStart.load());
+    root->setProperty ("loopEnd", engine.loopEnd.load());
     root->setProperty ("tracks", trackList);
 
     if (file.replaceWithText (juce::JSON::toString (juce::var (root))))
@@ -1461,6 +1588,11 @@ void MainComponent::loadProject (const juce::File& file)
     bpmSlider.setValue (engine.bpm, juce::dontSendNotification);
     masterSlider.setValue (engine.masterGain, juce::dontSendNotification);
     metroButton.setToggleState (engine.metronome, juce::dontSendNotification);
+
+    engine.loopStart = (double) root.getProperty ("loopStart", 0.0);
+    engine.loopEnd = (double) root.getProperty ("loopEnd", 0.0);
+    engine.loopEnabled = (bool) root.getProperty ("loopEnabled", false);
+    loopButton.setToggleState (engine.loopEnabled, juce::dontSendNotification);
 
     juce::StringArray missing;
     const auto baseDir = file.getParentDirectory();

@@ -127,6 +127,7 @@ public:
     int splitClip (Track&, int clipId, double atSeconds);                   // id of the right-hand part
     int duplicateClip (Track&, int clipId);                                 // id of the copy, placed after the original
     bool deleteClip (Track&, int clipId);
+    bool moveClipToTrack (Track& from, Track& to, int clipId);              // same type only, id is kept
 
     // Undo/redo support. restoreState() replaces every Track object, so any Track* held
     // elsewhere is invalid afterwards (clip ids are kept).
@@ -154,6 +155,10 @@ public:
     void setPositionSeconds (double s) { positionSamples = (juce::int64) juce::jmax (0.0, s * sampleRate); }
     double getPositionSeconds() const { return (double) positionSamples / sampleRate; }
     double getSampleRate() const { return sampleRate; }
+
+    // Loop region in seconds; while enabled, playback jumps from loopEnd back to loopStart.
+    std::atomic<bool> loopEnabled { false };
+    std::atomic<double> loopStart { 0.0 }, loopEnd { 0.0 };
 
     std::atomic<float> bpm { 120.0f };
     std::atomic<bool> metronome { false };

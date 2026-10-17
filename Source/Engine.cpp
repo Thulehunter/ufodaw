@@ -408,6 +408,27 @@ bool Engine::deleteClip (Track& t, int id)
     return t.clips.size() + t.midiClips.size() != before;
 }
 
+bool Engine::moveClipToTrack (Track& from, Track& to, int id)
+{
+    if (&from == &to || from.type != to.type)
+        return false;
+
+    const juce::ScopedLock sl (lock);
+    if (auto* c = findClip (from, id))
+    {
+        to.clips.push_back (std::move (*c));
+        from.clips.erase (from.clips.begin() + (c - from.clips.data()));
+        return true;
+    }
+    if (auto* m = findMidiClip (from, id))
+    {
+        to.midiClips.push_back (std::move (*m));
+        from.midiClips.erase (from.midiClips.begin() + (m - from.midiClips.data()));
+        return true;
+    }
+    return false;
+}
+
 double Engine::getTotalLengthSeconds() const
 {
     const juce::ScopedLock sl (lock);
@@ -627,7 +648,48 @@ void Engine::getNextAudioBlock (const juce::AudioSourceChannelInfo& info)
     auto* outL = info.buffer->getWritePointer (0, info.startSample);
     auto* outR = info.buffer->getNumChannels() > 1 ? info.buffer->getWritePointer (1, info.startSample) : nullptr;
 
-    mixBlock (outL, outR, info.numSamples, pos, running && metronome, running);
+    const bool withClick = running && metronome;
+    const double loopStartSec = loopStart, loopEndSec = loopEnd;
+
+    if (running && loopEnabled && loopEndSec > loopStartSec + 0.05)
+    {
+        // Looping: render up to the loop end, jump back, and render the rest of the block from the loop start,
+        // so the wrap is sample-accurate.
+        const auto loopStartS = (juce::int64) (loopStartSec * sampleRate);
+        const auto loopEndS = (juce::int64) (loopEndSec * sampleRate);
+        auto p = pos;
+        int done = 0;
+
+        while (done < info.numSamples)
+        {
+            const int remaining = info.numSamples - done;
+            int len = remaining;
+            bool wrap = false;
+            if (p <= loopEndS && p + remaining >= loopEndS)
+            {
+                len = (int) (loopEndS - p);
+                wrap = true;
+            }
+
+            if (len > 0)
+                mixBlock (outL + done, outR != nullptr ? outR + done : nullptr, len, p, withClick, true);
+            done += len;
+            p += len;
+
+            if (wrap)
+            {
+                p = loopStartS;
+                for (auto& t : tracks)
+                    if (t->voices != nullptr)
+                        t->voices->allNotesOff();   // notes crossing the loop end are released (effect tails carry on)
+            }
+        }
+        positionSamples = p;
+        lastBlockEnd = p;
+        return;
+    }
+
+    mixBlock (outL, outR, info.numSamples, pos, withClick, running);
 
     if (running)
     {
