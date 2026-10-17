@@ -1,0 +1,49 @@
+# Builds UFODAW for macOS (Apple Silicon and Intel in one app) on GitHub's servers and uploads UFODAW-<version>-macos.zip
+# as a workflow artifact. Run it by hand (Actions > macOS build > Run workflow) or push to the macos-build branch.
+# The app is not signed or notarized (that needs an Apple Developer account): see MACOS-README.txt inside the zip.
+name: macOS build
+
+on:
+  push:
+    branches: [macos-build]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Make the zip
+        run: |
+          VERSION=$(grep -o 'project(UFODAW VERSION [0-9.]*' CMakeLists.txt | grep -o '[0-9.]*$')
+          mkdir -p stage
+          cp -R build/UFODAW_artefacts/Release/UFODAW.app stage/
+          cp README.md LICENSE stage/
+          cat > stage/MACOS-README.txt <<'TXT'
+          UFODAW for macOS (test build)
+
+          1. Unzip, and drag UFODAW.app to your Applications folder (or anywhere).
+          2. The app is not signed by Apple, so macOS blocks it the first time. Do ONE of these:
+             - Right-click (or Ctrl-click) UFODAW.app > Open > Open.
+             - Or in Terminal:  xattr -cr /path/to/UFODAW.app   and then open it normally.
+          3. The first time it asks for microphone access (for recording): allow it.
+
+          VST3 plugins are found in /Library/Audio/Plug-Ins/VST3 and ~/Library/Audio/Plug-Ins/VST3 (Plugins icon > Scan).
+          Please tell the author what does not work. This build has not been tested on a Mac yet.
+          TXT
+          ditto -c -k --keepParent stage/UFODAW.app "UFODAW-$VERSION-macos-app.zip"
+          (cd stage && zip -qr "../UFODAW-$VERSION-macos.zip" .)
+          echo "ZIP=UFODAW-$VERSION-macos.zip" >> "$GITHUB_ENV"
+
+      - name: Keep the zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ZIP }}
+          path: ${{ env.ZIP }}
