@@ -30,7 +30,7 @@ A small digital audio workstation for Windows, written in C++17 with [JUCE](http
 - **Controllers** - mod wheel, expression, sustain and other pedals, hi-hat pedal, pitch bend and aftertouch are recorded with the
   notes, played back to plugin instruments and hardware, and edited in the lane under the piano roll (pick the controller in the lane box:
   click adds a point, drag moves it, right-click deletes). The built-in synth ignores them.
-- **Effects per track** - 3-band EQ, compressor, delay, reverb, and a **Mono** switch (FX panel, also on buses and the master): the channel
+- **Effects per track** - 3-band EQ, compressor, delay, reverb, and a **Mono** button on every track, bus and the master (lit = mono): the channel
   plays with left and right summed - to check a source or the whole mix in mono, or to centre a stereo recording.
 - **VST3 hosting** - instruments and effects, with their own editor windows; plugin states are saved in the project.
 - **MIDI routing** - a sequencer plugin on one track can play the synth (built-in, drum kit or VST) of one or more other tracks; plugins receive tempo, bar position and play state from the DAW.
@@ -170,7 +170,7 @@ An arpeggiator or similar plugin that should change the notes of one track goes 
 | Crossfade two clips | let the clips overlap a little, right-click one > *Crossfade with overlapping clip(s)* |
 | Reverse a clip | right-click > *Reverse* |
 | Tempo / time signature changes | **Tempo** button next to BPM: add sections that start at a bar, each with a BPM and a time signature |
-| Mono or stereo | **FX** button of the track (or a bus, or the master) > *Mono*; the FX button stays lit while it is on |
+| Mono or stereo | the **Mono** button on the track, bus or master strip (lit = mono; also in the FX panel) |
 | Send a track to a bus / choose its output | **Out** button (bottom right of the track header, e.g. *→ Master*): pick the output and set a send level per bus |
 | Quantize / swing / humanize a MIDI clip | select the clip and press `Q`, or right-click it |
 | Metronome on / off | **Click** next to Punch, or `M` (works during playback and recording) |

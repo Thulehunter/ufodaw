@@ -79,6 +79,16 @@ public:
         addChildComponent (routeButton);
         routeButton.setVisible (! track.bus);
 
+        // Mono / stereo: lit = this channel plays in mono (left and right summed). Also on buses and the master.
+        monoButton.setClickingTogglesState (true);
+        monoButton.setColour (juce::TextButton::buttonOnColourId, Theme::yellow);
+        monoButton.setColour (juce::TextButton::textColourOnId, Theme::border);
+        monoButton.setTooltip ("Mono: sum left and right, after the effects and plugins (lit = mono, dark = stereo). "
+                               "Handy to centre a stereo recording, or to check a mix in mono.");
+        monoButton.setToggleState (track.fx.mono.load(), juce::dontSendNotification);
+        monoButton.onClick = [this] { beginEdit(); track.fx.mono = monoButton.getToggleState(); };
+        addAndMakeVisible (monoButton);
+
         monitorButton.setClickingTogglesState (true);
         monitorButton.setColour (juce::TextButton::buttonOnColourId, Theme::yellow);
         monitorButton.setTooltip ("Monitor: hear this track's input live through its effects and volume while it is armed. "
@@ -246,7 +256,10 @@ public:
             autoButton.setBounds (row.removeFromRight (26));
             nameLabel.setBounds (row);
             m.removeFromTop (6);
-            volume.setBounds (m.removeFromTop (24));
+            auto fader = m.removeFromTop (24);
+            monoButton.setBounds (fader.removeFromRight (46));   // the master can be listened to in mono, too
+            fader.removeFromRight (6);
+            volume.setBounds (fader);
             return;
         }
 
@@ -274,6 +287,8 @@ public:
             routeButton.setBounds (bottom.removeFromRight (74));
             bottom.removeFromRight (4);
         }
+        monoButton.setBounds (bottom.removeFromRight (46));
+        bottom.removeFromRight (4);
         if (monitorButton.isVisible())
         {
             monitorButton.setBounds (bottom.removeFromRight (40));
@@ -305,7 +320,7 @@ public:
                                 : juce::String());
         }
 
-        const bool fxActive = track.fx.anyOn() || track.fx.mono.load();   // (mono counts: the button shows the channel is changed)
+        const bool fxActive = track.fx.anyOn();
         if (fxActive != fxShownActive)
         {
             fxShownActive = fxActive;
@@ -369,6 +384,8 @@ public:
                 monitorShown = track.monitor;
                 monitorButton.setToggleState (monitorShown, juce::dontSendNotification);
             }
+            if (track.fx.mono.load() != monoButton.getToggleState())   // changed elsewhere: the FX panel, undo, loading
+                monoButton.setToggleState (track.fx.mono.load(), juce::dontSendNotification);
 
             if (! track.bus && ! isMaster)   // where this track plays, and how many sends it has
             {
@@ -418,7 +435,7 @@ private:
     std::function<void (Track&)> toggleArm;
     std::function<void (Track&, juce::Component&)> openInput;
     std::function<void (Track&, juce::Component&)> openRouting;
-    juce::TextButton rowButton, monitorButton { "Mon" }, routeButton;
+    juce::TextButton rowButton, monitorButton { "Mon" }, routeButton, monoButton { "Mono" };
     juce::String rowShown, routeShown;
     bool monitorShown = false;
     bool isMaster = false;
