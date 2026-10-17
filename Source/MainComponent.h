@@ -3,6 +3,7 @@
 #include <juce_audio_utils/juce_audio_utils.h>
 #include <juce_gui_basics/juce_gui_basics.h>
 #include "Engine.h"
+#include "PluginHost.h"
 
 class TrackHeader;
 class TrackLane;
@@ -150,6 +151,9 @@ private:
 
     void toggleLoop();
     void loopToSelection();
+    void openPlugins (Track&, juce::Component& anchor);
+    juce::var pluginsToVar (const Track&) const;
+    void pluginsFromVar (Track&, const juce::var& trackVar, juce::StringArray& problems);
 
     void startPlayback();
     void pausePlayback();
@@ -174,6 +178,7 @@ private:
         MainComponent& owner;
     };
 
+    PluginHost pluginHost;   // declared before the engine so it outlives the plugins the engine holds
     juce::AudioDeviceManager deviceManager;
     juce::AudioSourcePlayer player;
     Engine engine;
@@ -207,7 +212,7 @@ private:
                     pauseButton  { TransportButton::Pause,  "Pause (Space)" },
                     stopButton   { TransportButton::Stop,   "Stop" },
                     recordButton { TransportButton::Record, "Record (R)" };
-    juce::TextButton loopButton { "Loop" };
+    juce::TextButton loopButton { "Loop" }, pluginsButton { "Plugins..." };
     juce::TooltipWindow tooltipWindow { this };
     double playStartSeconds = 0.0;
     double recStartSeconds = 0.0;

@@ -7,6 +7,7 @@
 #include <vector>
 #include "Synth.h"
 #include "Fx.h"
+#include "Plugin.h"
 
 // A piece of audio placed on the timeline. The sample data is immutable and shared, so
 // splitting and duplicating clips is free; only start/offset/length differ.
@@ -58,6 +59,12 @@ struct Track
     FxParams fx;                        // effect chain settings
     std::unique_ptr<TrackFx> fxState;   // audio-thread state of the chain
 
+    // VST3 hosting. Only the message thread changes these (under Engine::lock); the audio thread reads them.
+    std::shared_ptr<PluginSlot> instrument;                 // MIDI tracks: replaces the built-in synth when set
+    std::vector<std::shared_ptr<PluginSlot>> inserts;       // effects after the built-in chain, in order
+    juce::MidiBuffer liveMidi;                              // notes played live, waiting for the plugin instrument
+    double pluginTailSamples = 0.0;                         // keep running the instrument this long after the transport stops
+
     std::atomic<float> gain { 0.8f };
     std::atomic<float> pan { 0.0f };
     std::atomic<bool> mute { false };
@@ -79,6 +86,8 @@ struct TrackState
     float synthValues[5] = {};          // attack, decay, sustain, release, cutoff
     std::vector<float> fxFloats;        // FxParams::forEachFloat order
     std::vector<char> fxBools;          // FxParams::forEachBool order
+    std::shared_ptr<PluginSlot> instrument;                 // plugins are shared with the live project,
+    std::vector<std::shared_ptr<PluginSlot>> inserts;       // so undo restores which ones are present, not their settings
 };
 
 struct ProjectState
@@ -128,6 +137,13 @@ public:
     int duplicateClip (Track&, int clipId);                                 // id of the copy, placed after the original
     bool deleteClip (Track&, int clipId);
     bool moveClipToTrack (Track& from, Track& to, int clipId);              // same type only, id is kept
+
+    // ---- Message thread: hosted plugins
+    void preparePlugin (PluginSlot&);                           // layout + prepareToPlay for the current audio setup
+    void setInstrument (Track&, std::shared_ptr<PluginSlot>);   // null = built-in synth
+    void addInsert (Track&, std::shared_ptr<PluginSlot>);
+    void removeInsert (Track&, int index);
+    int getMaxBlockSize() const { return maxBlock; }
 
     // Undo/redo support. restoreState() replaces every Track object, so any Track* held
     // elsewhere is invalid afterwards (clip ids are kept).
@@ -189,6 +205,10 @@ private:
     void drainPreviewEvents();
     bool anySynthActive() const;
     void silenceSynths();
+    void releaseAllNotes (Track&);                              // soft all-notes-off for the synth or plugin instrument
+    void collectNoteEvents (Track&, int numSamples, juce::int64 pos, bool running);
+    void renderPluginInstrument (Track&, int numSamples, float* outL, float* outR);
+    void processInsert (PluginSlot&, float* l, float* r, int numSamples);
 
     Clip* findClip (Track&, int clipId);
     const Clip* findClip (const Track&, int clipId) const;
@@ -210,6 +230,9 @@ private:
     juce::SpinLock previewWriteLock;   // the fifo has one writer at a time: UI thread or MIDI thread
     juce::AbstractFifo previewFifo { previewQueueSize };
     std::array<PreviewEvent, previewQueueSize> previewQueue;
+
+    juce::MidiBuffer midiScratch, emptyMidi;
+    int maxBlock = 4096;                   // largest block hosted plugins are prepared for
 
     std::vector<NoteEvent> noteEvents;     // reused every block, reserved up front
     std::vector<float> synthScratch;       // mono synth output

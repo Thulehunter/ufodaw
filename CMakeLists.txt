@@ -19,12 +19,15 @@ target_sources(MiniDAW PRIVATE
     Source/Synth.cpp
     Source/Fx.cpp
     Source/FxPanel.cpp
+    Source/PluginHost.cpp
+    Source/PluginPanel.cpp
     Source/PianoRoll.cpp
     Source/MainComponent.cpp)
 
 target_compile_definitions(MiniDAW PRIVATE
     JUCE_WEB_BROWSER=0
     JUCE_USE_CURL=0
+    JUCE_PLUGINHOST_VST3=1
     JUCE_APPLICATION_NAME_STRING="$<TARGET_PROPERTY:MiniDAW,JUCE_PRODUCT_NAME>"
     JUCE_APPLICATION_VERSION_STRING="$<TARGET_PROPERTY:MiniDAW,JUCE_VERSION>")
 
@@ -33,6 +36,7 @@ target_link_libraries(MiniDAW
         juce::juce_audio_utils
         juce::juce_audio_formats
         juce::juce_audio_devices
+        juce::juce_audio_processors
         juce::juce_gui_basics
     PUBLIC
         juce::juce_recommended_config_flags

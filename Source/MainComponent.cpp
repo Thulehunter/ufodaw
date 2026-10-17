@@ -1,6 +1,7 @@
 #include "MainComponent.h"
 #include "PianoRoll.h"
 #include "FxPanel.h"
+#include "PluginPanel.h"
 #include <algorithm>
 #include <map>
 
@@ -9,8 +10,9 @@
 class TrackHeader : public juce::Component
 {
 public:
-    TrackHeader (Track& t, std::function<void (Track*)> onRemove, std::function<void()> onBeginEdit)
-        : track (t), remove (std::move (onRemove)), beginEdit (std::move (onBeginEdit))
+    TrackHeader (Track& t, std::function<void (Track*)> onRemove, std::function<void()> onBeginEdit,
+                 std::function<void (Track&, juce::Component&)> onOpenPlugins)
+        : track (t), remove (std::move (onRemove)), beginEdit (std::move (onBeginEdit)), openPlugins (std::move (onOpenPlugins))
     {
         nameLabel.setText (track.name, juce::dontSendNotification);
         nameLabel.setFont (juce::FontOptions (14.0f, juce::Font::bold));
@@ -54,6 +56,10 @@ public:
             juce::CallOutBox::launchAsynchronously (std::make_unique<FxPanel> (track, beginEdit), fxButton.getScreenBounds(), nullptr);
         };
         addAndMakeVisible (fxButton);
+
+        vstButton.setTooltip ("VST3 plugins: instrument and effects");
+        vstButton.onClick = [this] { openPlugins (track, vstButton); };
+        addAndMakeVisible (vstButton);
     }
 
     Track& getTrack() { return track; }
@@ -80,6 +86,8 @@ public:
         deleteButton.setBounds (top.removeFromRight (22));
         top.removeFromRight (4);
         fxButton.setBounds (top.removeFromRight (32));
+        top.removeFromRight (4);
+        vstButton.setBounds (top.removeFromRight (38));
         nameLabel.setBounds (top);
         c.removeFromTop (4);
         auto buttons = c.removeFromRight (56);
@@ -102,19 +110,29 @@ public:
             fxButton.setColour (juce::TextButton::buttonColourId, fxActive ? juce::Colour (0xff1f8a8a) : juce::Colour (0xff3a3d46));
             fxButton.repaint();
         }
+
+        const bool hasPlugins = track.instrument != nullptr || ! track.inserts.empty();
+        if (hasPlugins != vstShownActive)
+        {
+            vstShownActive = hasPlugins;
+            vstButton.setColour (juce::TextButton::buttonColourId, hasPlugins ? juce::Colour (0xff6a4fb5) : juce::Colour (0xff3a3d46));
+            vstButton.repaint();
+        }
         repaint();
     }
 
 private:
     Track& track;
     bool fxShownActive = false;
+    bool vstShownActive = false;
     std::function<void (Track*)> remove;
     std::function<void()> beginEdit;
+    std::function<void (Track&, juce::Component&)> openPlugins;
     float shown = 0.0f;
 
     juce::Label nameLabel;
     juce::Slider volume, pan;
-    juce::TextButton muteButton { "M" }, soloButton { "S" }, deleteButton { "x" }, fxButton { "FX" };
+    juce::TextButton muteButton { "M" }, soloButton { "S" }, deleteButton { "x" }, fxButton { "FX" }, vstButton { "VST" };
 };
 
 //==============================================================================
@@ -541,6 +559,11 @@ MainComponent::MainComponent()
     keysButton.setWantsKeyboardFocus (false);
     keysButton.onClick = [this] { grabKeyboardFocus(); };
     addAndMakeVisible (keysButton);
+
+    pluginsButton.setTooltip ("Scan for and manage VST3 plugins");
+    pluginsButton.setWantsKeyboardFocus (false);
+    pluginsButton.onClick = [this] { pluginHost.showManager(); };
+    addAndMakeVisible (pluginsButton);
     enableAllMidiInputs();
 
     for (juce::Component* b : std::initializer_list<juce::Component*> {
@@ -615,6 +638,7 @@ MainComponent::MainComponent()
 MainComponent::~MainComponent()
 {
     stopTimer();
+    pluginHost.closeAllEditors();   // editor windows must go before the plugins they show
     midiListConnection = {};
     deviceManager.removeMidiInputDeviceCallback ({}, &midiForwarder);
     deviceManager.removeAudioCallback (&player);
@@ -772,6 +796,51 @@ void MainComponent::setLoopRegion (double a, double b)
     repaint();
 }
 
+void MainComponent::openPlugins (Track& t, juce::Component& anchor)
+{
+    juce::CallOutBox::launchAsynchronously (std::make_unique<PluginPanel> (t, engine, pluginHost, [this] { beginEdit(); }),
+                                            anchor.getScreenBounds(), nullptr);
+}
+
+// Plugin instrument + inserts of a track, for the project file.
+juce::var MainComponent::pluginsToVar (const Track& t) const
+{
+    auto* o = new juce::DynamicObject();
+    if (t.instrument != nullptr)
+        o->setProperty ("instrument", pluginHost.slotToVar (*t.instrument));
+
+    juce::Array<juce::var> list;
+    for (auto& p : t.inserts)
+        list.add (pluginHost.slotToVar (*p));
+    o->setProperty ("inserts", list);
+    return juce::var (o);
+}
+
+void MainComponent::pluginsFromVar (Track& t, const juce::var& trackVar, juce::StringArray& problems)
+{
+    const auto plugins = trackVar["plugins"];
+    if (! plugins.isObject())
+        return;
+
+    juce::String error;
+    if (plugins.hasProperty ("instrument") && t.type == Track::Type::Midi)
+    {
+        if (auto slot = pluginHost.slotFromVar (plugins["instrument"], engine, error))
+            engine.setInstrument (t, slot);
+        else
+            problems.add (t.name + " (instrument): " + error);
+    }
+
+    if (auto* inserts = plugins["inserts"].getArray())
+        for (auto& v : *inserts)
+        {
+            if (auto slot = pluginHost.slotFromVar (v, engine, error))
+                engine.addInsert (t, slot);
+            else
+                problems.add (t.name + ": " + error);
+        }
+}
+
 void MainComponent::toggleLoop()
 {
     const bool on = loopButton.getToggleState();
@@ -915,7 +984,7 @@ void MainComponent::addTrackUI (Track& t)
     {
         // Deferred: this runs inside a button owned by the header being deleted.
         juce::MessageManager::callAsync ([this, tr] { removeTrackUI (tr); });
-    }, [this] { beginEdit(); }));
+    }, [this] { beginEdit(); }, [this] (Track& tr, juce::Component& anchor) { openPlugins (tr, anchor); }));
     headerHolder.addAndMakeVisible (header);
 
     auto* lane = lanes.add (new TrackLane (*this, t));
@@ -933,6 +1002,10 @@ void MainComponent::removeTrackUI (Track* t)
                 selectClip (nullptr, -1);
             if (roll->getTrack() == t)
                 hideRoll();
+            if (t->instrument != nullptr)
+                pluginHost.closeEditorsFor (t->instrument.get());
+            for (auto& p : t->inserts)
+                pluginHost.closeEditorsFor (p.get());
             headers.remove (i);
             lanes.remove (i);
             engine.removeTrack (t);
@@ -943,6 +1016,7 @@ void MainComponent::removeTrackUI (Track* t)
 
 void MainComponent::clearTracksUI()
 {
+    pluginHost.closeAllEditors();
     hideRoll();
     selectClip (nullptr, -1);
     headers.clear();
@@ -1011,6 +1085,7 @@ void MainComponent::resized()
     // bottom bar: MIDI/armed status on the left, computer-keys toggle on the right
     statusLabel.setBounds (10, getHeight() - bottomBarHeight + 8, juce::jmax (100, getWidth() / 2 - 150), bottomBarHeight - 16);
     keysButton.setBounds (getWidth() - 100, getHeight() - bottomBarHeight + 18, 90, 24);
+    pluginsButton.setBounds (getWidth() - 100 - 96, getHeight() - bottomBarHeight + 16, 90, 28);
 
     // transport: centred along the bottom
     constexpr int tb = 44, gap = 10;
@@ -1511,6 +1586,7 @@ void MainComponent::saveProject (const juce::File& file)
         t->fx.forEachFloat ([fo] (const char* name, std::atomic<float>& v) { fo->setProperty (name, (double) v.load()); });
         t->fx.forEachBool ([fo] (const char* name, std::atomic<bool>& v) { fo->setProperty (name, v.load()); });
         o->setProperty ("fx", juce::var (fo));
+        o->setProperty ("plugins", pluginsToVar (*t));
 
         trackList.add (juce::var (o));
     }
@@ -1594,7 +1670,7 @@ void MainComponent::loadProject (const juce::File& file)
     engine.loopEnabled = (bool) root.getProperty ("loopEnabled", false);
     loopButton.setToggleState (engine.loopEnabled, juce::dontSendNotification);
 
-    juce::StringArray missing;
+    juce::StringArray missing, pluginProblems;
     const auto baseDir = file.getParentDirectory();
 
     for (auto& item : *root["tracks"].getArray())
@@ -1671,6 +1747,8 @@ void MainComponent::loadProject (const juce::File& file)
             loadClip (item);
         }
 
+        pluginsFromVar (*t, item, pluginProblems);
+
         addTrackUI (*t);
     }
 
@@ -1683,6 +1761,10 @@ void MainComponent::loadProject (const juce::File& file)
         juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon,
                                                 "Some audio files were not found",
                                                 missing.joinIntoString ("\n"));
+    if (pluginProblems.size() > 0)
+        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon,
+                                                "Some plugins could not be loaded",
+                                                pluginProblems.joinIntoString ("\n"));
 }
 
 void MainComponent::exportDialog()

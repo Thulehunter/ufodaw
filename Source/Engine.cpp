@@ -7,6 +7,8 @@ Engine::Engine()
     formats.registerBasicFormats();
     writerThread.startThread();
     noteEvents.reserve (2048);
+    midiScratch.ensureSize (16384);
+    emptyMidi.ensureSize (64);
     synthScratch.assign (16384, 0.0f);
     trackL.assign (16384, 0.0f);
     trackR.assign (16384, 0.0f);
@@ -22,6 +24,7 @@ void Engine::prepareToPlay (int samplesPerBlock, double newRate)
 {
     const juce::ScopedLock sl (lock);
     sampleRate = newRate;
+    maxBlock = juce::jmax (4096, samplesPerBlock * 2);
     if ((int) synthScratch.size() < samplesPerBlock * 2)
     {
         synthScratch.assign ((size_t) samplesPerBlock * 2, 0.0f);
@@ -33,6 +36,59 @@ void Engine::prepareToPlay (int samplesPerBlock, double newRate)
         if (t->voices != nullptr)
             t->voices->prepare (newRate);
         t->fxState->prepare (newRate);
+        if (t->instrument != nullptr)
+            preparePlugin (*t->instrument);
+        for (auto& p : t->inserts)
+            preparePlugin (*p);
+    }
+}
+
+//==============================================================================
+// Hosted plugins
+
+// Makes a plugin stereo where it can, prepares it for the current sample rate/block size and sizes its buffer.
+void Engine::preparePlugin (PluginSlot& s)
+{
+    auto& p = *s.instance;
+
+    auto layout = p.getBusesLayout();
+    if (p.getBusCount (true) > 0)  layout.inputBuses.getReference (0) = juce::AudioChannelSet::stereo();
+    if (p.getBusCount (false) > 0) layout.outputBuses.getReference (0) = juce::AudioChannelSet::stereo();
+    if (p.checkBusesLayoutSupported (layout))
+        p.setBusesLayout (layout);
+
+    p.prepareToPlay (sampleRate, maxBlock);
+    s.scratch.setSize (juce::jmax (2, p.getTotalNumInputChannels(), p.getTotalNumOutputChannels()), maxBlock);
+    s.scratch.clear();
+}
+
+void Engine::setInstrument (Track& t, std::shared_ptr<PluginSlot> slot)
+{
+    const juce::ScopedLock sl (lock);
+    if (t.type != Track::Type::Midi)
+        return;
+    t.instrument = std::move (slot);
+    t.liveMidi.clear();
+    t.pluginTailSamples = 0.0;
+    if (t.voices != nullptr)
+        t.voices->reset();
+}
+
+void Engine::addInsert (Track& t, std::shared_ptr<PluginSlot> slot)
+{
+    const juce::ScopedLock sl (lock);
+    t.inserts.push_back (std::move (slot));
+}
+
+void Engine::removeInsert (Track& t, int index)
+{
+    std::shared_ptr<PluginSlot> removed;   // released after the lock, so a plugin is never destroyed under it
+    {
+        const juce::ScopedLock sl (lock);
+        if (! juce::isPositiveAndBelow (index, (int) t.inserts.size()))
+            return;
+        removed = std::move (t.inserts[(size_t) index]);
+        t.inserts.erase (t.inserts.begin() + index);
     }
 }
 
@@ -470,6 +526,8 @@ ProjectState Engine::captureState() const
         ts.synthValues[2] = t->synth.sustain;
         ts.synthValues[3] = t->synth.release;
         ts.synthValues[4] = t->synth.cutoff;
+        ts.instrument = t->instrument;
+        ts.inserts = t->inserts;
         t->fx.forEachFloat ([&ts] (const char*, std::atomic<float>& v) { ts.fxFloats.push_back (v.load()); });
         t->fx.forEachBool ([&ts] (const char*, std::atomic<bool>& v) { ts.fxBools.push_back (v.load() ? 1 : 0); });
         s.tracks.push_back (std::move (ts));
@@ -501,6 +559,9 @@ void Engine::restoreState (const ProjectState& s)
         size_t fi = 0, bi = 0;
         t->fx.forEachFloat ([&] (const char*, std::atomic<float>& v) { if (fi < ts.fxFloats.size()) v = ts.fxFloats[fi]; ++fi; });
         t->fx.forEachBool ([&] (const char*, std::atomic<bool>& v) { if (bi < ts.fxBools.size()) v = ts.fxBools[bi] != 0; ++bi; });
+
+        t->instrument = ts.instrument;
+        t->inserts = ts.inserts;
 
         t->fxState = std::make_unique<TrackFx>();
         t->fxState->prepare (sampleRate);
@@ -544,9 +605,18 @@ void Engine::drainPreviewEvents()
     auto apply = [this] (const PreviewEvent& e)
     {
         for (auto& t : tracks)
-            if (t.get() == e.track && t->voices != nullptr)
+            if (t.get() == e.track)
             {
-                if (e.on) t->voices->noteOn (e.pitch, e.velocity); else t->voices->noteOff (e.pitch);
+                if (t->instrument != nullptr)   // hosted instrument: queue a MIDI message for its next block
+                {
+                    t->liveMidi.addEvent (e.on ? juce::MidiMessage::noteOn (1, e.pitch, e.velocity)
+                                               : juce::MidiMessage::noteOff (1, e.pitch), 0);
+                    t->pluginTailSamples = 3.0 * sampleRate;
+                }
+                else if (t->voices != nullptr)
+                {
+                    if (e.on) t->voices->noteOn (e.pitch, e.velocity); else t->voices->noteOff (e.pitch);
+                }
                 return;
             }
     };
@@ -559,7 +629,8 @@ void Engine::drainPreviewEvents()
 bool Engine::anySynthActive() const
 {
     for (auto& t : tracks)
-        if (t->voices != nullptr && t->voices->isActive())
+        if ((t->voices != nullptr && t->voices->isActive())
+            || (t->instrument != nullptr && t->pluginTailSamples > 0.0))
             return true;
     return false;
 }
@@ -571,6 +642,12 @@ void Engine::silenceSynths()
         if (t->voices != nullptr)
             t->voices->reset();
         t->fxState->reset();
+        if (t->instrument != nullptr)
+            t->instrument->instance->reset();
+        for (auto& p : t->inserts)
+            p->instance->reset();
+        t->liveMidi.clear();
+        t->pluginTailSamples = 0.0;
     }
 }
 
@@ -578,9 +655,21 @@ double Engine::getRenderTailSeconds() const
 {
     const juce::ScopedLock sl (lock);
     for (auto& t : tracks)
-        if (t->fx.hasTail())
+        if (t->fx.hasTail() || t->instrument != nullptr || ! t->inserts.empty())
             return 3.0;
     return 0.5;
+}
+
+// All notes of a track's synth or hosted instrument fade out (used when playback starts, stops or jumps).
+void Engine::releaseAllNotes (Track& t)
+{
+    if (t.voices != nullptr)
+        t.voices->allNotesOff();
+    if (t.instrument != nullptr)
+    {
+        t.liveMidi.addEvent (juce::MidiMessage::allNotesOff (1), 0);
+        t.pluginTailSamples = juce::jmax (t.pluginTailSamples, 2.0 * sampleRate);
+    }
 }
 
 //==============================================================================
@@ -621,8 +710,7 @@ void Engine::getNextAudioBlock (const juce::AudioSourceChannelInfo& info)
         if (wasRunning)
         {
             for (auto& t : tracks)
-                if (t->voices != nullptr)
-                    t->voices->allNotesOff();
+                releaseAllNotes (*t);
             wasRunning = false;
         }
         if (! anySynthActive())
@@ -637,8 +725,7 @@ void Engine::getNextAudioBlock (const juce::AudioSourceChannelInfo& info)
         if (! wasRunning || pos != lastBlockEnd)   // playback started or the playhead jumped
             for (auto& t : tracks)
             {
-                if (t->voices != nullptr)
-                    t->voices->allNotesOff();
+                releaseAllNotes (*t);
                 if (t->fx.hasTail())
                     t->fxState->reset();   // don't replay the tail of wherever we were before
             }
@@ -680,8 +767,7 @@ void Engine::getNextAudioBlock (const juce::AudioSourceChannelInfo& info)
             {
                 p = loopStartS;
                 for (auto& t : tracks)
-                    if (t->voices != nullptr)
-                        t->voices->allNotesOff();   // notes crossing the loop end are released (effect tails carry on)
+                    releaseAllNotes (*t);   // notes crossing the loop end are released (effect tails carry on)
             }
         }
         positionSamples = p;
@@ -698,32 +784,81 @@ void Engine::getNextAudioBlock (const juce::AudioSourceChannelInfo& info)
     }
 }
 
+// Fills noteEvents with the note-ons/offs of a track's MIDI clips that fall inside [pos, pos + n).
+void Engine::collectNoteEvents (Track& t, int n, juce::int64 pos, bool running)
+{
+    noteEvents.clear();
+    if (! running)
+        return;
+
+    const double blockEnd = (double) (pos + n);
+    for (auto& clip : t.midiClips)
+        for (auto& note : clip.notes)
+        {
+            if (note.start >= clip.length)
+                continue;
+
+            const double on = (clip.start + note.start) * sampleRate;
+            const double off = on + note.length * sampleRate;
+            if (on >= (double) pos && on < blockEnd)
+                noteEvents.push_back ({ (int) (on - (double) pos), true, note.pitch, note.velocity });
+            if (off >= (double) pos && off < blockEnd)
+                noteEvents.push_back ({ (int) (off - (double) pos), false, note.pitch, 0.0f });
+        }
+
+    // note-offs go first at the same sample so a repeated pitch retriggers cleanly
+    std::sort (noteEvents.begin(), noteEvents.end(), [] (const NoteEvent& a, const NoteEvent& b)
+               { return a.offset != b.offset ? a.offset < b.offset : (! a.on && b.on); });
+}
+
+// Hosted VST3 instrument: feed it this block's MIDI and take its stereo output.
+void Engine::renderPluginInstrument (Track& t, int n, float* outL, float* outR)
+{
+    auto& slot = *t.instrument;
+    auto& buf = slot.scratch;
+    const int channels = buf.getNumChannels();
+    if (channels < 1 || n > buf.getNumSamples())
+        return;
+
+    midiScratch.clear();
+    midiScratch.addEvents (t.liveMidi, 0, n, 0);
+    t.liveMidi.clear();
+    for (auto& e : noteEvents)
+        midiScratch.addEvent (e.on ? juce::MidiMessage::noteOn (1, e.pitch, e.velocity)
+                                   : juce::MidiMessage::noteOff (1, e.pitch), e.offset);
+
+    buf.clear (0, n);
+    juce::AudioBuffer<float> view (buf.getArrayOfWritePointers(), channels, n);   // wraps, no allocation
+    slot.instance->processBlock (view, midiScratch);
+
+    std::copy (buf.getReadPointer (0), buf.getReadPointer (0) + n, outL);
+    std::copy (buf.getReadPointer (channels > 1 ? 1 : 0), buf.getReadPointer (channels > 1 ? 1 : 0) + n, outR);
+}
+
+// Hosted VST3 effect, in place on the track's stereo buffer.
+void Engine::processInsert (PluginSlot& slot, float* l, float* r, int n)
+{
+    auto& buf = slot.scratch;
+    const int channels = buf.getNumChannels();
+    if (channels < 2 || n > buf.getNumSamples())
+        return;
+
+    buf.clear (0, n);
+    std::copy (l, l + n, buf.getWritePointer (0));
+    std::copy (r, r + n, buf.getWritePointer (1));
+
+    emptyMidi.clear();
+    juce::AudioBuffer<float> view (buf.getArrayOfWritePointers(), channels, n);
+    slot.instance->processBlock (view, emptyMidi);
+
+    std::copy (buf.getReadPointer (0), buf.getReadPointer (0) + n, l);
+    std::copy (buf.getReadPointer (1), buf.getReadPointer (1) + n, r);
+}
+
 void Engine::renderMidiTrack (Track& t, int n, juce::int64 pos, bool running, float* scratch)
 {
     std::fill (scratch, scratch + n, 0.0f);
-
-    noteEvents.clear();
-    if (running)
-    {
-        const double blockEnd = (double) (pos + n);
-        for (auto& clip : t.midiClips)
-            for (auto& note : clip.notes)
-            {
-                if (note.start >= clip.length)
-                    continue;
-
-                const double on = (clip.start + note.start) * sampleRate;
-                const double off = on + note.length * sampleRate;
-                if (on >= (double) pos && on < blockEnd)
-                    noteEvents.push_back ({ (int) (on - (double) pos), true, note.pitch, note.velocity });
-                if (off >= (double) pos && off < blockEnd)
-                    noteEvents.push_back ({ (int) (off - (double) pos), false, note.pitch, 0.0f });
-            }
-
-        // note-offs go first at the same sample so a repeated pitch retriggers cleanly
-        std::sort (noteEvents.begin(), noteEvents.end(), [] (const NoteEvent& a, const NoteEvent& b)
-                   { return a.offset != b.offset ? a.offset < b.offset : (! a.on && b.on); });
-    }
+    collectNoteEvents (t, n, pos, running);
 
     int done = 0;
     for (auto& e : noteEvents)
@@ -766,7 +901,20 @@ void Engine::mixBlock (float* outL, float* outR, int n, juce::int64 pos, bool wi
 
         if (t->type == Track::Type::Midi)
         {
-            if (t->voices != nullptr)
+            if (t->instrument != nullptr)
+            {
+                // the instrument keeps running for a while after the transport stops, so its tail can ring out
+                if (running)
+                    t->pluginTailSamples = 3.0 * sampleRate;
+                if (t->pluginTailSamples > 0.0)
+                {
+                    collectNoteEvents (*t, nn, pos, running);
+                    renderPluginInstrument (*t, nn, bufL, bufR);
+                    if (! running)
+                        t->pluginTailSamples -= nn;
+                }
+            }
+            else if (t->voices != nullptr)
             {
                 renderMidiTrack (*t, nn, pos, running, bufL);
                 std::copy (bufL, bufL + nn, bufR);
@@ -814,6 +962,10 @@ void Engine::mixBlock (float* outL, float* outR, int n, juce::int64 pos, bool wi
 
         if (t->fx.anyOn())
             t->fxState->process (bufL, bufR, nn, t->fx);
+
+        for (auto& p : t->inserts)
+            if (! p->bypass)
+                processInsert (*p, bufL, bufR, nn);
 
         for (int i = 0; i < nn; ++i)
         {
