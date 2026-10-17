@@ -7,6 +7,27 @@
 #include <map>
 
 //==============================================================================
+// Pan slider that jumps in 5 % steps (-100 ... 0 ... +100) when "Pan snap" is on, and moves freely when it is off.
+// Holding Alt while dragging gives the opposite of the current setting.
+class PanSlider : public juce::Slider
+{
+public:
+    double snapValue (double attempted, DragMode) override
+    {
+        const bool snap = UiSettings::panSnap != juce::ModifierKeys::currentModifiers.isAltDown();
+        if (! snap)
+            return attempted;
+        return juce::jlimit (-1.0, 1.0, std::round (attempted / UiSettings::panStep) * UiSettings::panStep);
+    }
+
+    static juce::String describe (double v)
+    {
+        const int percent = (int) std::round (std::abs (v) * 100.0);
+        return percent == 0 ? juce::String ("Center") : (v < 0 ? "L " : "R ") + juce::String (percent) + "%";
+    }
+};
+
+//==============================================================================
 // Left-hand controls for one track: name, volume, pan, mute, solo, level meter.
 class TrackHeader : public juce::Component
 {
@@ -30,6 +51,13 @@ public:
         volume.setValue (track.gain, juce::dontSendNotification);
         volume.onDragStart = [this] { beginEdit(); };
         volume.onValueChange = [this] { track.gain = (float) volume.getValue(); };
+        volume.textFromValueFunction = [] (double v)
+        {
+            return v < 0.001 ? juce::String ("-inf dB") : juce::String (20.0 * std::log10 (v), 1) + " dB";
+        };
+        volume.setPopupDisplayEnabled (true, true, nullptr);   // value bubble while dragging
+        volume.setTooltip ("Volume (double-click: reset)");
+        volume.setDoubleClickReturnValue (true, 0.8);
         addAndMakeVisible (volume);
 
         pan.setSliderStyle (juce::Slider::LinearHorizontal);
@@ -39,6 +67,9 @@ public:
         pan.setDoubleClickReturnValue (true, 0.0);
         pan.onDragStart = [this] { beginEdit(); };
         pan.onValueChange = [this] { track.pan = (float) pan.getValue(); };
+        pan.textFromValueFunction = [] (double v) { return PanSlider::describe (v); };
+        pan.setPopupDisplayEnabled (true, true, nullptr);   // shows "L 35%", "Center", "R 20%" while dragging
+        pan.setTooltip ("Pan left / right (double-click: center). Snaps to 5% steps when 'Pan snap' is on; hold Alt for the other mode");
         addAndMakeVisible (pan);
 
         muteButton.setClickingTogglesState (true);
@@ -180,7 +211,8 @@ private:
     float shown = 0.0f;
 
     juce::Label nameLabel;
-    juce::Slider volume, pan;
+    juce::Slider volume;
+    PanSlider pan;
     juce::TextButton muteButton { "M" }, soloButton { "S" }, deleteButton { "x" }, fxButton { "FX" }, vstButton { "VST" }, autoButton { "A" };
 };
 
@@ -637,6 +669,15 @@ private:
         return -1;
     }
 
+    // Pan envelope points follow the same 5 % snapping as the pan slider (Alt flips it).
+    float autoValue (const juce::MouseEvent& e, const AutoInfo& info) const
+    {
+        float v = yToValue (e.y, info);
+        if (track.autoEditId == "pan" && UiSettings::panSnap != e.mods.isAltDown())
+            v = juce::jlimit (-1.0f, 1.0f, (float) (std::round ((double) v / UiSettings::panStep) * UiSettings::panStep));
+        return v;
+    }
+
     double autoTime (const juce::MouseEvent& e) const
     {
         const double t = juce::jmax (0.0, e.x / main.getPixelsPerSecond());
@@ -677,7 +718,7 @@ private:
         // empty spot: new point, which can be dragged straight away
         main.beginEdit();
         autoEdited = true;
-        const AutoPoint np { autoTime (e), yToValue (e.y, info) };
+        const AutoPoint np { autoTime (e), autoValue (e, info) };
         autoPts.push_back (np);
         std::stable_sort (autoPts.begin(), autoPts.end(), [] (const AutoPoint& a, const AutoPoint& b) { return a.time < b.time; });
         for (int i = 0; i < (int) autoPts.size(); ++i)
@@ -696,7 +737,7 @@ private:
         const double minT = i > 0 ? autoPts[i - 1].time + 0.001 : 0.0;
         const double maxT = i + 1 < autoPts.size() ? autoPts[i + 1].time - 0.001 : 1.0e9;
         const double t = juce::jlimit (minT, juce::jmax (minT, maxT), autoTime (e));
-        const float v = yToValue (e.y, editInfo());
+        const float v = autoValue (e, editInfo());
 
         if (! autoEdited)
         {
@@ -908,6 +949,17 @@ MainComponent::MainComponent()
     addAndMakeVisible (addDrumButton);
     metroButton.onClick = [this] { engine.metronome = metroButton.getToggleState(); };
     snapButton.setToggleState (true, juce::dontSendNotification);
+
+    loadUiSettings();
+    panSnapButton.setToggleState (UiSettings::panSnap, juce::dontSendNotification);
+    panSnapButton.setTooltip ("On: pan sliders and pan envelopes jump in 5% steps (L 5%, L 10%, ... Center ... R 100%).\n"
+                              "Off: free movement. Hold Alt while dragging to get the other mode for that move.");
+    panSnapButton.onClick = [this]
+    {
+        UiSettings::panSnap = panSnapButton.getToggleState();
+        saveUiSettings();
+    };
+    addAndMakeVisible (panSnapButton);
     openButton.onClick   = [this] { openProjectDialog(); };
     saveButton.onClick   = [this] { if (currentProject != juce::File()) saveProject (currentProject); else saveProjectAs(); };
     saveAsButton.onClick = [this] { saveProjectAs(); };
@@ -1037,6 +1089,29 @@ void MainComponent::updateArmedTrack()
                              + "MIDI in: " + (midiInputText.isEmpty() ? juce::String ("none") : midiInputText)
                              + "    Armed: " + (t != nullptr ? t->name : juce::String ("none (select a MIDI clip)")),
                          juce::dontSendNotification);
+}
+
+//==============================================================================
+// Remembered interface settings
+
+juce::File MainComponent::uiSettingsFile()
+{
+    auto dir = juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory).getChildFile ("MiniDAW");
+    dir.createDirectory();
+    return dir.getChildFile ("ui-settings.xml");
+}
+
+void MainComponent::loadUiSettings()
+{
+    if (auto xml = juce::XmlDocument::parse (uiSettingsFile()))
+        UiSettings::panSnap = xml->getBoolAttribute ("panSnap", true);
+}
+
+void MainComponent::saveUiSettings()
+{
+    juce::XmlElement xml ("UISETTINGS");
+    xml.setAttribute ("panSnap", UiSettings::panSnap);
+    xml.writeTo (uiSettingsFile());
 }
 
 //==============================================================================
@@ -1620,7 +1695,9 @@ void MainComponent::resized()
 
     // snap + zoom live in the corner above the track headers
     auto corner = juce::Rectangle<int> (0, topBarHeight, controlsWidth, rulerHeight).reduced (6, 2);
-    snapButton.setBounds (corner.removeFromLeft (70));
+    snapButton.setBounds (corner.removeFromLeft (62));
+    corner.removeFromLeft (6);
+    panSnapButton.setBounds (corner.removeFromLeft (112));
     zoomInButton.setBounds (corner.removeFromRight (30));
     corner.removeFromRight (4);
     zoomOutButton.setBounds (corner.removeFromRight (30));

@@ -82,6 +82,7 @@ An arpeggiator or similar plugin that should change the notes of one track goes 
 | Add / remove a note or drum step | click / right-click in the piano roll or step sequencer |
 | Open a VST plugin's own window | picking a plugin opens it; later: double-click the track name, double-click a MIDI clip, or **Plugin window** in the piano roll |
 | Change note velocity | drag the bars under the piano roll (sideways = paint several); `Ctrl`+drag a drum step |
+| Pan a track | pan slider on the track; with **Pan snap 5%** on it jumps in 5% steps (L 5%, L 10%, ... R 100%), off = free. Hold `Alt` while dragging for the other mode. Double-click = center. Pan envelopes snap the same way |
 | Automate a parameter | **A** button on the track, pick the parameter, then click in the lane to add points (right-click a point removes it) |
 | Play with the computer keyboard | turn on **Keys**, then `A W S E D F T G Y H U J K O L P` (`Z` / `X` change octave) |
 

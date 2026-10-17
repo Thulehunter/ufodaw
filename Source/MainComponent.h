@@ -6,6 +6,13 @@
 #include "PluginHost.h"
 #include "Theme.h"
 
+// Settings shared by the track headers and the lanes
+namespace UiSettings
+{
+    inline bool panSnap = true;        // pan sliders and pan envelopes snap to panStep (Alt while dragging flips it)
+    constexpr double panStep = 0.05;   // 5 % towards left or right
+}
+
 class TrackHeader;
 class TrackLane;
 class TimeRuler;
@@ -149,6 +156,11 @@ private:
     void showRoll (Track*, int clipId);
     void hideRoll();
 
+    // ---- Small interface settings that are remembered (pan snap)
+    static juce::File uiSettingsFile();
+    void loadUiSettings();
+    void saveUiSettings();
+
     // ---- Audio device: choose driver / interface, remembered between runs
     void changeListenerCallback (juce::ChangeBroadcaster*) override;   // the audio device setup changed
     static juce::File audioSettingsFile();
@@ -236,6 +248,7 @@ private:
     juce::TextButton openButton { "Open" }, saveButton { "Save" }, saveAsButton { "Save As" }, exportButton { "Export WAV" };
     juce::TextButton zoomOutButton { "-" }, zoomInButton { "+" };
     juce::ToggleButton snapButton { "Snap" };
+    juce::ToggleButton panSnapButton { "Pan snap 5%" };
     juce::File currentProject;
     juce::ToggleButton metroButton { "Metronome" };
     juce::Label bpmLabel { {}, "BPM" }, timeLabel;
