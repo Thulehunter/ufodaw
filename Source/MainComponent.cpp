@@ -1144,6 +1144,7 @@ public:
         envDrag = -1;
         dragId = -1;
         autoDrag = -1;
+        rangeDragging = false;
     }
 
     void mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& w) override
@@ -1225,6 +1226,26 @@ private:
                 continue;
 
             const auto pts = engine.getAutomation (track, id);
+            if (full)
+            {
+                const auto data = engine.getAutomationData (track, id);
+                drawTakes (g, info, pps, data);
+                if (rangeA >= 0.0 && std::abs (rangeB - rangeA) > 0.0)
+                {
+                    g.setColour (Theme::text.withAlpha (0.18f));
+                    g.fillRect (juce::Rectangle<float> ((float) (juce::jmin (rangeA, rangeB) * pps), 0.0f, (float) (std::abs (rangeB - rangeA) * pps), (float) getHeight()));
+                }
+                AutoRecMode armedMode;
+                if (engine.isAutomationArmed (track, id, &armedMode))
+                {
+                    const bool rec = engine.isAutomationRecording (track, id);
+                    g.setColour (rec ? Theme::redBright : Theme::redDim);
+                    g.fillEllipse (8.0f, (float) getHeight() - 20.0f, 10.0f, 10.0f);
+                    g.setFont (12.0f);
+                    g.drawText (juce::String (rec ? "REC " : "armed: ") + (armedMode == AutoRecMode::Touch ? "Touch" : armedMode == AutoRecMode::Latch ? "Latch" : "Write"),
+                                22, getHeight() - 22, 200, 14, juce::Justification::left);
+                }
+            }
             const auto colour = id == "volume" ? Theme::orange : id == "pan" ? Theme::yellow
                                                                                         : Theme::redBright;
             g.setColour (colour.withAlpha (full ? 1.0f : 0.5f));
@@ -1264,6 +1285,123 @@ private:
         }
     }
 
+    // ---- takes and comping (an automation lane that is being edited)
+
+    static juce::Colour takeColour (int index)
+    {
+        static const juce::Colour colours[] = { juce::Colour (0xfff28c28), juce::Colour (0xffffc933), juce::Colour (0xffff5a47), juce::Colour (0xffe86a9a), juce::Colour (0xff9ad06a) };
+        return colours[(size_t) index % 5];
+    }
+
+    void drawTakes (juce::Graphics& g, const AutoInfo& info, double pps, const AutoData& data)
+    {
+        // where each take plays (the comp), then every take's own curve in its colour
+        for (auto& seg : data.comp)
+        {
+            int index = 0, i = 0;
+            juce::String name;
+            for (auto& tk : data.takes)
+            {
+                if (tk.id == seg.takeId) { index = i; name = tk.name; }
+                ++i;
+            }
+            const auto r = juce::Rectangle<float> ((float) (seg.start * pps), 1.0f, (float) ((seg.end - seg.start) * pps), (float) getHeight() - 2.0f);
+            g.setColour (takeColour (index).withAlpha (0.14f));
+            g.fillRect (r);
+            g.setColour (takeColour (index).withAlpha (0.7f));
+            g.fillRect (r.withHeight (3.0f));
+            g.setFont (11.0f);
+            g.drawText (name, r.toNearestInt().withTrimmedLeft (4).withY (4).withHeight (14), juce::Justification::centredLeft, true);
+        }
+
+        int i = 0;
+        for (auto& tk : data.takes)
+        {
+            juce::Path p;
+            bool first = true;
+            for (auto& pt : tk.points)
+            {
+                const float x = (float) (pt.time * pps), y = valueToY (pt.value, info);
+                if (first) { p.startNewSubPath (x, y); first = false; }
+                else       p.lineTo (x, y);
+            }
+            g.setColour (takeColour (i).withAlpha (0.55f));
+            g.strokePath (p, juce::PathStrokeType (1.2f));
+            ++i;
+        }
+    }
+
+    void showTakeMenu (const juce::MouseEvent& e)
+    {
+        auto& engine = main.getEngine();
+        const auto id = track.autoEditId;
+        const auto data = engine.getAutomationData (track, id);
+        const double clickTime = juce::jmax (0.0, e.x / main.getPixelsPerSecond());
+
+        double a = juce::jmin (rangeA, rangeB), b = juce::jmax (rangeA, rangeB);
+        const bool haveRange = rangeA >= 0.0 && b - a > 0.01;
+        if (! haveRange)
+            for (auto& seg : data.comp)
+                if (clickTime >= seg.start && clickTime <= seg.end)
+                {
+                    a = seg.start;
+                    b = seg.end;
+                }
+
+        juce::PopupMenu menu;
+        menu.addSectionHeader (data.takes.empty() ? "No takes yet: arm Touch / Latch / Write in the A menu and ride a control"
+                                                  : (haveRange ? "Take for the selected range" : "Take"));
+        auto actions = std::make_shared<std::vector<std::function<void()>>>();
+        auto add = [&] (juce::PopupMenu& m, const juce::String& text, bool enabled, bool ticked, std::function<void()> action)
+        {
+            actions->push_back (std::move (action));
+            m.addItem ((int) actions->size(), text, enabled, ticked);
+        };
+        const auto track_ = &track;
+        int index = 0;
+        for (auto& tk : data.takes)
+        {
+            const int takeId = tk.id;
+            const double from = (a < b) ? a : tk.start, to = (a < b) ? b : tk.end;
+            juce::PopupMenu sub;
+            add (sub, (a < b) ? "Play here" : "Play where it was recorded", true, false, [this, track_, id, takeId, from, to]
+            {
+                main.beginEdit();
+                main.getEngine().useAutomationTake (*track_, id, takeId, from, to);
+            });
+            add (sub, "Delete take", true, false, [this, track_, id, takeId]
+            {
+                main.beginEdit();
+                main.getEngine().deleteAutomationTake (*track_, id, takeId);
+            });
+            menu.addSubMenu (tk.name + juce::String::formatted ("  (%.1f - %.1f s)", tk.start, tk.end), sub);
+            ++index;
+        }
+
+        menu.addSeparator();
+        juce::PopupMenu xf;
+        for (double ms : { 0.0, 10.0, 30.0, 100.0, 300.0 })
+            add (xf, ms == 0.0 ? juce::String ("Hard cut") : juce::String ((int) ms) + " ms", true, std::abs (data.crossfade * 1000.0 - ms) < 0.5, [this, track_, id, ms]
+            {
+                main.beginEdit();
+                auto d = main.getEngine().getAutomationData (*track_, id);
+                d.crossfade = ms / 1000.0;
+                main.getEngine().setAutomationData (*track_, id, std::move (d));
+            });
+        menu.addSubMenu ("Fade between takes", xf);
+        if (haveRange)
+            add (menu, "Clear range selection", true, false, [this] { rangeA = rangeB = -1.0; });
+
+        menu.showMenuAsync ({}, [this, actions] (int result)
+        {
+            if (result <= 0 || result > (int) actions->size())
+                return;
+            (*actions)[(size_t) result - 1]();
+            main.clipsChanged();
+            repaint();
+        });
+    }
+
     int autoHit (const std::vector<AutoPoint>& pts, juce::Point<int> p, const AutoInfo& info) const
     {
         const double pps = main.getPixelsPerSecond();
@@ -1300,6 +1438,14 @@ private:
         autoPts = engine.getAutomation (track, param);
         const int hit = autoHit (autoPts, e.getPosition(), info);
 
+        if (e.mods.isShiftDown() && ! e.mods.isPopupMenu())   // Shift+drag picks a time range, to hand to a take
+        {
+            rangeDragging = true;
+            rangeA = rangeB = autoTime (e);
+            repaint();
+            return;
+        }
+
         if (e.mods.isPopupMenu())   // right click removes a point
         {
             if (hit >= 0)
@@ -1309,6 +1455,8 @@ private:
                 engine.setAutomation (track, param, autoPts);
                 main.clipsChanged();
             }
+            else
+                showTakeMenu (e);   // not on a point: the takes of this envelope
             return;
         }
 
@@ -1334,6 +1482,12 @@ private:
 
     void autoMouseDrag (const juce::MouseEvent& e)
     {
+        if (rangeDragging)
+        {
+            rangeB = autoTime (e);
+            repaint();
+            return;
+        }
         if (autoDrag < 0 || autoDrag >= (int) autoPts.size())
             return;
 
@@ -1430,6 +1584,8 @@ private:
     AutoInfo cachedInfo;
     int autoDrag = -1;
     bool autoEdited = false;
+    double rangeA = -1.0, rangeB = -1.0;   // the time range picked with Shift+drag in an automation lane (for comping)
+    bool rangeDragging = false;
 
     int dragId = -1;
     Track* dragTrack = nullptr;   // the track the dragged clip currently lives on
@@ -2549,6 +2705,22 @@ void MainComponent::openAutomation (Track& t, juce::Component& anchor)
 
     if (t.autoEditId.isNotEmpty())
     {
+        // riding: arm the envelope that is being edited, play, and move the control; every pass becomes a take
+        menu.addSeparator();
+        const auto editId = t.autoEditId;
+        AutoRecMode armedMode = AutoRecMode::Touch;
+        const bool armed = engine.isAutomationArmed (t, editId, &armedMode);
+        juce::PopupMenu rec;
+        add (rec, "Touch (records while you hold the control)", true, armed && armedMode == AutoRecMode::Touch, [this, track, editId] { engine.armAutomation (*track, editId, AutoRecMode::Touch); });
+        add (rec, "Latch (from your first move until you stop)", true, armed && armedMode == AutoRecMode::Latch, [this, track, editId] { engine.armAutomation (*track, editId, AutoRecMode::Latch); });
+        add (rec, "Write (the control's value, the whole time)", true, armed && armedMode == AutoRecMode::Write, [this, track, editId] { engine.armAutomation (*track, editId, AutoRecMode::Write); });
+        rec.addSeparator();
+        add (rec, "Off", armed, false, [this, track, editId] { engine.disarmAutomation (*track, editId); });
+        menu.addSubMenu (armed ? "Record rides: armed" : "Record rides (takes)", rec);
+    }
+
+    if (t.autoEditId.isNotEmpty())
+    {
         menu.addSeparator();
         add (menu, "Stop editing automation", true, false, [track] { track->autoEditId = {}; });
     }
@@ -2639,6 +2811,46 @@ void MainComponent::writeEffectsAndAutomation (juce::DynamicObject& o, Track& t)
         auto* lo = new juce::DynamicObject();
         lo->setProperty ("active", engine.isAutomationActive (t, id));
         lo->setProperty ("points", points);
+        const auto data = engine.getAutomationData (t, id);
+        if (! data.takes.empty())   // the rides: every take, which take plays where, and the hand-drawn curve under them
+        {
+            auto pointsToVar = [] (const std::vector<AutoPoint>& pts)
+            {
+                juce::Array<juce::var> list;
+                for (auto& p : pts)
+                {
+                    juce::Array<juce::var> pair;
+                    pair.add (p.time);
+                    pair.add ((double) p.value);
+                    list.add (juce::var (pair));
+                }
+                return list;
+            };
+            juce::Array<juce::var> takes, comp;
+            for (auto& tk : data.takes)
+            {
+                auto* to = new juce::DynamicObject();
+                to->setProperty ("id", tk.id);
+                to->setProperty ("name", tk.name);
+                to->setProperty ("start", tk.start);
+                to->setProperty ("end", tk.end);
+                to->setProperty ("points", pointsToVar (tk.points));
+                takes.add (juce::var (to));
+            }
+            for (auto& s : data.comp)
+            {
+                juce::Array<juce::var> seg;
+                seg.add (s.start);
+                seg.add (s.end);
+                seg.add (s.takeId);
+                comp.add (juce::var (seg));
+            }
+            lo->setProperty ("base", pointsToVar (data.base));
+            lo->setProperty ("takes", takes);
+            lo->setProperty ("comp", comp);
+            lo->setProperty ("nextTake", data.nextTakeId);
+            lo->setProperty ("crossfade", data.crossfade);
+        }
         ao->setProperty (juce::Identifier (id), juce::var (lo));
     }
     o.setProperty ("automation", juce::var (ao));
@@ -2670,6 +2882,38 @@ void MainComponent::readEffectsAndAutomation (Track& t, const juce::var& item, j
 
             if (engine.setAutomation (t, id, std::move (points)))
                 engine.setAutomationActive (t, id, (bool) entry.value.getProperty ("active", true));
+            if (entry.value.hasProperty ("takes"))
+            {
+                auto readPoints = [] (const juce::var& arrVar)
+                {
+                    std::vector<AutoPoint> pts;
+                    if (auto* arr = arrVar.getArray())
+                        for (auto& pv : *arr)
+                            if (auto* pair = pv.getArray(); pair != nullptr && pair->size() >= 2)
+                                pts.push_back ({ (double) (*pair)[0], (float) (double) (*pair)[1] });
+                    return pts;
+                };
+                AutoData data;
+                data.base = readPoints (entry.value["base"]);
+                data.nextTakeId = (int) entry.value.getProperty ("nextTake", 1);
+                data.crossfade = (double) entry.value.getProperty ("crossfade", 0.03);
+                if (auto* takes = entry.value["takes"].getArray())
+                    for (auto& tv : *takes)
+                    {
+                        AutoTake tk;
+                        tk.id = (int) tv.getProperty ("id", 0);
+                        tk.name = tv.getProperty ("name", "Take").toString();
+                        tk.start = (double) tv.getProperty ("start", 0.0);
+                        tk.end = (double) tv.getProperty ("end", 0.0);
+                        tk.points = readPoints (tv["points"]);
+                        data.takes.push_back (std::move (tk));
+                    }
+                if (auto* comp = entry.value["comp"].getArray())
+                    for (auto& cv : *comp)
+                        if (auto* seg = cv.getArray(); seg != nullptr && seg->size() >= 3)
+                            data.comp.push_back ({ (double) (*seg)[0], (double) (*seg)[1], (int) (*seg)[2] });
+                engine.setAutomationData (t, id, std::move (data));
+            }
         }
 }
 
@@ -3587,6 +3831,12 @@ bool MainComponent::keyPressed (const juce::KeyPress& k)
 
 void MainComponent::timerCallback()
 {
+    {
+        const int takesBefore = engine.recordedTakeCounter;
+        engine.automationRecordTick();   // rides of armed automation lanes become takes
+        if (engine.recordedTakeCounter != takesBefore)
+            ++editCounter;                // (unsaved changes, autosave)
+    }
     const double p = engine.getPositionSeconds();
     const int mins = (int) (p / 60.0);
     refreshLiveTargets();   // picks up red-dot arming and input choices made anywhere

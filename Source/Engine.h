@@ -21,6 +21,33 @@ struct AutoPoint
     float value = 0.0f;
 };
 
+// Automation takes and comping. Every recorded pass (a ride of a fader or knob) is kept as a take; the comp says which take
+// plays where. The envelope the audio thread follows (the lane's `points`) is always flattened from base + comp, with a
+// short crossfade at every join.
+struct AutoTake
+{
+    int id = 0;
+    juce::String name;
+    double start = 0.0, end = 0.0;   // the time range the pass covers (seconds on the timeline)
+    std::vector<AutoPoint> points;   // absolute times
+};
+
+struct AutoCompSeg { double start = 0.0, end = 0.0; int takeId = 0; };
+
+struct AutoData
+{
+    std::vector<AutoPoint> base;     // the hand-drawn curve under the takes
+    std::vector<AutoTake> takes;
+    std::vector<AutoCompSeg> comp;   // sorted, not overlapping
+    int nextTakeId = 1;
+    double crossfade = 0.03;         // seconds, at the start and end of every comp segment
+};
+
+enum class AutoRecMode { Touch, Latch, Write };
+
+// The envelope with the takes comped into it (what the audio thread follows).
+std::vector<AutoPoint> flattenAutomation (const AutoData&);
+
 // A piece of audio placed on the timeline. The sample data is immutable and shared, so
 // splitting and duplicating clips is free; only start/offset/length differ.
 struct Clip
@@ -118,7 +145,9 @@ struct ExternalRoute
 // "synth.<name>" (built-in synth) and "plugin:<slot key>:<parameter index>" (hosted plugins, normalised 0..1).
 struct AutomationLane   // volume and pan: handled by the mixer's fader code
 {
-    std::vector<AutoPoint> points;       // sorted by time, guarded by Engine::lock
+    std::vector<AutoPoint> points;       // sorted by time, guarded by Engine::lock (= the flattened `data`)
+    AutoData data;
+    std::atomic<bool> override { false };   // while a ride is being recorded the user's own value is used
     std::atomic<bool> active { true };   // when false the fader/pan knob is used as usual
 };
 
@@ -126,7 +155,9 @@ struct ParamAutomation   // every other automatable parameter
 {
     juce::String id, name;
     float lo = 0.0f, hi = 1.0f;
-    std::vector<AutoPoint> points;
+    std::vector<AutoPoint> points;       // (= the flattened `data`)
+    AutoData data;
+    std::atomic<bool> override { false };
     std::atomic<bool> active { true };
 
     std::atomic<float>* floatTarget = nullptr;   // built-in parameter, or
@@ -261,6 +292,7 @@ struct TrackState
         juce::String id;
         std::vector<AutoPoint> points;
         bool active = true;
+        AutoData data;
     };
     std::vector<LaneState> autoLanes;   // includes "volume" and "pan"
     bool sequencer = false;
@@ -384,6 +416,23 @@ public:
     void setAutomationActive (Track&, const juce::String& id, bool active);
     bool isAutomationActive (const Track&, const juce::String& id) const;
     std::vector<juce::String> getAutomationIds (const Track&) const;         // lanes that have points
+
+    // Riding: arm an envelope, play, and move the fader / knob; every pass becomes a take that is comped into the envelope.
+    //   Touch - records while you move the control (a take per touch), then the old automation takes over again
+    //   Latch - starts at the first move and records until playback stops
+    //   Write - records the control's value the whole time while playing
+    void armAutomation (Track&, const juce::String& id, AutoRecMode mode);
+    void disarmAutomation (Track&, const juce::String& id);
+    bool isAutomationArmed (const Track&, const juce::String& id, AutoRecMode* mode = nullptr) const;
+    bool isAutomationRecording (const Track&, const juce::String& id) const;   // a take is being captured right now
+    void automationRecordTick();   // message thread, about 30 times a second
+    int recordedTakeCounter = 0;      // grows with every take that riding creates (the program counts it as an edit)
+    void finishAutomationRecording();   // closes the takes in progress (playback stopped)
+    AutoData getAutomationData (const Track&, const juce::String& id) const;
+    void setAutomationData (Track&, const juce::String& id, AutoData data);   // flattens into the envelope
+    int addAutomationTake (Track&, const juce::String& id, double start, double end, std::vector<AutoPoint> points, const juce::String& name = {});
+    void useAutomationTake (Track&, const juce::String& id, int takeId, double start, double end);   // that take plays in this range
+    void deleteAutomationTake (Track&, const juce::String& id, int takeId);
 
     // ---- Message thread: hosted plugins
     void setMidiOuts (Track& source, std::vector<MidiRoute> routes);   // empty = this track plays its own sound; only other MIDI tracks count
@@ -564,6 +613,20 @@ private:
     void drainPreviewEvents();
     bool anySynthActive() const;
     void silenceSynths();
+    struct AutoRec
+    {
+        Track* track = nullptr;
+        juce::String id;
+        AutoRecMode mode = AutoRecMode::Touch;
+        bool touching = false, haveLast = false;
+        float lastValue = 0.0f;
+        double lastPos = 0.0, lastMoveMs = 0.0;
+        std::vector<AutoPoint> pts;
+    };
+    std::vector<AutoRec> autoRecs;   // message thread only
+    void finishAutoRec (AutoRec&);
+    void setAutoOverride (Track&, const juce::String& id, bool on);
+    AutoData* autoDataFor (Track&, const juce::String& id, std::vector<AutoPoint>** points);
     ParamAutomation* findLane (const Track&, const juce::String& id) const;
     ParamAutomation* ensureLane (Track&, const juce::String& id);   // null if the id doesn't resolve to a parameter
     void applyAutomation (Track&, double timeSeconds);

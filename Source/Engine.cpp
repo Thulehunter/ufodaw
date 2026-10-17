@@ -544,6 +544,7 @@ std::vector<Track*> Engine::getBuses() const
 void Engine::removeTrack (Track* t)
 {
     const juce::ScopedLock sl (lock);
+    autoRecs.erase (std::remove_if (autoRecs.begin(), autoRecs.end(), [t] (const AutoRec& r) { return r.track == t; }), autoRecs.end());
     for (auto& other : tracks)
     {
         other->midiOuts.erase (std::remove_if (other->midiOuts.begin(), other->midiOuts.end(),
@@ -1485,6 +1486,29 @@ ParamAutomation* Engine::ensureLane (Track& t, const juce::String& id)
                 lane->floatTarget = s.target;
             }
     }
+    else if (id.startsWith ("sampler.") && t.sampler != nullptr)
+    {
+        auto& sp = t.sampler->params;
+        struct S { const char* name; std::atomic<float>* target; const char* label; float lo, hi; };
+        const S samplerParams[] = {
+            { "cutoff",   &sp.cutoff,       "Sampler filter",   40.0f,   20000.0f },
+            { "volume",   &sp.volume,       "Sampler volume",   0.0f,    1.5f },
+            { "tune",     &sp.tuneCents,    "Sampler tune",     -100.0f, 100.0f },
+            { "attack",   &sp.attack,       "Sampler attack",   0.0005f, 5.0f },
+            { "decay",    &sp.decay,        "Sampler decay",    0.001f,  8.0f },
+            { "sustain",  &sp.sustain,      "Sampler sustain",  0.0f,    1.0f },
+            { "release",  &sp.release,      "Sampler release",  0.002f,  8.0f },
+            { "velocity", &sp.velocitySens, "Sampler velocity", 0.0f,    1.0f },
+        };
+        for (auto& s : samplerParams)
+            if (id.substring (8) == s.name)
+            {
+                lane->name = s.label;
+                lane->lo = s.lo;
+                lane->hi = s.hi;
+                lane->floatTarget = s.target;
+            }
+    }
     else if (id.startsWith ("plugin:"))
     {
         const auto parts = juce::StringArray::fromTokens (id.substring (7), ":", "");
@@ -1530,6 +1554,10 @@ std::vector<AutoTarget> Engine::listAutomationTargets (const Track& t) const
     if (t.type == Track::Type::Midi && t.instrument == nullptr && t.kit == nullptr && t.sampler == nullptr)
         for (auto* name : { "cutoff", "attack", "release" })
             out.push_back ({ juce::String ("synth.") + name, "Synth " + juce::String (name), "Synth" });
+
+    if (t.sampler != nullptr)
+        for (auto* name : { "cutoff", "volume", "tune", "attack", "decay", "sustain", "release", "velocity" })
+            out.push_back ({ juce::String ("sampler.") + name, "Sampler " + juce::String (name), "Sampler" });
 
     auto addPlugin = [&] (const PluginSlot& slot, const juce::String& group)
     {
@@ -1591,14 +1619,14 @@ bool Engine::setAutomation (Track& t, const juce::String& id, std::vector<AutoPo
 {
     std::stable_sort (points.begin(), points.end(), [] (const AutoPoint& a, const AutoPoint& b) { return a.time < b.time; });
     const juce::ScopedLock sl (lock);
-    if (id == "volume") { t.autoVolume.points = std::move (points); return true; }
-    if (id == "pan")    { t.autoPan.points = std::move (points); return true; }
-    if (auto* lane = ensureLane (t, id))
-    {
-        lane->points = std::move (points);
-        return true;
-    }
-    return false;
+    std::vector<AutoPoint>* out = nullptr;
+    auto* d = autoDataFor (t, id, &out);
+    if (d == nullptr)
+        return false;
+    d->base = std::move (points);   // a hand edit of the curve: the takes are kept, but they no longer play until they are used again
+    d->comp.clear();
+    *out = d->base;
+    return true;
 }
 
 void Engine::setAutomationActive (Track& t, const juce::String& id, bool active)
@@ -1635,7 +1663,7 @@ void Engine::applyAutomation (Track& t, double time)
 {
     for (auto& lane : t.autoLanes)
     {
-        if (! lane->active || lane->points.empty())
+        if (! lane->active || lane->points.empty() || lane->override)
             continue;
 
         const float v = evalAutomation (lane->points, time, lane->lastApplied);
@@ -1689,10 +1717,10 @@ TrackState Engine::captureTrack (const Track& t) const
     ts.externalOuts = t.externalOuts;
     ts.inputFirst = t.inputFirst;
     ts.inputCount = t.inputCount;
-    ts.autoLanes.push_back ({ "volume", t.autoVolume.points, t.autoVolume.active.load() });
-    ts.autoLanes.push_back ({ "pan", t.autoPan.points, t.autoPan.active.load() });
+    ts.autoLanes.push_back ({ "volume", t.autoVolume.points, t.autoVolume.active.load(), t.autoVolume.data });
+    ts.autoLanes.push_back ({ "pan", t.autoPan.points, t.autoPan.active.load(), t.autoPan.data });
     for (auto& lane : t.autoLanes)
-        ts.autoLanes.push_back ({ lane->id, lane->points, lane->active.load() });
+        ts.autoLanes.push_back ({ lane->id, lane->points, lane->active.load(), lane->data });
     ts.kit = t.kit;
     ts.sampler = t.sampler;
     const_cast<Track&> (t).fx.forEachFloat ([&ts] (const char*, std::atomic<float>& v) { ts.fxFloats.push_back (v.load()); });
@@ -1739,6 +1767,8 @@ void Engine::applyTrackState (Track& t, const TrackState& ts)
     // lanes last: they bind to the effect/synth parameters and plugins assigned above
     t.autoLanes.clear();
     t.autoVolume.points.clear();
+    t.autoVolume.data = {};
+    t.autoPan.data = {};
     t.autoPan.points.clear();
     t.autoVolume.active = true;
     t.autoPan.active = true;
@@ -1747,16 +1777,19 @@ void Engine::applyTrackState (Track& t, const TrackState& ts)
         if (ls.id == "volume")
         {
             t.autoVolume.points = ls.points;
+            t.autoVolume.data = ls.data;
             t.autoVolume.active = ls.active;
         }
         else if (ls.id == "pan")
         {
             t.autoPan.points = ls.points;
+            t.autoPan.data = ls.data;
             t.autoPan.active = ls.active;
         }
         else if (auto* lane = ensureLane (t, ls.id))
         {
             lane->points = ls.points;
+            lane->data = ls.data;
             lane->active = ls.active;
         }
     }
@@ -2778,8 +2811,8 @@ void Engine::mixBlock (float* outL, float* outR, int n, juce::int64 pos, bool wi
 
         // Fader and pan, possibly automated: evaluated at both ends of the block and ramped in between.
         const double t0 = (double) pos / sampleRate, t1 = (double) (pos + n) / sampleRate;
-        const bool autoVol = t->autoVolume.active && ! t->autoVolume.points.empty();
-        const bool autoPan = t->autoPan.active && ! t->autoPan.points.empty();
+        const bool autoVol = t->autoVolume.active && ! t->autoVolume.points.empty() && ! t->autoVolume.override;
+        const bool autoPan = t->autoPan.active && ! t->autoPan.points.empty() && ! t->autoPan.override;
         const float gain0 = autoVol ? evalAutomation (t->autoVolume.points, t0, t->gain) : t->gain.load();
         const float gain1 = autoVol ? evalAutomation (t->autoVolume.points, t1, t->gain) : gain0;
         const float pan0 = autoPan ? evalAutomation (t->autoPan.points, t0, t->pan) : t->pan.load();
@@ -3038,7 +3071,7 @@ void Engine::mixBlock (float* outL, float* outR, int n, juce::int64 pos, bool wi
     if (renderMaster)
     {
         auto& m = *master;
-        const bool autoVol = m.autoVolume.active && ! m.autoVolume.points.empty();
+        const bool autoVol = m.autoVolume.active && ! m.autoVolume.points.empty() && ! m.autoVolume.override;
         masterGain0 = autoVol ? evalAutomation (m.autoVolume.points, (double) pos / sampleRate, m.gain) : m.gain.load();
         masterGain1 = autoVol ? evalAutomation (m.autoVolume.points, (double) (pos + n) / sampleRate, m.gain) : masterGain0;
         m.effGain = masterGain0;
@@ -3231,5 +3264,306 @@ void Engine::silenceEverything()
         if (t->sampler != nullptr) t->sampler->reset();
         if (t->instrument != nullptr)
             t->liveMidi.addEvent (juce::MidiMessage::allSoundOff (1), 0);
+    }
+}
+
+//==============================================================================
+// Automation takes, comping and riding
+
+std::vector<AutoPoint> flattenAutomation (const AutoData& d)
+{
+    auto result = d.base;
+    auto comp = d.comp;
+    std::sort (comp.begin(), comp.end(), [] (const AutoCompSeg& a, const AutoCompSeg& b) { return a.start < b.start; });
+
+    for (auto& seg : comp)
+    {
+        const AutoTake* take = nullptr;
+        for (auto& tk : d.takes)
+            if (tk.id == seg.takeId)
+                take = &tk;
+        if (take == nullptr || take->points.empty() || seg.end <= seg.start)
+            continue;
+
+        const bool hadCurve = ! result.empty();
+        const double xf = juce::jmin (d.crossfade, (seg.end - seg.start) * 0.5);
+        auto takeAt = [take] (double time) { return evalAutomation (take->points, time, take->points.front().value); };
+        const float oldStart = evalAutomation (result, seg.start, takeAt (seg.start));
+        const float oldEnd = evalAutomation (result, seg.end, takeAt (seg.end));
+
+        std::vector<AutoPoint> out;
+        for (auto& p : result)
+            if (p.time < seg.start - 1.0e-9)
+                out.push_back (p);
+        if (hadCurve)
+            out.push_back ({ seg.start, oldStart });
+        out.push_back ({ seg.start + xf, takeAt (seg.start + xf) });
+        for (auto& p : take->points)
+            if (p.time > seg.start + xf + 1.0e-9 && p.time < seg.end - xf - 1.0e-9)
+                out.push_back (p);
+        if (xf > 0.0)
+            out.push_back ({ seg.end - xf, takeAt (seg.end - xf) });
+        if (hadCurve)
+            out.push_back ({ seg.end, oldEnd });
+        for (auto& p : result)
+            if (p.time > seg.end + 1.0e-9)
+                out.push_back (p);
+        result = std::move (out);
+    }
+    return result;
+}
+
+AutoData* Engine::autoDataFor (Track& t, const juce::String& id, std::vector<AutoPoint>** points)
+{
+    if (id == "volume") { *points = &t.autoVolume.points; return &t.autoVolume.data; }
+    if (id == "pan")    { *points = &t.autoPan.points;    return &t.autoPan.data; }
+    if (auto* lane = ensureLane (t, id)) { *points = &lane->points; return &lane->data; }
+    return nullptr;
+}
+
+void Engine::setAutoOverride (Track& t, const juce::String& id, bool on)
+{
+    if (id == "volume")    t.autoVolume.override = on;
+    else if (id == "pan")  t.autoPan.override = on;
+    else if (auto* lane = findLane (t, id))
+        lane->override = on;
+}
+
+AutoData Engine::getAutomationData (const Track& t, const juce::String& id) const
+{
+    const juce::ScopedLock sl (lock);
+    if (id == "volume") return t.autoVolume.data;
+    if (id == "pan")    return t.autoPan.data;
+    if (auto* lane = findLane (t, id))
+        return lane->data;
+    return {};
+}
+
+void Engine::setAutomationData (Track& t, const juce::String& id, AutoData data)
+{
+    const juce::ScopedLock sl (lock);
+    std::vector<AutoPoint>* pts = nullptr;
+    if (auto* d = autoDataFor (t, id, &pts))
+    {
+        *d = std::move (data);
+        *pts = flattenAutomation (*d);
+    }
+}
+
+int Engine::addAutomationTake (Track& t, const juce::String& id, double start, double end, std::vector<AutoPoint> points, const juce::String& name)
+{
+    if (points.empty() || end <= start)
+        return -1;
+    std::stable_sort (points.begin(), points.end(), [] (const AutoPoint& a, const AutoPoint& b) { return a.time < b.time; });
+
+    const juce::ScopedLock sl (lock);
+    std::vector<AutoPoint>* pts = nullptr;
+    auto* d = autoDataFor (t, id, &pts);
+    if (d == nullptr)
+        return -1;
+
+    AutoTake take;
+    take.id = d->nextTakeId++;
+    take.name = name.isNotEmpty() ? name : "Take " + juce::String (take.id);
+    take.start = start;
+    take.end = end;
+    take.points = std::move (points);
+    d->takes.push_back (take);
+
+    useAutomationTake (t, id, take.id, start, end);   // (the newest pass plays where it was recorded)
+    return take.id;
+}
+
+void Engine::useAutomationTake (Track& t, const juce::String& id, int takeId, double start, double end)
+{
+    if (end <= start)
+        return;
+    const juce::ScopedLock sl (lock);
+    std::vector<AutoPoint>* pts = nullptr;
+    auto* d = autoDataFor (t, id, &pts);
+    if (d == nullptr)
+        return;
+
+    std::vector<AutoCompSeg> segs;   // what the new segment leaves of the old ones
+    for (auto& s : d->comp)
+    {
+        if (s.end <= start || s.start >= end)
+        {
+            segs.push_back (s);
+            continue;
+        }
+        if (s.start < start) segs.push_back ({ s.start, start, s.takeId });
+        if (s.end > end)     segs.push_back ({ end, s.end, s.takeId });
+    }
+    segs.push_back ({ start, end, takeId });
+    std::sort (segs.begin(), segs.end(), [] (const AutoCompSeg& a, const AutoCompSeg& b) { return a.start < b.start; });
+    d->comp = std::move (segs);
+    *pts = flattenAutomation (*d);
+}
+
+void Engine::deleteAutomationTake (Track& t, const juce::String& id, int takeId)
+{
+    const juce::ScopedLock sl (lock);
+    std::vector<AutoPoint>* pts = nullptr;
+    auto* d = autoDataFor (t, id, &pts);
+    if (d == nullptr)
+        return;
+    d->takes.erase (std::remove_if (d->takes.begin(), d->takes.end(), [takeId] (const AutoTake& k) { return k.id == takeId; }), d->takes.end());
+    d->comp.erase (std::remove_if (d->comp.begin(), d->comp.end(), [takeId] (const AutoCompSeg& s) { return s.takeId == takeId; }), d->comp.end());
+    *pts = flattenAutomation (*d);
+}
+
+void Engine::armAutomation (Track& t, const juce::String& id, AutoRecMode mode)
+{
+    for (auto& r : autoRecs)
+        if (r.track == &t && r.id == id)
+        {
+            r.mode = mode;
+            return;
+        }
+    AutoRec r;
+    r.track = &t;
+    r.id = id;
+    r.mode = mode;
+    autoRecs.push_back (std::move (r));
+}
+
+void Engine::disarmAutomation (Track& t, const juce::String& id)
+{
+    for (auto it = autoRecs.begin(); it != autoRecs.end(); ++it)
+        if (it->track == &t && it->id == id)
+        {
+            finishAutoRec (*it);
+            autoRecs.erase (it);
+            return;
+        }
+}
+
+bool Engine::isAutomationArmed (const Track& t, const juce::String& id, AutoRecMode* mode) const
+{
+    for (auto& r : autoRecs)
+        if (r.track == &t && r.id == id)
+        {
+            if (mode != nullptr)
+                *mode = r.mode;
+            return true;
+        }
+    return false;
+}
+
+bool Engine::isAutomationRecording (const Track& t, const juce::String& id) const
+{
+    for (auto& r : autoRecs)
+        if (r.track == &t && r.id == id)
+            return r.touching;
+    return false;
+}
+
+// A pass ends: the captured values become a take (points that lie on a straight line are thinned out).
+void Engine::finishAutoRec (AutoRec& r)
+{
+    if (r.touching && ! r.pts.empty() && r.track != nullptr)
+    {
+        const auto info = getAutomationInfo (*r.track, r.id);
+        const float tolerance = juce::jmax (1.0e-6f, (info.hi - info.lo) * 0.002f);
+        std::vector<AutoPoint> thin;
+        for (size_t i = 0; i < r.pts.size(); ++i)
+        {
+            if (! thin.empty() && i + 1 < r.pts.size())
+            {
+                const auto& a = thin.back();
+                const auto& b = r.pts[i];
+                const auto& c = r.pts[i + 1];
+                const double span = c.time - a.time;
+                const float expected = span > 0.0 ? a.value + (float) ((b.time - a.time) / span) * (c.value - a.value) : b.value;
+                if (std::abs (expected - b.value) < tolerance)
+                    continue;
+            }
+            thin.push_back (r.pts[i]);
+        }
+        const double start = r.pts.front().time;
+        double end = juce::jmax (r.lastPos, r.pts.back().time);
+        if (end - start < 0.02)
+            end = start + 0.02;
+        addAutomationTake (*r.track, r.id, start, end, std::move (thin));
+        ++recordedTakeCounter;
+    }
+    if (r.track != nullptr)
+        setAutoOverride (*r.track, r.id, false);
+    r.touching = false;
+    r.pts.clear();
+    r.haveLast = false;
+}
+
+void Engine::finishAutomationRecording()
+{
+    for (auto& r : autoRecs)
+        finishAutoRec (r);
+}
+
+void Engine::automationRecordTick()
+{
+    if (autoRecs.empty())
+        return;
+    if (! isPlaying())
+    {
+        finishAutomationRecording();
+        return;
+    }
+
+    const double pos = getPositionSeconds();
+    const double nowMs = juce::Time::getMillisecondCounterHiRes();
+
+    for (auto& r : autoRecs)
+    {
+        if (r.track == nullptr)
+            continue;
+        if (r.touching && (pos < r.lastPos - 0.05 || pos > r.lastPos + 1.0))   // the playhead jumped (a loop, a click on the ruler)
+            finishAutoRec (r);
+
+        const auto info = getAutomationInfo (*r.track, r.id);
+        if (! info.valid)
+            continue;
+        const float cur = info.current;
+        const float eps = juce::jmax (1.0e-6f, (info.hi - info.lo) * 0.002f);
+
+        // has someone else (the user) changed the value? Automation writes into the parameter itself, so compare with what it wrote
+        float reference = r.haveLast ? r.lastValue : cur;
+        if (! r.touching && r.id != "volume" && r.id != "pan")
+            if (auto* lane = findLane (*r.track, r.id); lane != nullptr && lane->active && ! lane->points.empty() && lane->lastApplied > -1.0e8f)
+                reference = lane->lastApplied;
+        const bool moved = r.haveLast && std::abs (cur - reference) > eps;
+
+        if (r.mode == AutoRecMode::Write)
+        {
+            if (! r.touching)
+            {
+                r.touching = true;
+                setAutoOverride (*r.track, r.id, true);
+            }
+        }
+        else if (! r.touching && moved)
+        {
+            r.touching = true;
+            setAutoOverride (*r.track, r.id, true);
+            r.pts.push_back ({ r.lastPos, r.lastValue });   // the value just before the move: the take starts where the old curve left off
+            r.lastMoveMs = nowMs;
+        }
+
+        if (r.touching)
+        {
+            if (moved || r.mode == AutoRecMode::Write)
+                r.lastMoveMs = nowMs;
+            r.pts.push_back ({ pos, cur });
+            if (r.mode == AutoRecMode::Touch && nowMs - r.lastMoveMs > 350.0)   // let go: the old automation takes over again
+            {
+                r.lastPos = pos;
+                finishAutoRec (r);
+            }
+        }
+
+        r.lastValue = cur;
+        r.lastPos = pos;
+        r.haveLast = true;
     }
 }
