@@ -16,6 +16,8 @@ juce_add_gui_app(MiniDAW PRODUCT_NAME "MiniDAW")
 target_sources(MiniDAW PRIVATE
     Source/Main.cpp
     Source/Engine.cpp
+    Source/Synth.cpp
+    Source/PianoRoll.cpp
     Source/MainComponent.cpp)
 
 target_compile_definitions(MiniDAW PRIVATE

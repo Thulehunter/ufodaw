@@ -7,6 +7,7 @@
 class TrackHeader;
 class TrackLane;
 class TimeRuler;
+class PianoRoll;
 
 // A viewport that tells us when it scrolls, so the track headers and the ruler can follow.
 class SyncViewport : public juce::Viewport
@@ -99,6 +100,7 @@ public:
     static constexpr int topBarHeight = 56;
     static constexpr int rulerHeight = 26;
     static constexpr int bottomBarHeight = 60;
+    static constexpr int rollHeight = 320;
 
     // ---- Used by the timeline components
     Engine& getEngine() { return engine; }
@@ -123,6 +125,9 @@ private:
     void clearTracksUI();
     void layoutContent();
     void addTrackDialog();
+    void addMidiTrack();
+    void showRoll (Track*, int clipId);
+    void hideRoll();
 
     void startPlayback();
     void pausePlayback();
@@ -144,7 +149,9 @@ private:
     juce::AudioSourcePlayer player;
     Engine engine;
 
-    juce::TextButton addButton { "+ Track" };
+    juce::TextButton addButton { "+ Track" }, addMidiButton { "+ MIDI Track" };
+    std::unique_ptr<PianoRoll> roll;
+    bool rollVisible = false;
     TransportButton rewindButton { TransportButton::Rewind, "Rewind (Enter)" },
                     playButton   { TransportButton::Play,   "Play (Space)" },
                     pauseButton  { TransportButton::Pause,  "Pause (Space)" },

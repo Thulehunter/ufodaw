@@ -1,4 +1,5 @@
 #include "MainComponent.h"
+#include "PianoRoll.h"
 #include <algorithm>
 #include <map>
 
@@ -217,6 +218,46 @@ public:
             g.restoreState();
         }
 
+        // MIDI clips, with a miniature of their notes
+        for (auto& m : main.getEngine().getMidiClips (track))
+        {
+            const auto r = rectFor (m.start, m.length, pps);
+            if (! r.intersects (area))
+                continue;
+
+            const bool sel = main.isSelected (&track, m.id);
+            g.setColour (sel ? juce::Colour (0xff3fb57f) : juce::Colour (0xff2a7a52));
+            g.fillRoundedRectangle (r.toFloat(), 4.0f);
+
+            int lo = 127, hi = 0;
+            for (auto& n : m.notes)
+            {
+                lo = juce::jmin (lo, n.pitch);
+                hi = juce::jmax (hi, n.pitch);
+            }
+            if (m.notes.empty()) { lo = 60; hi = 71; }
+            const int span = juce::jmax (12, hi - lo + 1);
+            const float rowPx = (float) (r.getHeight() - 18) / (float) span;
+
+            g.saveState();
+            g.reduceClipRegion (r.reduced (1));
+            g.setColour (juce::Colour (0xffd8ffea));
+            for (auto& n : m.notes)
+            {
+                const float nx = (float) r.getX() + (float) (n.start * pps);
+                const float nw = juce::jmax (2.0f, (float) (n.length * pps));
+                const float ny = (float) r.getY() + 15.0f + (float) (hi - n.pitch) * rowPx;
+                g.fillRect (nx, ny, nw, juce::jmax (2.0f, rowPx - 1.0f));
+            }
+            g.setColour (juce::Colours::white.withAlpha (0.85f));
+            g.setFont (11.0f);
+            g.drawText ("MIDI", r.getX() + 5, r.getY() + 2, 100, 13, juce::Justification::left);
+            g.restoreState();
+
+            g.setColour (sel ? juce::Colours::white : juce::Colours::white.withAlpha (0.35f));
+            g.drawRoundedRectangle (r.toFloat(), 4.0f, sel ? 2.0f : 1.0f);
+        }
+
         g.setColour (juce::Colour (0xff0b0c0e));
         g.drawHorizontalLine (getHeight() - 1, 0.0f, (float) getWidth());
     }
@@ -228,18 +269,44 @@ public:
         const double t = e.x / pps;
 
         dragId = -1;
-        const auto clips = main.getEngine().getClips (track);
-        for (auto it = clips.rbegin(); it != clips.rend(); ++it)   // topmost first
-            if (clipRect (*it, pps).contains (e.getPosition()))
-            {
-                dragId = it->id;
-                grabOffset = t - it->start;
-                main.selectClip (&track, dragId);
-                return;
-            }
+        resizing = false;
+        for (auto& h : hits())   // topmost first
+        {
+            const auto r = rectFor (h.start, h.length, pps);
+            if (! r.contains (e.getPosition()))
+                continue;
+
+            dragId = h.id;
+            dragStart = h.start;
+            grabOffset = t - h.start;
+            resizing = h.midi && r.getWidth() > 16 && e.x >= r.getRight() - 6;   // right edge of a MIDI clip
+            main.selectClip (&track, dragId);
+            return;
+        }
 
         main.selectClip (nullptr, -1);
         main.setPlayhead (t);
+    }
+
+    void mouseDoubleClick (const juce::MouseEvent& e) override
+    {
+        if (track.type != Track::Type::Midi)
+            return;
+
+        const double pps = main.getPixelsPerSecond();
+        for (auto& h : hits())
+            if (rectFor (h.start, h.length, pps).contains (e.getPosition()))
+                return;
+
+        // empty spot on a MIDI track: new two-bar clip at the bar under the cursor
+        const double bar = main.barSeconds();
+        const double start = std::floor ((e.x / pps) / bar) * bar;
+        const int id = main.getEngine().addMidiClip (track, start, bar * 2.0);
+        if (id >= 0)
+        {
+            main.selectClip (&track, id);
+            main.clipsChanged();
+        }
     }
 
     void mouseDrag (const juce::MouseEvent& e) override
@@ -248,6 +315,14 @@ public:
         if (dragId < 0)
         {
             main.setPlayhead (t);   // scrub
+            return;
+        }
+
+        if (resizing)
+        {
+            const double end = e.mods.isAltDown() ? t : main.snapTime (t);
+            main.getEngine().setMidiClipLength (track, dragId, juce::jmax (main.beatSeconds(), end - dragStart));
+            main.clipsChanged();
             return;
         }
 
@@ -281,9 +356,25 @@ private:
         std::vector<float> values;
     };
 
-    static juce::Rectangle<int> clipRect (const Clip& c, double pps)
+    static juce::Rectangle<int> rectFor (double start, double length, double pps)
     {
-        return { (int) std::round (c.start * pps), 3, juce::jmax (2, (int) std::round (c.length * pps)), MainComponent::stripHeight - 7 };
+        return { (int) std::round (start * pps), 3, juce::jmax (2, (int) std::round (length * pps)), MainComponent::stripHeight - 7 };
+    }
+
+    static juce::Rectangle<int> clipRect (const Clip& c, double pps) { return rectFor (c.start, c.length, pps); }
+
+    struct Hit { int id; double start, length; bool midi; };
+
+    // Audio and MIDI clips of this track, topmost last-drawn first.
+    std::vector<Hit> hits() const
+    {
+        std::vector<Hit> out;
+        for (auto& c : main.getEngine().getClips (track))
+            out.push_back ({ c.id, c.start, c.length, false });
+        for (auto& m : main.getEngine().getMidiClips (track))
+            out.push_back ({ m.id, m.start, m.length, true });
+        std::reverse (out.begin(), out.end());
+        return out;
     }
 
     // Waveform columns for one clip at the current zoom, cached until the zoom or the clip's region changes.
@@ -323,13 +414,19 @@ private:
     Track& track;
     std::map<int, Peaks> cache;
     int dragId = -1;
+    bool resizing = false;
     double grabOffset = 0.0;
+    double dragStart = 0.0;
 };
 
 //==============================================================================
 MainComponent::MainComponent()
 {
-    ruler = std::make_unique<TimeRuler> (*this);   // must exist before setSize() triggers resized()
+    // These must exist before setSize() triggers resized()
+    ruler = std::make_unique<TimeRuler> (*this);
+    roll = std::make_unique<PianoRoll> (*this);
+    roll->onClose = [this] { hideRoll(); };
+    addChildComponent (*roll);
 
     setWantsKeyboardFocus (true);
 
@@ -338,7 +435,7 @@ MainComponent::MainComponent()
     deviceManager.addAudioCallback (&player);
 
     for (juce::Component* b : std::initializer_list<juce::Component*> {
-             &rewindButton, &playButton, &pauseButton, &stopButton, &recordButton, &addButton,
+             &rewindButton, &playButton, &pauseButton, &stopButton, &recordButton, &addButton, &addMidiButton,
              &openButton, &saveButton, &saveAsButton, &exportButton, &zoomOutButton, &zoomInButton })
         addAndMakeVisible (b);
     addAndMakeVisible (metroButton);
@@ -354,6 +451,7 @@ MainComponent::MainComponent()
     stopButton.onClick   = [this] { stopPlayback(); };
     recordButton.onClick = [this] { toggleRecording(); };
     addButton.onClick = [this] { addTrackDialog(); };
+    addMidiButton.onClick = [this] { addMidiTrack(); };
     metroButton.onClick = [this] { engine.metronome = metroButton.getToggleState(); };
     snapButton.setToggleState (true, juce::dontSendNotification);
     openButton.onClick   = [this] { openProjectDialog(); };
@@ -380,6 +478,7 @@ MainComponent::MainComponent()
     {
         headerViewport.setViewPosition (0, laneViewport.getViewPositionY());
         ruler->repaint();
+        roll->repaintGrid();
         repaint();
     };
     addAndMakeVisible (laneViewport);
@@ -415,7 +514,45 @@ void MainComponent::selectClip (Track* t, int id)
 {
     selTrack = t;
     selClip = id;
+
+    if (t != nullptr && id >= 0 && engine.isMidiClip (*t, id))
+        showRoll (t, id);
+    else if (rollVisible)
+        roll->showClip (roll->getTrack(), roll->getClipId());   // also drops the selected note
     repaint();
+}
+
+void MainComponent::showRoll (Track* t, int clipId)
+{
+    const bool wasVisible = rollVisible;
+    rollVisible = true;
+    roll->showClip (t, clipId);
+    if (! wasVisible)
+        layoutContent();
+}
+
+void MainComponent::hideRoll()
+{
+    if (! rollVisible)
+        return;
+    rollVisible = false;
+    layoutContent();
+}
+
+void MainComponent::addMidiTrack()
+{
+    int count = 1;
+    for (int i = 0; i < engine.getNumTracks(); ++i)
+        if (engine.getTrack (i)->type == Track::Type::Midi)
+            ++count;
+
+    auto* t = engine.addTrack ("Synth " + juce::String (count), Track::Type::Midi);
+    const double bar = barSeconds();
+    const double start = std::floor (engine.getPositionSeconds() / bar) * bar;
+    const int id = engine.addMidiClip (*t, start, bar * 2.0);
+    addTrackUI (*t);
+    selectClip (t, id);   // opens the piano roll
+    clipsChanged();
 }
 
 void MainComponent::setPlayhead (double seconds)
@@ -436,6 +573,7 @@ void MainComponent::zoomBy (double factor, int anchorX)
     layoutContent();
     laneViewport.setViewPosition (juce::jmax (0, (int) (anchorTime * next - anchorX)), laneViewport.getViewPositionY());
     ruler->repaint();
+    roll->repaintGrid();
     repaint();
 }
 
@@ -443,6 +581,7 @@ void MainComponent::clipsChanged()
 {
     layoutContent();
     ruler->repaint();
+    roll->repaintGrid();
     repaint();
 }
 
@@ -468,6 +607,8 @@ void MainComponent::removeTrackUI (Track* t)
         {
             if (selTrack == t)
                 selectClip (nullptr, -1);
+            if (roll->getTrack() == t)
+                hideRoll();
             headers.remove (i);
             lanes.remove (i);
             engine.removeTrack (t);
@@ -478,6 +619,7 @@ void MainComponent::removeTrackUI (Track* t)
 
 void MainComponent::clearTracksUI()
 {
+    hideRoll();
     selectClip (nullptr, -1);
     headers.clear();
     lanes.clear();
@@ -492,7 +634,10 @@ void MainComponent::layoutContent()
 
     const int y0 = topBarHeight + rulerHeight;
     const int laneW = getWidth() - controlsWidth;
-    laneViewport.setBounds (controlsWidth, y0, laneW, getHeight() - y0 - bottomBarHeight);
+    const int rollH = rollVisible ? juce::jmin (rollHeight, getHeight() / 2) : 0;
+    laneViewport.setBounds (controlsWidth, y0, laneW, getHeight() - y0 - bottomBarHeight - rollH);
+    roll->setBounds (0, getHeight() - bottomBarHeight - rollH, getWidth(), rollH);
+    roll->setVisible (rollVisible);
     ruler->setBounds (controlsWidth, topBarHeight, laneW, rulerHeight);
 
     const int visibleW = laneViewport.getMaximumVisibleWidth();
@@ -516,6 +661,8 @@ void MainComponent::resized()
 {
     auto top = getLocalBounds().removeFromTop (topBarHeight).reduced (8, 10);
     addButton.setBounds (top.removeFromLeft (80));
+    top.removeFromLeft (6);
+    addMidiButton.setBounds (top.removeFromLeft (104));
     top.removeFromLeft (16);
     timeLabel.setBounds (top.removeFromLeft (170));
     top.removeFromLeft (16);
@@ -593,14 +740,21 @@ void MainComponent::splitAtPlayhead()
     {
         for (int i = 0; i < engine.getNumTracks(); ++i)
             if (auto* tr = engine.getTrack (i))
+            {
                 for (auto& c : engine.getClips (*tr))
                     engine.splitClip (*tr, c.id, t);
+                for (auto& m : engine.getMidiClips (*tr))
+                    engine.splitClip (*tr, m.id, t);
+            }
     }
     clipsChanged();
 }
 
 void MainComponent::deleteSelected()
 {
+    if (rollVisible && roll->deleteSelectedNote())   // a selected note goes before the clip
+        return;
+
     if (selTrack != nullptr && selClip >= 0)
     {
         engine.deleteClip (*selTrack, selClip);
@@ -652,6 +806,14 @@ void MainComponent::timerCallback()
 
     for (auto* h : headers)
         h->tick();
+
+    if (rollVisible)
+    {
+        if (roll->stillValid())
+            roll->repaintGrid();   // follows the playhead
+        else
+            hideRoll();
+    }
 
     const bool recording = engine.isRecording();
     playButton.setLit (engine.isPlaying());
@@ -766,7 +928,7 @@ void MainComponent::addTrackDialog()
 void MainComponent::importFiles (const juce::StringArray& paths, Track* target, double time)
 {
     juce::StringArray failed;
-    const bool intoTrack = target != nullptr && paths.size() == 1;
+    const bool intoTrack = target != nullptr && target->type == Track::Type::Audio && paths.size() == 1;
 
     for (auto& p : paths)
     {
@@ -820,16 +982,50 @@ void MainComponent::saveProject (const juce::File& file)
 
         auto* o = new juce::DynamicObject();
         o->setProperty ("name", t->name);
+        o->setProperty ("type", t->type == Track::Type::Midi ? "midi" : "audio");
         o->setProperty ("gain", (double) t->gain.load());
         o->setProperty ("pan", (double) t->pan.load());
         o->setProperty ("mute", t->mute.load());
         o->setProperty ("solo", t->solo.load());
         o->setProperty ("clips", clipList);
+
+        if (t->type == Track::Type::Midi)
+        {
+            auto* s = new juce::DynamicObject();
+            s->setProperty ("waveform", t->synth.waveform.load());
+            s->setProperty ("attack", (double) t->synth.attack.load());
+            s->setProperty ("decay", (double) t->synth.decay.load());
+            s->setProperty ("sustain", (double) t->synth.sustain.load());
+            s->setProperty ("release", (double) t->synth.release.load());
+            s->setProperty ("cutoff", (double) t->synth.cutoff.load());
+            o->setProperty ("synth", juce::var (s));
+
+            juce::Array<juce::var> midiList;
+            for (auto& m : engine.getMidiClips (*t))
+            {
+                juce::Array<juce::var> noteList;
+                for (auto& n : m.notes)
+                {
+                    auto* no = new juce::DynamicObject();
+                    no->setProperty ("pitch", n.pitch);
+                    no->setProperty ("start", n.start);
+                    no->setProperty ("length", n.length);
+                    no->setProperty ("velocity", (double) n.velocity);
+                    noteList.add (juce::var (no));
+                }
+                auto* mo = new juce::DynamicObject();
+                mo->setProperty ("start", m.start);
+                mo->setProperty ("length", m.length);
+                mo->setProperty ("notes", noteList);
+                midiList.add (juce::var (mo));
+            }
+            o->setProperty ("midiClips", midiList);
+        }
         trackList.add (juce::var (o));
     }
 
     auto* root = new juce::DynamicObject();
-    root->setProperty ("version", 2);
+    root->setProperty ("version", 3);
     root->setProperty ("bpm", (double) engine.bpm.load());
     root->setProperty ("masterGain", (double) engine.masterGain.load());
     root->setProperty ("metronome", engine.metronome.load());
@@ -901,7 +1097,9 @@ void MainComponent::loadProject (const juce::File& file)
 
     for (auto& item : *root["tracks"].getArray())
     {
-        auto* t = engine.addTrack (item.getProperty ("name", "Track").toString());
+        const bool isMidi = item.getProperty ("type", "audio").toString() == "midi";
+        auto* t = engine.addTrack (item.getProperty ("name", "Track").toString(),
+                                   isMidi ? Track::Type::Midi : Track::Type::Audio);
         t->gain = (float) (double) item.getProperty ("gain", 0.8);
         t->pan = (float) (double) item.getProperty ("pan", 0.0);
         t->mute = (bool) item.getProperty ("mute", false);
@@ -924,11 +1122,43 @@ void MainComponent::loadProject (const juce::File& file)
                                   v.getProperty ("length", c.sourceLength()));
         };
 
-        if (auto* clipArray = item["clips"].getArray())
+        if (isMidi)
+        {
+            const auto s = item["synth"];
+            t->synth.waveform = (int) s.getProperty ("waveform", (int) SynthParams::Saw);
+            t->synth.attack = (float) (double) s.getProperty ("attack", 0.005);
+            t->synth.decay = (float) (double) s.getProperty ("decay", 0.15);
+            t->synth.sustain = (float) (double) s.getProperty ("sustain", 0.7);
+            t->synth.release = (float) (double) s.getProperty ("release", 0.25);
+            t->synth.cutoff = (float) (double) s.getProperty ("cutoff", 8000.0);
+
+            if (auto* midiArray = item["midiClips"].getArray())
+                for (auto& mv : *midiArray)
+                {
+                    const int id = engine.addMidiClip (*t, mv.getProperty ("start", 0.0), mv.getProperty ("length", 4.0));
+                    std::vector<Note> notes;
+                    if (auto* noteArray = mv["notes"].getArray())
+                        for (auto& nv : *noteArray)
+                        {
+                            Note n;
+                            n.pitch = (int) nv.getProperty ("pitch", 60);
+                            n.start = nv.getProperty ("start", 0.0);
+                            n.length = nv.getProperty ("length", 0.5);
+                            n.velocity = (float) (double) nv.getProperty ("velocity", 0.8);
+                            notes.push_back (n);
+                        }
+                    engine.setMidiNotes (*t, id, std::move (notes));
+                }
+        }
+        else if (auto* clipArray = item["clips"].getArray())
+        {
             for (auto& cv : *clipArray)
                 loadClip (cv);
+        }
         else if (item.hasProperty ("file"))   // version 1: one clip per track
+        {
             loadClip (item);
+        }
 
         addTrackUI (*t);
     }

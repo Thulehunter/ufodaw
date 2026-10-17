@@ -6,6 +6,8 @@ Engine::Engine()
 {
     formats.registerBasicFormats();
     writerThread.startThread();
+    noteEvents.reserve (2048);
+    synthScratch.assign (16384, 0.0f);
 }
 
 Engine::~Engine()
@@ -13,6 +15,20 @@ Engine::~Engine()
     stopRecording();
     writerThread.stopThread (2000);
 }
+
+void Engine::prepareToPlay (int samplesPerBlock, double newRate)
+{
+    const juce::ScopedLock sl (lock);
+    sampleRate = newRate;
+    if ((int) synthScratch.size() < samplesPerBlock * 2)
+        synthScratch.assign ((size_t) samplesPerBlock * 2, 0.0f);
+    for (auto& t : tracks)
+        if (t->voices != nullptr)
+            t->voices->prepare (newRate);
+}
+
+//==============================================================================
+// Recording
 
 bool Engine::startRecording (const juce::File& file, int numChannels)
 {
@@ -48,18 +64,20 @@ void Engine::stopRecording()
     threadedWriter.reset();   // flushes what is left and closes the file
 }
 
-void Engine::prepareToPlay (int, double newRate)
-{
-    sampleRate = newRate;
-}
-
 //==============================================================================
 // Tracks
 
-Track* Engine::addTrack (const juce::String& name)
+Track* Engine::addTrack (const juce::String& name, Track::Type type)
 {
     auto track = std::make_unique<Track>();
     track->name = name;
+    track->type = type;
+    if (type == Track::Type::Midi)
+    {
+        track->voices = std::make_unique<Synth>();
+        track->voices->prepare (sampleRate);
+    }
+
     auto* raw = track.get();
     const juce::ScopedLock sl (lock);
     tracks.push_back (std::move (track));
@@ -120,8 +138,27 @@ const Clip* Engine::findClip (const Track& t, int id) const
     return nullptr;
 }
 
+MidiClip* Engine::findMidiClip (Track& t, int id)
+{
+    for (auto& c : t.midiClips)
+        if (c.id == id)
+            return &c;
+    return nullptr;
+}
+
+const MidiClip* Engine::findMidiClip (const Track& t, int id) const
+{
+    for (auto& c : t.midiClips)
+        if (c.id == id)
+            return &c;
+    return nullptr;
+}
+
 int Engine::addClipFromFile (Track& track, const juce::File& file, double startSeconds)
 {
+    if (track.type != Track::Type::Audio)
+        return -1;
+
     std::unique_ptr<juce::AudioFormatReader> reader (formats.createReaderFor (file));
     if (reader == nullptr || reader->lengthInSamples <= 0)
         return -1;
@@ -165,61 +202,6 @@ bool Engine::getClip (const Track& t, int id, Clip& out) const
     return false;
 }
 
-bool Engine::moveClip (Track& t, int id, double newStart)
-{
-    const juce::ScopedLock sl (lock);
-    if (auto* c = findClip (t, id))
-    {
-        c->start = juce::jmax (0.0, newStart);
-        return true;
-    }
-    return false;
-}
-
-int Engine::splitClip (Track& t, int id, double at)
-{
-    const juce::ScopedLock sl (lock);
-    auto* c = findClip (t, id);
-    constexpr double minPart = 0.01;
-    if (c == nullptr || at <= c->start + minPart || at >= c->end() - minPart)
-        return -1;
-
-    Clip right = *c;
-    right.id = nextClipId++;
-    right.start = at;
-    right.offset = c->offset + (at - c->start);
-    right.length = c->end() - at;
-    c->length = at - c->start;   // `c` is not used after the push_back below
-
-    const int newId = right.id;
-    t.clips.push_back (std::move (right));
-    return newId;
-}
-
-int Engine::duplicateClip (Track& t, int id)
-{
-    const juce::ScopedLock sl (lock);
-    auto* c = findClip (t, id);
-    if (c == nullptr)
-        return -1;
-
-    Clip copy = *c;
-    copy.id = nextClipId++;
-    copy.start = c->end();
-    const int newId = copy.id;
-    t.clips.push_back (std::move (copy));
-    return newId;
-}
-
-bool Engine::deleteClip (Track& t, int id)
-{
-    const juce::ScopedLock sl (lock);
-    const auto before = t.clips.size();
-    t.clips.erase (std::remove_if (t.clips.begin(), t.clips.end(), [id] (auto& c) { return c.id == id; }),
-                   t.clips.end());
-    return t.clips.size() != before;
-}
-
 bool Engine::setClipRegion (Track& t, int id, double start, double offset, double length)
 {
     const juce::ScopedLock sl (lock);
@@ -233,14 +215,249 @@ bool Engine::setClipRegion (Track& t, int id, double start, double offset, doubl
     return true;
 }
 
+//==============================================================================
+// MIDI clips
+
+int Engine::addMidiClip (Track& t, double start, double length)
+{
+    if (t.type != Track::Type::Midi)
+        return -1;
+
+    MidiClip c;
+    c.start = juce::jmax (0.0, start);
+    c.length = juce::jmax (0.1, length);
+
+    const juce::ScopedLock sl (lock);
+    c.id = nextClipId++;
+    t.midiClips.push_back (std::move (c));
+    return t.midiClips.back().id;
+}
+
+std::vector<MidiClip> Engine::getMidiClips (const Track& t) const
+{
+    const juce::ScopedLock sl (lock);
+    return t.midiClips;
+}
+
+bool Engine::getMidiClip (const Track& t, int id, MidiClip& out) const
+{
+    const juce::ScopedLock sl (lock);
+    if (auto* c = findMidiClip (t, id))
+    {
+        out = *c;
+        return true;
+    }
+    return false;
+}
+
+bool Engine::isMidiClip (const Track& t, int id) const
+{
+    const juce::ScopedLock sl (lock);
+    return findMidiClip (t, id) != nullptr;
+}
+
+bool Engine::setMidiNotes (Track& t, int id, std::vector<Note> notes)
+{
+    const juce::ScopedLock sl (lock);
+    auto* c = findMidiClip (t, id);
+    if (c == nullptr)
+        return false;
+    c->notes = std::move (notes);
+    return true;
+}
+
+bool Engine::setMidiClipLength (Track& t, int id, double length)
+{
+    const juce::ScopedLock sl (lock);
+    auto* c = findMidiClip (t, id);
+    if (c == nullptr)
+        return false;
+    c->length = juce::jmax (0.1, length);
+    return true;
+}
+
+//==============================================================================
+// Editing shared by audio and MIDI clips
+
+bool Engine::moveClip (Track& t, int id, double newStart)
+{
+    const juce::ScopedLock sl (lock);
+    if (auto* c = findClip (t, id))
+    {
+        c->start = juce::jmax (0.0, newStart);
+        return true;
+    }
+    if (auto* m = findMidiClip (t, id))
+    {
+        m->start = juce::jmax (0.0, newStart);
+        return true;
+    }
+    return false;
+}
+
+int Engine::splitClip (Track& t, int id, double at)
+{
+    constexpr double minPart = 0.01;
+    const juce::ScopedLock sl (lock);
+
+    if (auto* c = findClip (t, id))
+    {
+        if (at <= c->start + minPart || at >= c->end() - minPart)
+            return -1;
+
+        Clip right = *c;
+        right.id = nextClipId++;
+        right.start = at;
+        right.offset = c->offset + (at - c->start);
+        right.length = c->end() - at;
+        c->length = at - c->start;   // `c` is not used after the push_back below
+
+        const int newId = right.id;
+        t.clips.push_back (std::move (right));
+        return newId;
+    }
+
+    if (auto* m = findMidiClip (t, id))
+    {
+        if (at <= m->start + minPart || at >= m->end() - minPart)
+            return -1;
+
+        const double cut = at - m->start;
+        MidiClip right;
+        right.id = nextClipId++;
+        right.start = at;
+        right.length = m->end() - at;
+
+        // Notes that straddle the cut are split in two so nothing is lost.
+        std::vector<Note> left;
+        for (auto n : m->notes)
+        {
+            const double noteEnd = n.start + n.length;
+            if (noteEnd <= cut)
+            {
+                left.push_back (n);
+            }
+            else if (n.start >= cut)
+            {
+                n.start -= cut;
+                right.notes.push_back (n);
+            }
+            else
+            {
+                Note a = n, b = n;
+                a.length = cut - n.start;
+                b.start = 0.0;
+                b.length = noteEnd - cut;
+                left.push_back (a);
+                right.notes.push_back (b);
+            }
+        }
+        m->notes = std::move (left);
+        m->length = cut;   // `m` is not used after the push_back below
+
+        const int newId = right.id;
+        t.midiClips.push_back (std::move (right));
+        return newId;
+    }
+    return -1;
+}
+
+int Engine::duplicateClip (Track& t, int id)
+{
+    const juce::ScopedLock sl (lock);
+
+    if (auto* c = findClip (t, id))
+    {
+        Clip copy = *c;
+        copy.id = nextClipId++;
+        copy.start = c->end();
+        const int newId = copy.id;
+        t.clips.push_back (std::move (copy));
+        return newId;
+    }
+    if (auto* m = findMidiClip (t, id))
+    {
+        MidiClip copy = *m;
+        copy.id = nextClipId++;
+        copy.start = m->end();
+        const int newId = copy.id;
+        t.midiClips.push_back (std::move (copy));
+        return newId;
+    }
+    return -1;
+}
+
+bool Engine::deleteClip (Track& t, int id)
+{
+    const juce::ScopedLock sl (lock);
+    const auto before = t.clips.size() + t.midiClips.size();
+    t.clips.erase (std::remove_if (t.clips.begin(), t.clips.end(), [id] (auto& c) { return c.id == id; }), t.clips.end());
+    t.midiClips.erase (std::remove_if (t.midiClips.begin(), t.midiClips.end(), [id] (auto& c) { return c.id == id; }),
+                       t.midiClips.end());
+    return t.clips.size() + t.midiClips.size() != before;
+}
+
 double Engine::getTotalLengthSeconds() const
 {
     const juce::ScopedLock sl (lock);
     double end = 0.0;
     for (auto& t : tracks)
+    {
         for (auto& c : t->clips)
             end = juce::jmax (end, c.end());
+        for (auto& m : t->midiClips)
+            end = juce::jmax (end, m.end());
+    }
     return end;
+}
+
+//==============================================================================
+// Note preview (UI thread -> audio thread)
+
+void Engine::previewNote (const Track& t, int pitch, bool on)
+{
+    int s1, n1, s2, n2;
+    previewFifo.prepareToWrite (1, s1, n1, s2, n2);
+    if (n1 > 0)
+        previewQueue[(size_t) s1] = { &t, pitch, on };
+    else if (n2 > 0)
+        previewQueue[(size_t) s2] = { &t, pitch, on };
+    previewFifo.finishedWrite (n1 + n2);
+}
+
+void Engine::drainPreviewEvents()
+{
+    int s1, n1, s2, n2;
+    previewFifo.prepareToRead (previewFifo.getNumReady(), s1, n1, s2, n2);
+
+    auto apply = [this] (const PreviewEvent& e)
+    {
+        for (auto& t : tracks)
+            if (t.get() == e.track && t->voices != nullptr)
+            {
+                if (e.on) t->voices->noteOn (e.pitch, 0.8f); else t->voices->noteOff (e.pitch);
+                return;
+            }
+    };
+
+    for (int i = 0; i < n1; ++i) apply (previewQueue[(size_t) (s1 + i)]);
+    for (int i = 0; i < n2; ++i) apply (previewQueue[(size_t) (s2 + i)]);
+    previewFifo.finishedRead (n1 + n2);
+}
+
+bool Engine::anySynthActive() const
+{
+    for (auto& t : tracks)
+        if (t->voices != nullptr && t->voices->isActive())
+            return true;
+    return false;
+}
+
+void Engine::silenceSynths()
+{
+    for (auto& t : tracks)
+        if (t->voices != nullptr)
+            t->voices->reset();
 }
 
 //==============================================================================
@@ -265,28 +482,103 @@ void Engine::getNextAudioBlock (const juce::AudioSourceChannelInfo& info)
     info.clearActiveBufferRegion();
 
     const juce::ScopedTryLock sl (lock);
-    if (! sl.isLocked() || ! playing)
+    if (! sl.isLocked())
     {
-        if (sl.isLocked())
-            for (auto& t : tracks) t->level = 0.0f;
         masterLevel = 0.0f;
         return;
+    }
+
+    drainPreviewEvents();
+
+    const bool running = playing;
+    const auto pos = positionSamples.load();
+
+    if (! running)
+    {
+        if (wasRunning)
+        {
+            for (auto& t : tracks)
+                if (t->voices != nullptr)
+                    t->voices->allNotesOff();
+            wasRunning = false;
+        }
+        if (! anySynthActive())
+        {
+            for (auto& t : tracks) t->level = 0.0f;
+            masterLevel = 0.0f;
+            return;
+        }
+    }
+    else
+    {
+        if (! wasRunning || pos != lastBlockEnd)   // playback started or the playhead jumped
+            for (auto& t : tracks)
+                if (t->voices != nullptr)
+                    t->voices->allNotesOff();
+        wasRunning = true;
     }
 
     auto* outL = info.buffer->getWritePointer (0, info.startSample);
     auto* outR = info.buffer->getNumChannels() > 1 ? info.buffer->getWritePointer (1, info.startSample) : nullptr;
 
-    mixBlock (outL, outR, info.numSamples, positionSamples.load(), metronome);
-    positionSamples += info.numSamples;
+    mixBlock (outL, outR, info.numSamples, pos, running && metronome, running);
+
+    if (running)
+    {
+        positionSamples += info.numSamples;
+        lastBlockEnd = pos + info.numSamples;
+    }
 }
 
-void Engine::mixBlock (float* outL, float* outR, int n, juce::int64 pos, bool withMetronome)
+void Engine::renderMidiTrack (Track& t, int n, juce::int64 pos, bool running, float* scratch)
+{
+    std::fill (scratch, scratch + n, 0.0f);
+
+    noteEvents.clear();
+    if (running)
+    {
+        const double blockEnd = (double) (pos + n);
+        for (auto& clip : t.midiClips)
+            for (auto& note : clip.notes)
+            {
+                if (note.start >= clip.length)
+                    continue;
+
+                const double on = (clip.start + note.start) * sampleRate;
+                const double off = on + note.length * sampleRate;
+                if (on >= (double) pos && on < blockEnd)
+                    noteEvents.push_back ({ (int) (on - (double) pos), true, note.pitch, note.velocity });
+                if (off >= (double) pos && off < blockEnd)
+                    noteEvents.push_back ({ (int) (off - (double) pos), false, note.pitch, 0.0f });
+            }
+
+        // note-offs go first at the same sample so a repeated pitch retriggers cleanly
+        std::sort (noteEvents.begin(), noteEvents.end(), [] (const NoteEvent& a, const NoteEvent& b)
+                   { return a.offset != b.offset ? a.offset < b.offset : (! a.on && b.on); });
+    }
+
+    int done = 0;
+    for (auto& e : noteEvents)
+    {
+        if (e.offset > done)
+        {
+            t.voices->render (scratch + done, e.offset - done, t.synth);
+            done = e.offset;
+        }
+        if (e.on) t.voices->noteOn (e.pitch, e.velocity); else t.voices->noteOff (e.pitch);
+    }
+    if (done < n)
+        t.voices->render (scratch + done, n - done, t.synth);
+}
+
+void Engine::mixBlock (float* outL, float* outR, int n, juce::int64 pos, bool withMetronome, bool running)
 {
     bool anySolo = false;
     for (auto& t : tracks)
         anySolo = anySolo || t->solo;
 
     constexpr double fadeSamples = 48.0;   // tiny fade at clip edges to avoid clicks
+    const int synthN = juce::jmin (n, (int) synthScratch.size());
 
     for (auto& t : tracks)
     {
@@ -296,6 +588,32 @@ void Engine::mixBlock (float* outL, float* outR, int n, juce::int64 pos, bool wi
         const float angle = (t->pan + 1.0f) * juce::MathConstants<float>::pi * 0.25f;
         const float gl = std::cos (angle) * juce::MathConstants<float>::sqrt2 * g;
         const float gr = std::sin (angle) * juce::MathConstants<float>::sqrt2 * g;
+
+        if (t->type == Track::Type::Midi)
+        {
+            if (t->voices != nullptr)
+            {
+                renderMidiTrack (*t, synthN, pos, running, synthScratch.data());
+                for (int i = 0; i < synthN; ++i)
+                {
+                    const float s = synthScratch[(size_t) i];
+                    peak = juce::jmax (peak, std::abs (s));
+                    if (audible)
+                    {
+                        outL[i] += s * gl;
+                        if (outR) outR[i] += s * gr;
+                    }
+                }
+            }
+            t->level = peak * g;
+            continue;
+        }
+
+        if (! running)
+        {
+            t->level = 0.0f;
+            continue;
+        }
 
         for (auto& c : t->clips)
         {
@@ -396,17 +714,22 @@ bool Engine::renderToFile (const juce::File& file, double seconds, bool withMetr
     stream.release(); // the writer owns the stream now
 
     const juce::ScopedLock sl (lock);
+    silenceSynths();
+
     constexpr int blockSize = 1024;
     juce::AudioBuffer<float> buffer (2, blockSize);
     const auto total = (juce::int64) (seconds * sampleRate);
+    bool ok = true;
 
-    for (juce::int64 done = 0; done < total; done += blockSize)
+    for (juce::int64 done = 0; done < total && ok; done += blockSize)
     {
         const int n = (int) juce::jmin<juce::int64> (blockSize, total - done);
         buffer.clear();
-        mixBlock (buffer.getWritePointer (0), buffer.getWritePointer (1), n, done, withMetronome);
-        if (! writer->writeFromAudioSampleBuffer (buffer, 0, n))
-            return false;
+        mixBlock (buffer.getWritePointer (0), buffer.getWritePointer (1), n, done, withMetronome, true);
+        ok = writer->writeFromAudioSampleBuffer (buffer, 0, n);
     }
-    return true;
+
+    silenceSynths();
+    lastBlockEnd = -1;
+    return ok;
 }
