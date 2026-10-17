@@ -931,6 +931,8 @@ public:
             edited = false;
             grabOffset = t - h.start;
             resizing = h.midi && r.getWidth() > 16 && e.x >= r.getRight() - 6;   // right edge of a MIDI clip
+            if (resizing && ! main.getEngine().getMidiClip (track, dragId, resizeOriginal))
+                resizing = false;
             main.selectClip (&track, dragId);
             return;
         }
@@ -1051,6 +1053,50 @@ public:
                 main.beginEdit();
                 edited = true;
             }
+            // Dragging the right edge of a MIDI clip: longer repeats the pattern to fill the clip, shorter cuts it off;
+            // Shift stretches the pattern instead (half as long = twice as fast); Alt switches snapping off.
+            const bool stretching = e.mods.isShiftDown();
+            const double original = juce::jmax (0.001, resizeOriginal.length);
+            std::vector<Note> notes;
+            std::vector<CcEvent> ccs;
+            if (stretching)
+            {
+                const double f = newLength / original;
+                for (auto n : resizeOriginal.notes)
+                {
+                    n.start *= f;
+                    n.length *= f;
+                    notes.push_back (n);
+                }
+                for (auto c : resizeOriginal.ccs)
+                {
+                    c.time *= f;
+                    ccs.push_back (c);
+                }
+            }
+            else
+            {
+                for (int k = 0; (double) k * original < newLength - 1.0e-6; ++k)
+                {
+                    const double offset = (double) k * original;
+                    for (auto n : resizeOriginal.notes)
+                    {
+                        n.start += offset;
+                        if (n.start >= newLength - 1.0e-6)
+                            continue;
+                        n.length = juce::jmin (n.length, newLength - n.start);
+                        notes.push_back (n);
+                    }
+                    for (auto c : resizeOriginal.ccs)
+                    {
+                        c.time += offset;
+                        if (c.time < newLength)
+                            ccs.push_back (c);
+                    }
+                }
+            }
+            main.getEngine().setMidiNotes (*dragTrack, dragId, std::move (notes));
+            main.getEngine().setMidiCcs (*dragTrack, dragId, std::move (ccs));
             main.getEngine().setMidiClipLength (*dragTrack, dragId, newLength);
             main.clipsChanged();
             return;
@@ -1402,6 +1448,7 @@ private:
     double grabOffset = 0.0;
     double dragStart = 0.0;
     double dragLength = 0.0;
+    MidiClip resizeOriginal;   // the clip as it was when the edge drag began (every move is computed from this)
 };
 
 //==============================================================================
