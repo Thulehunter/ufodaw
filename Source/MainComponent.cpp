@@ -1538,6 +1538,10 @@ MainComponent::MainComponent()
 MainComponent::~MainComponent()
 {
     stopTimer();
+    if (! isDirty())
+        clearAutosave();   // a normal exit with everything saved leaves no recovery file
+    else
+        autosaveNow();     // unsaved work is kept for the next start, which offers to restore it
     deviceManager.removeChangeListener (this);
     pluginHost.closeAllEditors();   // editor windows must go before the plugins they show
     midiListConnection = {};
@@ -2205,6 +2209,7 @@ void MainComponent::clipsChanged()
 
 void MainComponent::beginEdit()
 {
+    ++editCounter;   // (the project differs from what was saved)
     undoStack.push_back (engine.captureState());
     if (undoStack.size() > 100)
         undoStack.erase (undoStack.begin());
@@ -2215,7 +2220,10 @@ void MainComponent::beginEdit()
 void MainComponent::cancelEdit()
 {
     if (! undoStack.empty())
+    {
         undoStack.pop_back();
+        --editCounter;
+    }
     updateUndoButtons();
 }
 
@@ -2275,6 +2283,7 @@ void MainComponent::restoreSnapshot (const ProjectState& state)
                 selectClip (t, selClipId);
         }
 
+    ++editCounter;        // undo / redo changed the project, too
     updateUndoButtons();
     updateArmedTrack();   // the old Track pointer is gone
     clipsChanged();
@@ -2933,6 +2942,12 @@ void MainComponent::timerCallback()
 {
     const double p = engine.getPositionSeconds();
     const int mins = (int) (p / 60.0);
+    if (juce::Time::getMillisecondCounter() - lastAutosaveMs > 120000u)   // every two minutes
+    {
+        lastAutosaveMs = juce::Time::getMillisecondCounter();
+        autosaveNow();
+    }
+
     if (engine.isCountingIn())
         timeLabel.setText ("COUNT  " + juce::String (engine.countInBeatsLeft()), juce::dontSendNotification);
     else
@@ -3435,7 +3450,7 @@ void MainComponent::importFiles (const juce::StringArray& paths, Track* target, 
 }
 
 //==============================================================================
-void MainComponent::saveProject (const juce::File& file)
+void MainComponent::saveProject (const juce::File& file, bool asAutosave)
 {
     const auto baseDir = file.getParentDirectory();
 
@@ -3593,9 +3608,25 @@ void MainComponent::saveProject (const juce::File& file)
     root->setProperty ("punchEnabled", engine.punchEnabled.load());
     root->setProperty ("tracks", trackList);
 
+    if (asAutosave)
+    {
+        file.getParentDirectory().createDirectory();
+        if (file.replaceWithText (juce::JSON::toString (juce::var (root))))
+        {
+            auto* info = new juce::DynamicObject();   // what the recovery offer shows, and where the project belongs
+            info->setProperty ("original", currentProject.getFullPathName());
+            info->setProperty ("name", currentProject == juce::File() ? juce::String ("Untitled") : currentProject.getFileNameWithoutExtension());
+            info->setProperty ("time", juce::Time::getCurrentTime().toISO8601 (true));
+            autosaveInfoFile().replaceWithText (juce::JSON::toString (juce::var (info)));
+        }
+        return;   // (quietly: nothing else about the open project changes)
+    }
+
     if (file.replaceWithText (juce::JSON::toString (juce::var (root))))
     {
         currentProject = file;
+        savedEdit = editCounter;
+        clearAutosave();
         if (auto* w = getTopLevelComponent())
             w->setName ("UFODAW - " + file.getFileNameWithoutExtension());
     }
@@ -3604,6 +3635,70 @@ void MainComponent::saveProject (const juce::File& file)
         juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon,
                                                 "Cannot save project", file.getFullPathName());
     }
+}
+
+//==============================================================================
+// Autosave and recovery
+
+juce::File MainComponent::autosaveFile()
+{
+    return juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory).getChildFile ("UFODAW").getChildFile ("autosave")
+                                                                                    .getChildFile ("recovery.mdaw");
+}
+
+juce::File MainComponent::autosaveInfoFile() { return autosaveFile().withFileExtension ("json"); }
+
+void MainComponent::autosaveNow()
+{
+    if (! isDirty() || editCounter == autosavedEdit)
+        return;
+    if (engine.isRecording() || midiRecording)   // not while recording: try again at the next round
+        return;
+    saveProject (autosaveFile(), true);
+    autosavedEdit = editCounter;
+}
+
+void MainComponent::clearAutosave()
+{
+    autosaveFile().deleteFile();
+    autosaveInfoFile().deleteFile();
+    autosavedEdit = editCounter;
+}
+
+void MainComponent::offerRecovery()
+{
+    juce::Component::SafePointer<MainComponent> safe (this);
+    juce::MessageManager::callAsync ([safe]
+    {
+        if (safe == nullptr || ! autosaveFile().existsAsFile())
+            return;
+
+        const auto info = juce::JSON::parse (autosaveInfoFile());
+        const auto name = info["name"].toString().isNotEmpty() ? info["name"].toString() : juce::String ("Untitled");
+        const auto when = juce::Time::fromISO8601 (info["time"].toString());
+        const auto original = info["original"].toString();
+
+        juce::String text = "UFODAW found an autosaved version of \"" + name + "\" from " + when.toString (true, true) + ", "
+                            "from a session that was not closed properly or was closed with unsaved changes.\n\nRestore it?";
+        juce::AlertWindow::showAsync (juce::MessageBoxOptions::makeOptionsOkCancel (juce::MessageBoxIconType::QuestionIcon, "Restore your work?",
+                                                                                    text, "Restore", "Discard", safe.getComponent()),
+                                      [safe, original, name] (int result)
+        {
+            if (safe == nullptr)
+                return;
+            if (result != 1)
+            {
+                safe->clearAutosave();
+                return;
+            }
+
+            safe->loadProject (autosaveFile());
+            safe->currentProject = original.isNotEmpty() ? juce::File (original) : juce::File();   // saving goes back to where it belongs
+            ++safe->editCounter;                                                                   // still unsaved
+            if (auto* w = safe->getTopLevelComponent())
+                w->setName ("UFODAW - " + name + " (restored)");
+        });
+    });
 }
 
 void MainComponent::saveProjectAs()
@@ -3851,6 +3946,7 @@ void MainComponent::loadProject (const juce::File& file)
     }
 
     currentProject = file;
+    savedEdit = editCounter;   // freshly opened: nothing unsaved
     if (auto* w = getTopLevelComponent())
         w->setName ("UFODAW - " + file.getFileNameWithoutExtension());
     clipsChanged();

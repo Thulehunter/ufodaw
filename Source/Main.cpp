@@ -15,9 +15,13 @@ public:
 
         // "UFODAW.exe project.mdaw" (or double-clicking a project file) opens that project
         const juce::File project (commandLine.trim().unquoted().trim());
-        if (project.existsAsFile())
-            if (auto* main = dynamic_cast<MainComponent*> (window->getContentComponent()))
+        if (auto* main = dynamic_cast<MainComponent*> (window->getContentComponent()))
+        {
+            if (project.existsAsFile())
                 main->openProject (project);
+            else
+                main->offerRecovery();   // work from a session that did not end properly
+        }
     }
 
     // The program used to be called MiniDAW: take its settings (audio device, plugin list, UI options) along once.

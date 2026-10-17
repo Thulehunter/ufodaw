@@ -10,6 +10,8 @@ A small digital audio workstation for Windows, written in C++17 with [JUCE](http
   effects, volume and pan.
 - **Tuner** - **Tuner** (bottom right) opens a chromatic tuner for any input of your interface: note, cents sharp/flat, a needle and
   the frequency (A = 430-450 Hz). It starts on the input of the armed track and works down to a low bass B.
+- **Autosave and recovery** - every two minutes, when something changed, the project is written to a recovery file. If the program
+  crashes (a plugin, say) or is closed with unsaved changes, the next start offers to restore it; saving normally removes it.
 - **Metronome and count-in** - the **Click** button in the transport bar (or `M`) switches the metronome on and off, also while playing
   or recording. **Count-in** (top bar) sets 0-4 bars of clicks before a recording starts; they follow the tempo and time signature at
   the playhead, play even when the metronome is off, and nothing is recorded during them (the display counts the beats down).

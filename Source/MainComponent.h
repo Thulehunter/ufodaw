@@ -137,6 +137,7 @@ public:
     void setLoopRegion (double startSeconds, double endSeconds);   // also switches looping on
     void setPunchRegion (double startSeconds, double endSeconds);  // also switches punch on
     void openProject (const juce::File& file) { loadProject (file); }
+    void offerRecovery();   // at start-up: if an autosave from an unfinished session exists, ask whether to restore it
     void openInstrumentEditor (Track&);   // the plugin window of the track's instrument (or first effect); the VST panel if none
     double getPixelsPerSecond() const { return pixelsPerSecond; }
     int getScrollX() const { return laneViewport.getViewPositionX(); }
@@ -238,8 +239,18 @@ private:
     void pasteClip (Track*, double atSeconds);
     Track* pasteTargetTrack() const;
 
-    void saveProject (const juce::File&);
+    void saveProject (const juce::File&, bool asAutosave = false);   // an autosave leaves the project's own file and name alone
     void saveProjectAs();
+
+    // Autosave: every two minutes, when something changed, the project goes to a recovery file. A normal save (or a normal exit
+    // without unsaved changes) removes it; if the program dies, or is closed with unsaved changes, it is offered at the next start.
+    int editCounter = 0, savedEdit = 0, autosavedEdit = 0;   // bumped by every undoable edit; compared to what was saved / autosaved
+    juce::uint32 lastAutosaveMs = 0;
+    bool isDirty() const { return editCounter != savedEdit; }
+    static juce::File autosaveFile();
+    static juce::File autosaveInfoFile();
+    void autosaveNow();
+    void clearAutosave();
     void loadProject (const juce::File&);
     void openProjectDialog();
     void exportDialog();
