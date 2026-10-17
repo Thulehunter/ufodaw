@@ -217,6 +217,7 @@ struct Track
     std::atomic<bool> mute { false };
     std::atomic<bool> solo { false };
     std::atomic<float> level { 0.0f };
+    std::atomic<float> dspLoad { 0.0f };        // the share of the audio block's time this track needs (0..1, smoothed): its plugins and effects
     std::atomic<bool> clipped { false };        // the track's output reached full scale (latched until cleared)
     std::atomic<float> inputLevel { 0.0f };     // armed audio tracks: the loudest sample of the input in the last block
     std::atomic<bool> inputClipped { false };   // ...and whether the input reached full scale (latched until cleared)

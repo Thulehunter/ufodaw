@@ -2110,7 +2110,7 @@ void Engine::getNextAudioBlock (const juce::AudioSourceChannelInfo& info)
         }
         if (! anySynthActive() && ! anyMonitoring() && ! counting)   // (monitoring keeps the mixer running while stopped)
         {
-            for (auto& t : tracks) t->level = 0.0f;
+            for (auto& t : tracks) { t->level = 0.0f; t->dspLoad = 0.0f; }
             setMasterLevel (0.0f);
             return;
         }
@@ -2689,6 +2689,10 @@ void Engine::renderMidiTrack (Track& t, int n, juce::int64 pos, bool running, fl
 
 void Engine::mixBlock (float* outL, float* outR, int n, juce::int64 pos, bool withMetronome, bool running)
 {
+    // Denormal numbers (the tails of filters, reverbs and plugin effects fading to nothing) make some CPUs many times slower;
+    // flush them to zero for everything that runs inside the mix, plugins included.
+    juce::ScopedNoDenormals noDenormals;
+
     bool anySolo = false;
     for (auto& t : tracks)
         anySolo = anySolo || t->solo;
@@ -2746,6 +2750,22 @@ void Engine::mixBlock (float* outL, float* outR, int n, juce::int64 pos, bool wi
     {
         if ((t->bus ? 1 : 0) != pass)
             continue;
+
+        // How long this track took, as a share of the time the block lasts (smoothed): shown in the track header, so it is
+        // clear which plugin or effect is the expensive one.
+        struct TrackTimer
+        {
+            Track& track;
+            double blockSeconds;
+            juce::int64 started = juce::Time::getHighResolutionTicks();
+            ~TrackTimer()
+            {
+                if (blockSeconds <= 0.0)
+                    return;
+                const double used = juce::Time::highResolutionTicksToSeconds (juce::Time::getHighResolutionTicks() - started);
+                track.dspLoad = 0.92f * track.dspLoad.load() + 0.08f * (float) (used / blockSeconds);
+            }
+        } timer { *t, (double) n / sampleRate };
 
         if (renderOnly != nullptr && t.get() != renderOnly)   // exporting one stem: the other tracks stay out of it
         {

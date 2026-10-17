@@ -312,14 +312,25 @@ public:
         const float l = juce::jmax (track.level.load(), armedAudio ? track.inputLevel.load() : 0.0f);   // an armed track shows its input
         shown = l > shown ? l : shown * 0.85f;
 
+        // the name turns red when the track clipped; otherwise yellow / orange when its plugins and effects use a lot of the audio time
         const bool clipNow = track.clipped.load() || track.inputClipped.load();
-        if (clipNow != clipShown)
+        const int cpuPercent = (int) std::lround (track.dspLoad.load() * 100.0f);
+        const int cpuLevel = cpuPercent >= 50 ? 2 : cpuPercent >= 25 ? 1 : 0;
+        if (clipNow != clipShown || cpuLevel != cpuLevelShown || std::abs (cpuPercent - cpuPercentShown) >= 2)
         {
             clipShown = clipNow;
-            nameLabel.setColour (juce::Label::textColourId, clipNow ? Theme::redBright : (isMaster ? Theme::yellow : Theme::text));
-            setTooltip (clipNow ? juce::String (track.inputClipped.load() ? "The input clipped: lower the gain on the interface. " : "This track clipped: lower its volume or what is before it. ")
-                                      + "Click the red lamp to clear it."
-                                : juce::String());
+            cpuLevelShown = cpuLevel;
+            cpuPercentShown = cpuPercent;
+            nameLabel.setColour (juce::Label::textColourId, clipNow ? Theme::redBright : cpuLevel == 2 ? Theme::orange : cpuLevel == 1 ? Theme::yellow
+                                                                                       : (isMaster ? Theme::yellow : Theme::text));
+            juce::String tip;
+            if (clipNow)
+                tip = juce::String (track.inputClipped.load() ? "The input clipped: lower the gain on the interface. " : "This track clipped: lower its volume or what is before it. ")
+                      + "Click the red lamp to clear it.\n";
+            if (cpuPercent >= 1)
+                tip += "CPU: this track needs " + juce::String (cpuPercent) + " % of the audio time (its plugins and effects)"
+                       + (cpuLevel > 0 ? ". That is a lot: freeze it, use a lighter plugin, or raise the buffer size under Audio..." : ".");
+            setTooltip (tip.trim());
         }
 
         const bool fxActive = track.fx.anyOn();
@@ -421,7 +432,20 @@ public:
             vstButton.setColour (juce::TextButton::buttonColourId, hasPlugins ? Theme::red : Theme::buttonOff);
             vstButton.repaint();
         }
-        repaint();
+
+        // Only what changed is painted again: the meter strip when the level moved a step, the whole header when the clip state
+        // changed (a full repaint of every strip 30 times a second costs a lot of CPU for nothing).
+        const int bin = (int) (juce::jlimit (0.0f, 1.0f, shown) * 40.0f);
+        if (bin != shownBin)
+        {
+            shownBin = bin;
+            repaint (getWidth() - 26, 0, 26, getHeight());
+        }
+        if (clipNow != clipPainted)
+        {
+            clipPainted = clipNow;
+            repaint();
+        }
     }
 
 private:
@@ -444,6 +468,9 @@ private:
     bool isMaster = false;
     bool armShown = false;
     bool clipShown = false;
+    int cpuLevelShown = 0, cpuPercentShown = 0;
+    int shownBin = -1;           // the meter as last painted, in 1/40 steps: the strip is only repainted when this changes
+    bool clipPainted = false;
     float shown = 0.0f;
 
     juce::Label nameLabel;
@@ -1944,7 +1971,8 @@ void MainComponent::updateAudioInfo()
                         + juce::String (rate / 1000.0, 1) + " kHz, " + juce::String (buffer) + " smp ("
                         + juce::String (buffer * 1000.0 / juce::jmax (1.0, rate), 1) + " ms), "
                         + juce::String (device->getActiveInputChannels().countNumberOfSetBits()) + " in/"
-                        + juce::String (device->getActiveOutputChannels().countNumberOfSetBits()) + " out";
+                        + juce::String (device->getActiveOutputChannels().countNumberOfSetBits()) + " out"
+                        + "  |  CPU " + juce::String (juce::jmax (0, cpuPercentShown)) + " %";
     }
     else
     {
@@ -3391,14 +3419,29 @@ void MainComponent::timerCallback()
     for (auto* h : headers)
         h->tick();
     masterHeader->tick();
-    masterLane->repaint();   // the master lane shows its automation and follows the zoom
+
+    ++timerTick;
+    const bool moved = p != lastTimerPosition;
+    const auto maskLow = liveMaskLow.load(), maskHigh = liveMaskHigh.load();
+    const bool keysChanged = maskLow != lastMaskLow || maskHigh != lastMaskHigh;
+    lastTimerPosition = p;
+    lastMaskLow = maskLow;
+    lastMaskHigh = maskHigh;
+
+    if (timerTick % 10 == 0 || moved)
+        masterLane->repaint();   // the master lane shows its automation and follows the zoom
 
     if (rollVisible)
     {
         if (roll->stillValid())
-            roll->repaintGrid();   // follows the playhead
+        {
+            if (moved || keysChanged || engine.isPlaying() || timerTick % 15 == 0)
+                roll->repaintGrid();   // follows the playhead and the keys that are played
+        }
         else
+        {
             hideRoll();
+        }
     }
 
     const bool recording = engine.isRecording() || midiRecording;
@@ -3406,7 +3449,27 @@ void MainComponent::timerCallback()
     pauseButton.setLit (! engine.isPlaying() && p > 0.0);
     recordButton.setLit (recording && (juce::Time::getMillisecondCounter() / 500) % 2 == 0);   // blinks
 
-    repaint();
+    // The playhead is the only thing on the main view that moves by itself: repaint its strip (where it was and where it is),
+    // not the whole window. Everything else repaints when it changes.
+    const int playheadX = laneViewport.getX() + (int) (p * pixelsPerSecond) - getScrollX();
+    if (playheadX != lastPlayheadX)
+    {
+        const int top = ruler->getY(), height = masterArea.getBottom() - top;
+        repaint (lastPlayheadX - 8, top, 16, height);
+        repaint (playheadX - 8, top, 16, height);
+        lastPlayheadX = playheadX;
+    }
+
+    // the processor load of the audio device, in the status line (about once a second)
+    if (timerTick % 30 == 0)
+    {
+        const int cpu = (int) std::lround (deviceManager.getCpuUsage() * 100.0);
+        if (cpu != cpuPercentShown)
+        {
+            cpuPercentShown = cpu;
+            updateAudioInfo();   // rebuilds the status text, which includes the load
+        }
+    }
 }
 
 //==============================================================================

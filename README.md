@@ -48,6 +48,9 @@ A small digital audio workstation for Windows, written in C++17 with [JUCE](http
 - **Plugin delay compensation** - tracks are delayed to line up with plugins that report latency (up to half a second).
 - **Automation** - breakpoint envelopes for volume, pan, every built-in effect parameter, the synth, and any parameter of a hosted VST3 plugin.
 - **Velocity editing** - velocity bars under the piano roll; Ctrl+drag a step in the drum sequencer.
+- **CPU readout** - the status line shows the audio device load (*CPU n %*), and a track name turns yellow (25 %+) or orange (50 %+) of the audio
+  time when its plugins and effects are heavy; hover the header for the exact figure. Denormal numbers are flushed to zero in the mix, and the
+  window only repaints what changes, so UFODAW itself stays light.
 - **Clipping indicators** - a red **CLIP** lamp in the top bar, a lamp at the top of every level meter, a red frame round the strip and a red
   track name show when something reached full scale: a track's output, the master mix (over 0 dB before the limiter), or the input of an
   armed audio track (then lower the gain on the interface; a recording that clips cannot be repaired). They stay lit until you click

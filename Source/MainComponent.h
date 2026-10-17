@@ -400,6 +400,11 @@ private:
     juce::TextButton punchButton { "Punch" }, tunerButton { "Tuner" };
     ClipLamp clipLamp;
     juce::String clipLampText;   // what the lamp last said (so it is only touched when it changes)
+
+    // bookkeeping of the 30 Hz timer: it only repaints what changed
+    int timerTick = 0, lastPlayheadX = -1000, cpuPercentShown = -1;
+    double lastTimerPosition = -1.0;
+    unsigned long long lastMaskLow = 0, lastMaskHigh = 0;
     void updateClipLamp();
     std::unique_ptr<TunerWindow> tunerWindow;
 
