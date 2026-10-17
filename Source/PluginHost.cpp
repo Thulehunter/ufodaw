@@ -110,6 +110,7 @@ std::shared_ptr<PluginSlot> PluginHost::createSlot (const juce::PluginDescriptio
     auto slot = std::make_shared<PluginSlot>();
     slot->instance = std::move (instance);
     slot->description = description;
+    slot->key = PluginSlot::newKey();
     engine.preparePlugin (*slot);
     return slot;
 }
@@ -124,6 +125,7 @@ juce::var PluginHost::slotToVar (const PluginSlot& slot) const
         o->setProperty ("description", xml->toString());
     o->setProperty ("state", state.toBase64Encoding());
     o->setProperty ("bypass", slot.bypass.load());
+    o->setProperty ("key", slot.key);
     return juce::var (o);
 }
 
@@ -145,6 +147,11 @@ std::shared_ptr<PluginSlot> PluginHost::slotFromVar (const juce::var& v, Engine&
     if (state.fromBase64Encoding (v["state"].toString()) && state.getSize() > 0)
         slot->instance->setStateInformation (state.getData(), (int) state.getSize());
     slot->bypass = (bool) v.getProperty ("bypass", false);
+    if (v.hasProperty ("key"))   // keep the saved key so automation lanes find their plugin again
+    {
+        slot->key = (int) v.getProperty ("key", slot->key);
+        PluginSlot::reserveKey (slot->key);
+    }
     return slot;
 }
 

@@ -69,6 +69,10 @@ void Engine::setInstrument (Track& t, std::shared_ptr<PluginSlot> slot)
     const juce::ScopedLock sl (lock);
     if (t.type != Track::Type::Midi)
         return;
+    if (t.instrument != nullptr)   // automation of the old plugin's parameters goes with it
+        t.autoLanes.erase (std::remove_if (t.autoLanes.begin(), t.autoLanes.end(),
+                                           [&] (auto& lane) { return lane->plugin == t.instrument; }),
+                           t.autoLanes.end());
     t.instrument = std::move (slot);
     t.liveMidi.clear();
     t.pluginTailSamples = 0.0;
@@ -91,6 +95,9 @@ void Engine::removeInsert (Track& t, int index)
             return;
         removed = std::move (t.inserts[(size_t) index]);
         t.inserts.erase (t.inserts.begin() + index);
+        t.autoLanes.erase (std::remove_if (t.autoLanes.begin(), t.autoLanes.end(),
+                                           [&] (auto& lane) { return lane->plugin == removed; }),
+                           t.autoLanes.end());
     }
 }
 
@@ -542,22 +549,218 @@ double Engine::getTotalLengthSeconds() const
 //==============================================================================
 // Automation
 
-std::vector<AutoPoint> Engine::getAutomation (const Track& t, int param) const
+ParamAutomation* Engine::findLane (const Track& t, const juce::String& id) const
 {
-    const juce::ScopedLock sl (lock);
-    return param == AutoVolume ? t.autoVolume.points : t.autoPan.points;
+    for (auto& lane : t.autoLanes)
+        if (lane->id == id)
+            return lane.get();
+    return nullptr;
 }
 
-void Engine::setAutomation (Track& t, int param, std::vector<AutoPoint> points)
+// Turns an id into a lane bound to the right parameter, creating it on first use.
+ParamAutomation* Engine::ensureLane (Track& t, const juce::String& id)
+{
+    if (auto* existing = findLane (t, id))
+        return existing;
+
+    auto lane = std::make_unique<ParamAutomation>();
+    lane->id = id;
+
+    if (id.startsWith ("fx."))
+    {
+        const auto name = id.substring (3);
+        for (auto& spec : fxParamSpecs())
+            if (name == spec.id)
+            {
+                lane->name = spec.label;
+                lane->lo = spec.lo;
+                lane->hi = spec.hi;
+                lane->floatTarget = t.fx.findFloat (name);
+            }
+    }
+    else if (id.startsWith ("synth."))
+    {
+        struct S { const char* name; std::atomic<float>* target; const char* label; float lo, hi; };
+        const S synthParams[] = {
+            { "attack",  &t.synth.attack,  "Synth attack",  0.001f, 2.0f },
+            { "decay",   &t.synth.decay,   "Synth decay",   0.001f, 2.0f },
+            { "sustain", &t.synth.sustain, "Synth sustain", 0.0f,   1.0f },
+            { "release", &t.synth.release, "Synth release", 0.01f,  3.0f },
+            { "cutoff",  &t.synth.cutoff,  "Synth cutoff",  100.0f, 18000.0f },
+        };
+        for (auto& s : synthParams)
+            if (id.substring (6) == s.name)
+            {
+                lane->name = s.label;
+                lane->lo = s.lo;
+                lane->hi = s.hi;
+                lane->floatTarget = s.target;
+            }
+    }
+    else if (id.startsWith ("plugin:"))
+    {
+        const auto parts = juce::StringArray::fromTokens (id.substring (7), ":", "");
+        if (parts.size() == 2)
+        {
+            const int key = parts[0].getIntValue(), index = parts[1].getIntValue();
+            std::shared_ptr<PluginSlot> slot;
+            if (t.instrument != nullptr && t.instrument->key == key)
+                slot = t.instrument;
+            for (auto& p : t.inserts)
+                if (p->key == key)
+                    slot = p;
+
+            if (slot != nullptr && juce::isPositiveAndBelow (index, slot->instance->getParameters().size()))
+            {
+                lane->plugin = slot;
+                lane->pluginParam = index;
+                lane->lo = 0.0f;
+                lane->hi = 1.0f;
+                lane->name = slot->description.name + ": " + slot->instance->getParameters()[index]->getName (60);
+            }
+        }
+    }
+
+    if (lane->floatTarget == nullptr && lane->plugin == nullptr)
+        return nullptr;
+
+    t.autoLanes.push_back (std::move (lane));
+    return t.autoLanes.back().get();
+}
+
+std::vector<AutoTarget> Engine::listAutomationTargets (const Track& t) const
+{
+    const juce::ScopedLock sl (lock);
+    std::vector<AutoTarget> out;
+
+    for (auto& spec : fxParamSpecs())
+        out.push_back ({ juce::String ("fx.") + spec.id, spec.label, "Effects" });
+
+    if (t.type == Track::Type::Midi && t.instrument == nullptr && t.kit == nullptr)
+        for (auto* name : { "cutoff", "attack", "release" })
+            out.push_back ({ juce::String ("synth.") + name, "Synth " + juce::String (name), "Synth" });
+
+    auto addPlugin = [&] (const PluginSlot& slot, const juce::String& group)
+    {
+        auto& params = slot.instance->getParameters();
+        for (int i = 0; i < params.size() && i < 600; ++i)
+            if (params[i]->isAutomatable())
+                out.push_back ({ "plugin:" + juce::String (slot.key) + ":" + juce::String (i), params[i]->getName (60), group });
+    };
+    if (t.instrument != nullptr)
+        addPlugin (*t.instrument, t.instrument->description.name + " (instrument)");
+    for (auto& p : t.inserts)
+        addPlugin (*p, p->description.name);
+    return out;
+}
+
+AutoInfo Engine::getAutomationInfo (const Track& t, const juce::String& id) const
+{
+    const juce::ScopedLock sl (lock);
+    AutoInfo info;
+    if (id == "volume" || id == "pan")
+    {
+        info.valid = true;
+        info.name = id == "volume" ? "Volume" : "Pan";
+        info.lo = id == "volume" ? 0.0f : -1.0f;
+        info.hi = id == "volume" ? 1.5f : 1.0f;
+        info.current = id == "volume" ? t.gain.load() : t.pan.load();
+        return info;
+    }
+
+    // a lane that doesn't exist yet is described by creating it, which is harmless (empty lanes do nothing)
+    auto* lane = findLane (t, id);
+    if (lane == nullptr)
+        lane = const_cast<Engine*> (this)->ensureLane (const_cast<Track&> (t), id);
+    if (lane == nullptr)
+        return info;
+
+    info.valid = true;
+    info.name = lane->name;
+    info.lo = lane->lo;
+    info.hi = lane->hi;
+    info.current = lane->floatTarget != nullptr ? lane->floatTarget->load()
+                                                : lane->plugin->instance->getParameters()[lane->pluginParam]->getValue();
+    return info;
+}
+
+std::vector<AutoPoint> Engine::getAutomation (const Track& t, const juce::String& id) const
+{
+    const juce::ScopedLock sl (lock);
+    if (id == "volume") return t.autoVolume.points;
+    if (id == "pan")    return t.autoPan.points;
+    if (auto* lane = findLane (t, id))
+        return lane->points;
+    return {};
+}
+
+bool Engine::setAutomation (Track& t, const juce::String& id, std::vector<AutoPoint> points)
 {
     std::stable_sort (points.begin(), points.end(), [] (const AutoPoint& a, const AutoPoint& b) { return a.time < b.time; });
     const juce::ScopedLock sl (lock);
-    (param == AutoVolume ? t.autoVolume : t.autoPan).points = std::move (points);
+    if (id == "volume") { t.autoVolume.points = std::move (points); return true; }
+    if (id == "pan")    { t.autoPan.points = std::move (points); return true; }
+    if (auto* lane = ensureLane (t, id))
+    {
+        lane->points = std::move (points);
+        return true;
+    }
+    return false;
 }
 
-void Engine::setAutomationActive (Track& t, int param, bool active)
+void Engine::setAutomationActive (Track& t, const juce::String& id, bool active)
 {
-    (param == AutoVolume ? t.autoVolume : t.autoPan).active = active;
+    const juce::ScopedLock sl (lock);
+    if (id == "volume")      t.autoVolume.active = active;
+    else if (id == "pan")    t.autoPan.active = active;
+    else if (auto* lane = findLane (t, id))
+        lane->active = active;
+}
+
+bool Engine::isAutomationActive (const Track& t, const juce::String& id) const
+{
+    if (id == "volume") return t.autoVolume.active;
+    if (id == "pan")    return t.autoPan.active;
+    auto* lane = findLane (t, id);
+    return lane != nullptr && lane->active;
+}
+
+std::vector<juce::String> Engine::getAutomationIds (const Track& t) const
+{
+    const juce::ScopedLock sl (lock);
+    std::vector<juce::String> ids;
+    if (! t.autoVolume.points.empty()) ids.push_back ("volume");
+    if (! t.autoPan.points.empty())    ids.push_back ("pan");
+    for (auto& lane : t.autoLanes)
+        if (! lane->points.empty())
+            ids.push_back (lane->id);
+    return ids;
+}
+
+// Audio thread: moves every automated built-in/plugin parameter to its envelope value at this time.
+void Engine::applyAutomation (Track& t, double time)
+{
+    for (auto& lane : t.autoLanes)
+    {
+        if (! lane->active || lane->points.empty())
+            continue;
+
+        const float v = evalAutomation (lane->points, time, lane->lastApplied);
+        if (v == lane->lastApplied)
+            continue;
+        lane->lastApplied = v;
+
+        if (lane->floatTarget != nullptr)
+        {
+            lane->floatTarget->store (v);
+        }
+        else if (lane->plugin != nullptr)
+        {
+            auto& params = lane->plugin->instance->getParameters();
+            if (lane->pluginParam < params.size())
+                params[lane->pluginParam]->setValue (v);
+        }
+    }
 }
 
 //==============================================================================
@@ -589,11 +792,11 @@ ProjectState Engine::captureState() const
         ts.synthValues[4] = t->synth.cutoff;
         ts.instrument = t->instrument;
         ts.inserts = t->inserts;
-        ts.autoVolume = t->autoVolume.points;
-        ts.autoPan = t->autoPan.points;
+        ts.autoLanes.push_back ({ "volume", t->autoVolume.points, t->autoVolume.active.load() });
+        ts.autoLanes.push_back ({ "pan", t->autoPan.points, t->autoPan.active.load() });
+        for (auto& lane : t->autoLanes)
+            ts.autoLanes.push_back ({ lane->id, lane->points, lane->active.load() });
         ts.kit = t->kit;
-        ts.autoVolumeActive = t->autoVolume.active;
-        ts.autoPanActive = t->autoPan.active;
         t->fx.forEachFloat ([&ts] (const char*, std::atomic<float>& v) { ts.fxFloats.push_back (v.load()); });
         t->fx.forEachBool ([&ts] (const char*, std::atomic<bool>& v) { ts.fxBools.push_back (v.load() ? 1 : 0); });
         s.tracks.push_back (std::move (ts));
@@ -629,10 +832,25 @@ void Engine::restoreState (const ProjectState& s)
         t->instrument = ts.instrument;
         t->inserts = ts.inserts;
         t->kit = ts.kit;
-        t->autoVolume.points = ts.autoVolume;
-        t->autoPan.points = ts.autoPan;
-        t->autoVolume.active = ts.autoVolumeActive;
-        t->autoPan.active = ts.autoPanActive;
+        // lanes last: they bind to the effect/synth parameters and plugins assigned above
+        for (auto& ls : ts.autoLanes)
+        {
+            if (ls.id == "volume")
+            {
+                t->autoVolume.points = ls.points;
+                t->autoVolume.active = ls.active;
+            }
+            else if (ls.id == "pan")
+            {
+                t->autoPan.points = ls.points;
+                t->autoPan.active = ls.active;
+            }
+            else if (auto* lane = ensureLane (*t, ls.id))
+            {
+                lane->points = ls.points;
+                lane->active = ls.active;
+            }
+        }
 
         t->fxState = std::make_unique<TrackFx>();
         t->fxState->prepare (sampleRate);
@@ -998,6 +1216,8 @@ void Engine::mixBlock (float* outL, float* outR, int n, juce::int64 pos, bool wi
         const float pan1 = autoPan ? evalAutomation (t->autoPan.points, t1, t->pan) : pan0;
         t->effGain = gain0;
         t->effPan = pan0;
+        if (running)
+            applyAutomation (*t, t0);
 
         auto panGains = [] (float g, float p, float& l, float& r)
         {

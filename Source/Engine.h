@@ -52,12 +52,37 @@ struct AutoPoint
     float value = 0.0f;
 };
 
-enum AutoParam { AutoNone = 0, AutoVolume = 1, AutoPan = 2 };
-
-struct AutomationLane
+// Automation is addressed by id: "volume" and "pan" (fader range 0..1.5 / -1..1), "fx.<name>" (effect parameters),
+// "synth.<name>" (built-in synth) and "plugin:<slot key>:<parameter index>" (hosted plugins, normalised 0..1).
+struct AutomationLane   // volume and pan: handled by the mixer's fader code
 {
     std::vector<AutoPoint> points;       // sorted by time, guarded by Engine::lock
     std::atomic<bool> active { true };   // when false the fader/pan knob is used as usual
+};
+
+struct ParamAutomation   // every other automatable parameter
+{
+    juce::String id, name;
+    float lo = 0.0f, hi = 1.0f;
+    std::vector<AutoPoint> points;
+    std::atomic<bool> active { true };
+
+    std::atomic<float>* floatTarget = nullptr;   // built-in parameter, or
+    std::shared_ptr<PluginSlot> plugin;          // hosted plugin parameter
+    int pluginParam = -1;
+    float lastApplied = -1.0e9f;                 // audio thread: only touch the target when the value changes
+};
+
+struct AutoInfo
+{
+    bool valid = false;
+    juce::String name;
+    float lo = 0.0f, hi = 1.0f, current = 0.0f;
+};
+
+struct AutoTarget   // something that can be automated, for menus
+{
+    juce::String id, name, group;
 };
 
 inline float evalAutomation (const std::vector<AutoPoint>& pts, double time, float fallback)
@@ -109,8 +134,9 @@ struct Track
     std::atomic<float> level { 0.0f };
 
     AutomationLane autoVolume, autoPan;                   // fader range 0..1.5, pan -1..1
+    std::vector<std::unique_ptr<ParamAutomation>> autoLanes;
     std::atomic<float> effGain { 0.8f }, effPan { 0.0f }; // what the mixer last used (differs from gain/pan when automated)
-    int autoEditParam = AutoNone;                         // UI only: which envelope the lane is currently editing
+    juce::String autoEditId;                              // UI only: id of the envelope the lane is editing ("" = none)
 };
 
 // A copy of everything the user can edit, used for undo/redo. Audio sample data is shared,
@@ -127,8 +153,13 @@ struct TrackState
     float synthValues[5] = {};          // attack, decay, sustain, release, cutoff
     std::vector<float> fxFloats;        // FxParams::forEachFloat order
     std::vector<char> fxBools;          // FxParams::forEachBool order
-    std::vector<AutoPoint> autoVolume, autoPan;
-    bool autoVolumeActive = true, autoPanActive = true;
+    struct LaneState
+    {
+        juce::String id;
+        std::vector<AutoPoint> points;
+        bool active = true;
+    };
+    std::vector<LaneState> autoLanes;   // includes "volume" and "pan"
     std::shared_ptr<DrumKit> kit;
     std::shared_ptr<PluginSlot> instrument;                 // plugins are shared with the live project,
     std::vector<std::shared_ptr<PluginSlot>> inserts;       // so undo restores which ones are present, not their settings
@@ -187,10 +218,14 @@ public:
     bool deleteClip (Track&, int clipId);
     bool moveClipToTrack (Track& from, Track& to, int clipId);              // same type only, id is kept
 
-    // ---- Message thread: automation envelopes (param is AutoVolume or AutoPan)
-    std::vector<AutoPoint> getAutomation (const Track&, int param) const;
-    void setAutomation (Track&, int param, std::vector<AutoPoint> points);   // sorted for you
-    void setAutomationActive (Track&, int param, bool active);
+    // ---- Message thread: automation envelopes, by id (see AutomationLane)
+    std::vector<AutoTarget> listAutomationTargets (const Track&) const;      // everything that can be automated here
+    AutoInfo getAutomationInfo (const Track&, const juce::String& id) const;
+    std::vector<AutoPoint> getAutomation (const Track&, const juce::String& id) const;
+    bool setAutomation (Track&, const juce::String& id, std::vector<AutoPoint> points);   // sorts; creates the lane if needed
+    void setAutomationActive (Track&, const juce::String& id, bool active);
+    bool isAutomationActive (const Track&, const juce::String& id) const;
+    std::vector<juce::String> getAutomationIds (const Track&) const;         // lanes that have points
 
     // ---- Message thread: hosted plugins
     void preparePlugin (PluginSlot&);                           // layout + prepareToPlay for the current audio setup
@@ -259,6 +294,9 @@ private:
     void drainPreviewEvents();
     bool anySynthActive() const;
     void silenceSynths();
+    ParamAutomation* findLane (const Track&, const juce::String& id) const;
+    ParamAutomation* ensureLane (Track&, const juce::String& id);   // null if the id doesn't resolve to a parameter
+    void applyAutomation (Track&, double timeSeconds);
     void releaseAllNotes (Track&);                              // soft all-notes-off for the synth or plugin instrument
     void collectNoteEvents (Track&, int numSamples, juce::int64 pos, bool running);
     void renderDrumTrack (Track&, int numSamples, juce::int64 pos, bool running, float* scratch);

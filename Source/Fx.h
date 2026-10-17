@@ -28,7 +28,18 @@ struct FxParams
     // Used for saving/loading projects.
     void forEachFloat (const std::function<void (const char*, std::atomic<float>&)>&);
     void forEachBool (const std::function<void (const char*, std::atomic<bool>&)>&);
+
+    std::atomic<float>* findFloat (const juce::String& name);   // by the names forEachFloat uses; null if unknown
 };
+
+// Display name and value range of every FxParams float, for automation.
+struct FxParamSpec
+{
+    const char* id;      // same as the name in FxParams::forEachFloat
+    const char* label;
+    float lo, hi;
+};
+const std::vector<FxParamSpec>& fxParamSpecs();
 
 // Audio-thread state for one track's effect chain. No allocation outside prepare().
 class TrackFx

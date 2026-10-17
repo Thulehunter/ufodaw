@@ -165,7 +165,10 @@ public:
                 continue;
             const int x = timeToX (clip.start + n.start);
             const int w = juce::jmax (3, (int) std::round (step * pps) - 1);
-            const juce::Rectangle<int> r (x + 1, padToY (pad) + 2, w - 1, rowH - 4);
+            // a hit's height shows its velocity (Ctrl+drag a hit up or down to change it)
+            const int full = rowH - 4;
+            const int h = juce::jmax (4, (int) std::round ((float) full * (0.2f + 0.8f * n.velocity)));
+            const juce::Rectangle<int> r (x + 1, padToY (pad) + 2 + (full - h), w - 1, h);
             if (! r.intersects (area))
                 continue;
             g.setColour (padColour (pad).withMultipliedBrightness (0.7f + 0.4f * n.velocity));
@@ -195,7 +198,18 @@ public:
         if (cell.x < 0)
             return;
 
-        const bool exists = findNote (cell.x, cell.y) >= 0;
+        const int existingIndex = findNote (cell.x, cell.y);
+        const bool exists = existingIndex >= 0;
+
+        if (e.mods.isCtrlDown() && exists)   // velocity: drag up for harder, down for softer
+        {
+            mode = Mode::Velocity;
+            velIndex = existingIndex;
+            velStartY = e.y;
+            velStartValue = clip.notes[(size_t) existingIndex].velocity;
+            return;
+        }
+
         if (e.mods.isPopupMenu())
             mode = Mode::Erase;
         else
@@ -207,6 +221,25 @@ public:
     {
         if (mode == Mode::None || ! load())
             return;
+
+        if (mode == Mode::Velocity)
+        {
+            if (velIndex < 0 || velIndex >= (int) clip.notes.size())
+                return;
+            const float v = juce::jlimit (0.05f, 1.0f, velStartValue + (float) (velStartY - e.y) / (float) (rowH * 3));
+            if (! gestureEdited)
+            {
+                if (std::abs (v - clip.notes[(size_t) velIndex].velocity) < 1.0e-3f)
+                    return;
+                main.beginEdit();
+                gestureEdited = true;
+            }
+            clip.notes[(size_t) velIndex].velocity = v;
+            main.getEngine().setMidiNotes (*track, clipId, clip.notes);
+            repaint();
+            return;
+        }
+
         const auto cell = cellAt (e.getPosition());
         if (cell.x >= 0)
             apply (cell);
@@ -223,7 +256,7 @@ public:
     }
 
 private:
-    enum class Mode { None, Add, Erase };
+    enum class Mode { None, Add, Erase, Velocity };
 
     bool load() { return track != nullptr && main.getEngine().getMidiClip (*track, clipId, clip); }
 
@@ -292,6 +325,8 @@ private:
     MidiClip clip;
     Mode mode = Mode::None;
     bool gestureEdited = false;
+    int velIndex = -1, velStartY = 0;
+    float velStartValue = 0.8f;
     juce::Point<int> lastCell { -1, -1 };
 };
 

@@ -11,7 +11,8 @@ A small digital audio workstation for Windows, written in C++17 with [JUCE](http
 - **MIDI input** - any connected keyboard plays the selected MIDI track and can be recorded; the computer keyboard works as a piano too ("Keys").
 - **Effects per track** - 3-band EQ, compressor, delay, reverb.
 - **VST3 hosting** - instruments and effects, with their own editor windows; plugin states are saved in the project.
-- **Automation** - volume and pan envelopes per track.
+- **Automation** - breakpoint envelopes for volume, pan, every built-in effect parameter, the synth, and any parameter of a hosted VST3 plugin.
+- **Velocity editing** - velocity bars under the piano roll; Ctrl+drag a step in the drum sequencer.
 - **Mixer** - volume, pan, mute, solo, level meters, soft limiter on the master.
 - **Undo / redo**, project **save / load** (`.mdaw`) and **WAV export** (24-bit).
 
@@ -38,6 +39,8 @@ Download `MiniDAW-<version>-win64.zip` (see *Packaging*), unzip it and start `Mi
 | Ignore snapping while dragging | hold `Alt` |
 | Create a MIDI clip | double-click an empty spot on a MIDI track |
 | Add / remove a note or drum step | click / right-click in the piano roll or step sequencer |
+| Change note velocity | drag the bars under the piano roll (sideways = paint several); `Ctrl`+drag a drum step |
+| Automate a parameter | **A** button on the track, pick the parameter, then click in the lane to add points (right-click a point removes it) |
 | Play with the computer keyboard | turn on **Keys**, then `A W S E D F T G Y H U J K O L P` (`Z` / `X` change octave) |
 
 Buttons on every track: **FX** (built-in effects), **VST** (VST3 instrument and inserts), **A** (volume / pan automation).
@@ -80,7 +83,8 @@ The audio thread never blocks: the UI edits the project under a lock that the au
 ## Known limitations
 
 - No latency compensation for plugins (lookahead limiters etc. run slightly late).
-- Plugin parameters are not part of undo; automation covers volume and pan only.
+- Changes made inside a plugin's own window are not part of undo.
+- Automation is applied once per audio block (steps, not a smooth ramp) except for volume and pan; while a parameter is automated its slider can still be moved but the envelope wins during playback.
 - VST3 only (no VST2, CLAP or AU).
 - Windows only so far.
 

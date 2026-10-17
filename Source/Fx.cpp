@@ -16,6 +16,35 @@ void FxParams::forEachBool (const std::function<void (const char*, std::atomic<b
     f ("eqOn", eqOn);  f ("compOn", compOn);  f ("delayOn", delayOn);  f ("reverbOn", reverbOn);
 }
 
+std::atomic<float>* FxParams::findFloat (const juce::String& name)
+{
+    std::atomic<float>* found = nullptr;
+    forEachFloat ([&] (const char* n, std::atomic<float>& v) { if (name == n) found = &v; });
+    return found;
+}
+
+const std::vector<FxParamSpec>& fxParamSpecs()
+{
+    static const std::vector<FxParamSpec> specs = {
+        { "eqLow",         "EQ low",             -18.0f,   18.0f },
+        { "eqMid",         "EQ mid",             -18.0f,   18.0f },
+        { "eqMidFreq",     "EQ mid frequency",   200.0f,   5000.0f },
+        { "eqHigh",        "EQ high",            -18.0f,   18.0f },
+        { "compThreshold", "Compressor threshold", -60.0f, 0.0f },
+        { "compRatio",     "Compressor ratio",   1.0f,     20.0f },
+        { "compAttack",    "Compressor attack",  1.0f,     200.0f },
+        { "compRelease",   "Compressor release", 10.0f,    1000.0f },
+        { "compMakeup",    "Compressor makeup",  0.0f,     24.0f },
+        { "delayTime",     "Delay time",         20.0f,    1500.0f },
+        { "delayFeedback", "Delay feedback",     0.0f,     0.9f },
+        { "delayMix",      "Delay mix",          0.0f,     1.0f },
+        { "reverbSize",    "Reverb size",        0.0f,     1.0f },
+        { "reverbDamping", "Reverb damping",     0.0f,     1.0f },
+        { "reverbMix",     "Reverb mix",         0.0f,     1.0f },
+    };
+    return specs;
+}
+
 //==============================================================================
 void TrackFx::prepare (double rate)
 {

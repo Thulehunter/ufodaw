@@ -109,6 +109,14 @@ public:
         return true;
     }
 
+    int getSelected() const { return selected; }
+
+    void selectNote (int index)
+    {
+        selected = index;
+        repaint();
+    }
+
     int highestPitch()
     {
         int hi = 78;
@@ -337,10 +345,133 @@ private:
 };
 
 //==============================================================================
+// Velocity bars under the grid, one per note. Drag a bar up or down to change that note's velocity;
+// dragging sideways across several bars paints them all.
+class PianoRoll::Velocity : public juce::Component
+{
+public:
+    explicit Velocity (PianoRoll& r) : roll (r), main (r.main) {}
+
+    void setClip (Track* t, int id)
+    {
+        track = t;
+        clipId = id;
+        repaint();
+    }
+
+    void paint (juce::Graphics& g) override
+    {
+        g.fillAll (juce::Colour (0xff16181c));
+        if (! load())
+            return;
+
+        g.setColour (juce::Colours::white.withAlpha (0.06f));
+        for (float f : { 0.25f, 0.5f, 0.75f })
+            g.drawHorizontalLine ((int) valueToY (f), 0.0f, (float) getWidth());
+
+        const int selected = roll.grid->getSelected();
+        for (int i = 0; i < (int) clip.notes.size(); ++i)
+        {
+            const auto& n = clip.notes[(size_t) i];
+            const int x = barX (n);
+            const float top = valueToY (n.velocity);
+            g.setColour (i == selected ? juce::Colour (0xffa8f0c8) : juce::Colour (0xff3fb57f).withMultipliedBrightness (0.6f + 0.5f * n.velocity));
+            g.fillRect ((float) x - 2.0f, top, 5.0f, (float) getHeight() - top);
+            g.fillEllipse ((float) x - 4.0f, top - 4.0f, 8.0f, 8.0f);
+        }
+    }
+
+    void mouseDown (const juce::MouseEvent& e) override
+    {
+        main.grabKeyboardFocus();
+        gestureEdited = false;
+        active = -1;
+        if (! load())
+            return;
+
+        float best = 8.0f;   // pick the bar closest to the click, within a few pixels
+        for (int i = 0; i < (int) clip.notes.size(); ++i)
+        {
+            const float d = (float) std::abs (barX (clip.notes[(size_t) i]) - e.x);
+            if (d < best)
+            {
+                best = d;
+                active = i;
+            }
+        }
+        if (active < 0)
+            return;
+
+        lastX = e.x;
+        roll.grid->selectNote (active);
+        setVelocity ({ active }, yToValue (e.y));
+    }
+
+    void mouseDrag (const juce::MouseEvent& e) override
+    {
+        if (active < 0 || ! load())
+            return;
+
+        const float v = yToValue (e.y);
+        std::vector<int> touched { active };
+        const int lo = juce::jmin (lastX, e.x), hi = juce::jmax (lastX, e.x);
+        for (int i = 0; i < (int) clip.notes.size(); ++i)
+        {
+            const int x = barX (clip.notes[(size_t) i]);
+            if (i != active && x >= lo && x <= hi)
+                touched.push_back (i);
+        }
+        lastX = e.x;
+        setVelocity (touched, v);
+    }
+
+    void mouseUp (const juce::MouseEvent&) override { active = -1; }
+
+private:
+    bool load() { return track != nullptr && main.getEngine().getMidiClip (*track, clipId, clip); }
+    int barX (const Note& n) const
+    {
+        return (int) std::round ((clip.start + n.start) * main.getPixelsPerSecond()) - main.getScrollX() + 1;
+    }
+    float valueToY (float v) const { return 4.0f + (1.0f - v) * (float) (getHeight() - 8); }
+    float yToValue (int y) const { return juce::jlimit (0.05f, 1.0f, 1.0f - ((float) y - 4.0f) / (float) (getHeight() - 8)); }
+
+    void setVelocity (const std::vector<int>& indices, float v)
+    {
+        bool changed = false;
+        for (int i : indices)
+            changed = changed || std::abs (clip.notes[(size_t) i].velocity - v) > 1.0e-4f;
+        if (! changed)
+            return;
+
+        if (! gestureEdited)
+        {
+            main.beginEdit();
+            gestureEdited = true;
+        }
+        for (int i : indices)
+            clip.notes[(size_t) i].velocity = v;
+        main.getEngine().setMidiNotes (*track, clipId, clip.notes);
+        roll.repaintGrid();
+    }
+
+    PianoRoll& roll;
+    MainComponent& main;
+    Track* track = nullptr;
+    int clipId = -1;
+    MidiClip clip;
+    int active = -1;
+    int lastX = 0;
+    bool gestureEdited = false;
+};
+
+//==============================================================================
 PianoRoll::PianoRoll (MainComponent& m) : main (m)
 {
     keys = std::make_unique<Keys> (*this);
     grid = std::make_unique<Grid> (*this);
+    velocity = std::make_unique<Velocity> (*this);
+    addAndMakeVisible (*velocity);
 
     title.setFont (juce::FontOptions (13.0f, juce::Font::bold));
     addAndMakeVisible (title);
@@ -383,6 +514,7 @@ void PianoRoll::showClip (Track* t, int id)
     track = t;
     clipId = id;
     grid->setClip (t, id);
+    velocity->setClip (t, id);
 
     if (t != nullptr)
     {
@@ -415,7 +547,11 @@ bool PianoRoll::stillValid() const
 
 bool PianoRoll::deleteSelectedNote() { return grid->deleteSelected(); }
 
-void PianoRoll::repaintGrid() { grid->repaint(); }
+void PianoRoll::repaintGrid()
+{
+    grid->repaint();
+    velocity->repaint();
+}
 
 void PianoRoll::paint (juce::Graphics& g)
 {
@@ -425,6 +561,16 @@ void PianoRoll::paint (juce::Graphics& g)
     g.setColour (juce::Colour (0xff0b0c0e));
     g.drawHorizontalLine (0, 0.0f, (float) getWidth());
     g.drawHorizontalLine (toolbarHeight - 1, 0.0f, (float) getWidth());
+
+    // label for the velocity lane at the bottom
+    const juce::Rectangle<int> labelArea (0, getHeight() - velocityHeight, MainComponent::controlsWidth, velocityHeight);
+    g.setColour (juce::Colour (0xff24272e));
+    g.fillRect (labelArea);
+    g.setColour (juce::Colours::white.withAlpha (0.6f));
+    g.setFont (12.0f);
+    g.drawText ("Velocity (drag the bars)", labelArea.reduced (12, 0), juce::Justification::centredLeft);
+    g.setColour (juce::Colour (0xff0b0c0e));
+    g.drawHorizontalLine (getHeight() - velocityHeight, 0.0f, (float) getWidth());
 }
 
 void PianoRoll::resized()
@@ -443,7 +589,9 @@ void PianoRoll::resized()
     cutoffLabel.setBounds (bar.removeFromLeft (46));
     cutoff.setBounds (bar.removeFromLeft (130));
 
-    viewport.setBounds (0, toolbarHeight, getWidth(), getHeight() - toolbarHeight);
+    viewport.setBounds (0, toolbarHeight, getWidth(), juce::jmax (0, getHeight() - toolbarHeight - velocityHeight));
+    velocity->setBounds (MainComponent::controlsWidth, getHeight() - velocityHeight,
+                         juce::jmax (0, getWidth() - MainComponent::controlsWidth), velocityHeight);
     const int w = viewport.getMaximumVisibleWidth();
     holder.setSize (w, totalHeight);
     keys->setBounds (MainComponent::controlsWidth - keyWidth, 0, keyWidth, totalHeight);

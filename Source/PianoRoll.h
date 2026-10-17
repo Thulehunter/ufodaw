@@ -27,9 +27,11 @@ public:
 
     static constexpr int toolbarHeight = 34;
     static constexpr int keyWidth = 56;
+    static constexpr int velocityHeight = 64;
 
     class Keys;
     class Grid;
+    class Velocity;
 
 private:
     void applySynthParams();
@@ -48,6 +50,7 @@ private:
     juce::Component holder;
     std::unique_ptr<Keys> keys;
     std::unique_ptr<Grid> grid;
+    std::unique_ptr<Velocity> velocity;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (PianoRoll)
 };
