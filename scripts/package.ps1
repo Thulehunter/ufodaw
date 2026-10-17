@@ -38,6 +38,7 @@ Remove-Item $stage, $zip -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $stage | Out-Null
 Copy-Item $exe $stage
 Copy-Item "$root\README.md" $stage
+Copy-Item "$root\LICENSE" $stage
 Compress-Archive -Path "$stage\*" -DestinationPath $zip
 
 Write-Host "Created $zip ($([math]::Round((Get-Item $zip).Length / 1MB, 1)) MB)"
