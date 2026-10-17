@@ -1,4 +1,5 @@
 #include "PluginPanel.h"
+#include "Theme.h"
 
 namespace
 {
@@ -66,7 +67,7 @@ PluginPanel::PluginPanel (Track& t, Engine& e, PluginHost& h, std::function<void
                            juce::dontSendNotification);
         routeHint.setFont (juce::FontOptions (11.5f));
         routeHint.setMinimumHorizontalScale (1.0f);
-        routeHint.setColour (juce::Label::textColourId, juce::Colours::white.withAlpha (0.55f));
+        routeHint.setColour (juce::Label::textColourId, Theme::text.withAlpha (0.55f));
         addChildComponent (routeHeading);
         addChildComponent (routeHint);
         rebuildRoutes();
@@ -87,7 +88,7 @@ void PluginPanel::setupList (PluginList& list, const juce::String& title, const 
     list.maxRows = maxRows;
     list.heading.setText (title, juce::dontSendNotification);
     list.heading.setFont (juce::FontOptions (13.0f, juce::Font::bold));
-    list.hint.setColour (juce::Label::textColourId, juce::Colours::white.withAlpha (0.55f));
+    list.hint.setColour (juce::Label::textColourId, Theme::text.withAlpha (0.55f));
     list.addButton.setButtonText (addText);
     list.addButton.onClick = [this, &list] { addPluginMenu (list); };
     addAndMakeVisible (list.heading);
@@ -277,7 +278,7 @@ void PluginPanel::rebuild (PluginList& list)
 
 void PluginPanel::paint (juce::Graphics& g)
 {
-    g.fillAll (juce::Colour (0xff24272e));
+    g.fillAll (Theme::panel);
 }
 
 // Lays everything out from the top; with apply == false it only measures. Returns the height needed.

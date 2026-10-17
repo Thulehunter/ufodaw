@@ -1,4 +1,5 @@
 #include "PluginHost.h"
+#include "Theme.h"
 
 namespace
 {
@@ -16,7 +17,7 @@ class PluginHost::EditorWindow : public juce::DocumentWindow
 {
 public:
     EditorWindow (PluginHost& h, PluginSlot& s)
-        : juce::DocumentWindow (s.description.name, juce::Colour (0xff24272e), juce::DocumentWindow::closeButton),
+        : juce::DocumentWindow (s.description.name, Theme::panel, juce::DocumentWindow::closeButton),
           host (h), slot (&s)
     {
         setUsingNativeTitleBar (true);
@@ -51,7 +52,7 @@ class PluginHost::ManagerWindow : public juce::DocumentWindow
 {
 public:
     ManagerWindow (PluginHost& h)
-        : juce::DocumentWindow ("Plugins", juce::Colour (0xff24272e), juce::DocumentWindow::closeButton), host (h)
+        : juce::DocumentWindow ("Plugins", Theme::panel, juce::DocumentWindow::closeButton), host (h)
     {
         setUsingNativeTitleBar (true);
         auto* list = new juce::PluginListComponent (host.formats, host.knownPlugins,

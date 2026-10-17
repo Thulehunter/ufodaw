@@ -4,6 +4,7 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 #include "Engine.h"
 #include "PluginHost.h"
+#include "Theme.h"
 
 class TrackHeader;
 class TrackLane;
@@ -51,13 +52,13 @@ public:
         auto b = getLocalBounds().toFloat().reduced (2.0f);
         g.setColour (juce::Colour (down ? 0xff4a505c : over ? 0xff3a3f49 : 0xff2b2f37));
         g.fillEllipse (b);
-        g.setColour (juce::Colour (0xff0b0c0e));
+        g.setColour (Theme::border);
         g.drawEllipse (b, 1.0f);
 
         juce::Colour c (0xffc8ccd4);
-        if (shape == Play && lit)   c = juce::Colour (0xff3ddc84);
-        if (shape == Pause && lit)  c = juce::Colour (0xffffc247);
-        if (shape == Record)        c = lit ? juce::Colour (0xffff4d4d) : juce::Colour (0xffb04a4a);
+        if (shape == Play && lit)   c = Theme::orange;
+        if (shape == Pause && lit)  c = Theme::yellow;
+        if (shape == Record)        c = lit ? Theme::redBright : Theme::redDim;
         g.setColour (c);
 
         const auto r = b.reduced (b.getWidth() * 0.28f);
@@ -113,6 +114,7 @@ public:
     juce::Component& getLaneHolder() { return laneHolder; }
     Track* trackAtY (int yInLaneHolder) const;       // the track whose lane contains this y, or nullptr
     void setLoopRegion (double startSeconds, double endSeconds);   // also switches looping on
+    void openProject (const juce::File& file) { loadProject (file); }
     void openInstrumentEditor (Track&);   // the plugin window of the track's instrument (or first effect); the VST panel if none
     double getPixelsPerSecond() const { return pixelsPerSecond; }
     int getScrollX() const { return laneViewport.getViewPositionX(); }
@@ -232,6 +234,7 @@ private:
     juce::Slider bpmSlider { juce::Slider::LinearBar, juce::Slider::TextBoxLeft };
     juce::Slider masterSlider { juce::Slider::LinearHorizontal, juce::Slider::NoTextBox };
     float masterShown = 0.0f;
+    std::vector<int> topSeparators;   // x positions of the dividers between the top bar's button groups
 
     double pixelsPerSecond = 100.0;
     Track* selTrack = nullptr;

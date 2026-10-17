@@ -9,7 +9,8 @@ namespace
     int padToY (int pad) { return (DrumKit::numPads - 1 - pad) * rowH; }
     int yToPad (int y)   { return juce::jlimit (0, DrumKit::numPads - 1, DrumKit::numPads - 1 - y / rowH); }
 
-    juce::Colour padColour (int pad) { return juce::Colour::fromHSV ((float) pad / (float) DrumKit::numPads, 0.55f, 0.85f, 1.0f); }
+    // warm hues only: kick is red, crash yellow, the pads in between shade through orange
+    juce::Colour padColour (int pad) { return juce::Colour::fromHSV (0.01f + 0.125f * (float) pad / (float) (DrumKit::numPads - 1), 0.72f, 0.97f, 1.0f); }
 }
 
 //==============================================================================
@@ -21,7 +22,7 @@ public:
 
     void paint (juce::Graphics& g) override
     {
-        g.fillAll (juce::Colour (0xff24272e));
+        g.fillAll (Theme::panel);
         auto* track = owner.getTrack();
         if (track == nullptr || track->kit == nullptr)
             return;
@@ -33,16 +34,16 @@ public:
 
             g.setColour (padColour (pad).withAlpha (pad == pressed ? 0.9f : 0.25f));
             g.fillRect (r.withTrimmedRight (getWidth() - 8).reduced (0, 1));
-            g.setColour (juce::Colours::white.withAlpha (0.9f));
+            g.setColour (Theme::text.withAlpha (0.9f));
             g.setFont (juce::FontOptions (13.0f, juce::Font::bold));
             g.drawText (info.name, r.withTrimmedLeft (16).withWidth (110), juce::Justification::centredLeft);
 
-            g.setColour (juce::Colours::white.withAlpha (0.45f));
+            g.setColour (Theme::text.withAlpha (0.45f));
             g.setFont (11.0f);
             g.drawText (info.file == juce::File() ? juce::String ("built-in sound") : info.file.getFileName(),
                         r.withTrimmedLeft (126).withTrimmedRight (6), juce::Justification::centredLeft, true);
 
-            g.setColour (juce::Colour (0xff15171b));
+            g.setColour (Theme::laneBg);
             g.drawHorizontalLine (r.getBottom() - 1, 0.0f, (float) getWidth());
         }
     }
@@ -125,7 +126,7 @@ public:
 
     void paint (juce::Graphics& g) override
     {
-        g.fillAll (juce::Colour (0xff1a1c21));
+        g.fillAll (Theme::gridBg);
         if (! load() || track->kit == nullptr)
             return;
 
@@ -138,9 +139,9 @@ public:
             const juce::Rectangle<int> r (0, padToY (pad), getWidth(), rowH);
             if (! r.intersects (area))
                 continue;
-            g.setColour (pad % 2 == 0 ? juce::Colour (0xff1f2228) : juce::Colour (0xff1b1d22));
+            g.setColour (pad % 2 == 0 ? Theme::rowLight : Theme::background);
             g.fillRect (r);
-            g.setColour (juce::Colour (0xff15171b));
+            g.setColour (Theme::laneBg);
             g.drawHorizontalLine (r.getBottom() - 1, 0.0f, (float) getWidth());
         }
 
@@ -153,7 +154,7 @@ public:
             const auto index = (long long) std::llround (t / step);
             const bool isBar = index % 16 == 0, isBeat = index % 4 == 0;
             if (! isBeat && step * pps < 8.0) continue;
-            g.setColour (juce::Colours::white.withAlpha (isBar ? 0.18f : isBeat ? 0.09f : 0.04f));
+            g.setColour (Theme::text.withAlpha (isBar ? 0.18f : isBeat ? 0.09f : 0.04f));
             g.drawVerticalLine (x, 0.0f, (float) getHeight());
         }
 
@@ -181,7 +182,7 @@ public:
         const int endX = timeToX (clip.end());
         g.fillRect (endX, 0, getWidth() - endX, getHeight());
 
-        g.setColour (juce::Colours::orange);
+        g.setColour (Theme::playhead);
         g.drawVerticalLine (timeToX (main.getEngine().getPositionSeconds()), 0.0f, (float) getHeight());
     }
 
@@ -369,10 +370,10 @@ void DrumSequencer::repaintGrid() { grid->repaint(); }
 
 void DrumSequencer::paint (juce::Graphics& g)
 {
-    g.fillAll (juce::Colour (0xff1b1d22));
-    g.setColour (juce::Colour (0xff24272e));
+    g.fillAll (Theme::background);
+    g.setColour (Theme::panel);
     g.fillRect (0, 0, getWidth(), toolbarHeight);
-    g.setColour (juce::Colour (0xff0b0c0e));
+    g.setColour (Theme::border);
     g.drawHorizontalLine (0, 0.0f, (float) getWidth());
     g.drawHorizontalLine (toolbarHeight - 1, 0.0f, (float) getWidth());
 }

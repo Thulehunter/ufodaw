@@ -43,13 +43,13 @@ public:
 
         muteButton.setClickingTogglesState (true);
         muteButton.setToggleState (track.mute, juce::dontSendNotification);
-        muteButton.setColour (juce::TextButton::buttonOnColourId, juce::Colours::orangered);
+        muteButton.setColour (juce::TextButton::buttonOnColourId, Theme::redBright);
         muteButton.onClick = [this] { beginEdit(); track.mute = muteButton.getToggleState(); };
         addAndMakeVisible (muteButton);
 
         soloButton.setClickingTogglesState (true);
         soloButton.setToggleState (track.solo, juce::dontSendNotification);
-        soloButton.setColour (juce::TextButton::buttonOnColourId, juce::Colours::gold);
+        soloButton.setColour (juce::TextButton::buttonOnColourId, Theme::yellow);
         soloButton.onClick = [this] { beginEdit(); track.solo = soloButton.getToggleState(); };
         addAndMakeVisible (soloButton);
 
@@ -82,16 +82,20 @@ public:
 
     void paint (juce::Graphics& g) override
     {
-        g.fillAll (juce::Colour (0xff24272e));
+        g.fillAll (Theme::panel);
+
+        // colour stripe by track type: orange = audio, red = MIDI synth, yellow = drums
+        g.setColour (Theme::trackColour (track.type == Track::Type::Midi, track.kit != nullptr));
+        g.fillRect (0, 0, 5, getHeight() - 1);
 
         auto m = juce::Rectangle<int> (getWidth() - 8, 6, 4, getHeight() - 12);
         g.setColour (juce::Colours::black);
         g.fillRect (m);
         const float lvl = juce::jlimit (0.0f, 1.0f, shown);
-        g.setColour (lvl > 0.9f ? juce::Colours::red : juce::Colours::limegreen);
+        g.setColour (lvl > 0.9f ? Theme::redBright : Theme::yellow);
         g.fillRect (m.withTop (m.getBottom() - (int) (lvl * (float) m.getHeight())));
 
-        g.setColour (juce::Colour (0xff0b0c0e));
+        g.setColour (Theme::border);
         g.drawHorizontalLine (getHeight() - 1, 0.0f, (float) getWidth());
     }
 
@@ -125,7 +129,7 @@ public:
         if (fxActive != fxShownActive)
         {
             fxShownActive = fxActive;
-            fxButton.setColour (juce::TextButton::buttonColourId, fxActive ? juce::Colour (0xff1f8a8a) : juce::Colour (0xff3a3d46));
+            fxButton.setColour (juce::TextButton::buttonColourId, fxActive ? Theme::orangeDim : Theme::buttonOff);
             fxButton.repaint();
         }
 
@@ -146,9 +150,9 @@ public:
         if (autoState != autoShownState)
         {
             autoShownState = autoState;
-            autoButton.setColour (juce::TextButton::buttonColourId, autoState == 2 ? juce::Colour (0xffe0922f)
-                                                                  : autoState == 1 ? juce::Colour (0xff1f8a8a)
-                                                                                   : juce::Colour (0xff3a3d46));
+            autoButton.setColour (juce::TextButton::buttonColourId, autoState == 2 ? Theme::orange
+                                                                  : autoState == 1 ? Theme::orangeDim
+                                                                                   : Theme::buttonOff);
             autoButton.repaint();
         }
 
@@ -156,7 +160,7 @@ public:
         if (hasPlugins != vstShownActive)
         {
             vstShownActive = hasPlugins;
-            vstButton.setColour (juce::TextButton::buttonColourId, hasPlugins ? juce::Colour (0xff6a4fb5) : juce::Colour (0xff3a3d46));
+            vstButton.setColour (juce::TextButton::buttonColourId, hasPlugins ? Theme::red : Theme::buttonOff);
             vstButton.repaint();
         }
         repaint();
@@ -189,7 +193,7 @@ public:
 
     void paint (juce::Graphics& g) override
     {
-        g.fillAll (juce::Colour (0xff24272e));
+        g.fillAll (Theme::panel);
         const double pps = main.getPixelsPerSecond();
         const double bar = main.barSeconds(), beat = main.beatSeconds();
         const double scroll = main.getScrollX();
@@ -200,9 +204,9 @@ public:
         {
             const int x1 = (int) (loopA * pps - scroll), x2 = (int) (loopB * pps - scroll);
             const bool on = engine.loopEnabled;
-            g.setColour ((on ? juce::Colour (0xffe0922f) : juce::Colours::grey).withAlpha (on ? 0.35f : 0.22f));
+            g.setColour ((on ? Theme::orange : Theme::textFaint).withAlpha (on ? 0.35f : 0.22f));
             g.fillRect (x1, 0, x2 - x1, getHeight());
-            g.setColour (on ? juce::Colour (0xffe0922f) : juce::Colours::grey);
+            g.setColour (on ? Theme::orange : Theme::textFaint);
             g.fillRect (x1, getHeight() - 3, x2 - x1, 3);
         }
 
@@ -215,22 +219,22 @@ public:
             const int x = (int) (b * bar * pps - scroll);
             if (x > getWidth()) break;
 
-            g.setColour (juce::Colours::white.withAlpha (0.4f));
+            g.setColour (Theme::text.withAlpha (0.4f));
             g.drawVerticalLine (x, (float) getHeight() * 0.45f, (float) getHeight());
             if (b % labelEvery == 0)
             {
-                g.setColour (juce::Colours::white.withAlpha (0.75f));
+                g.setColour (Theme::text.withAlpha (0.75f));
                 g.drawText (juce::String (b + 1), x + 3, 1, 50, 14, juce::Justification::left);
             }
 
             if (beat * pps >= 14.0)
                 for (int k = 1; k < 4; ++k)
                 {
-                    g.setColour (juce::Colours::white.withAlpha (0.2f));
+                    g.setColour (Theme::text.withAlpha (0.2f));
                     g.drawVerticalLine (x + (int) (k * beat * pps), (float) getHeight() * 0.7f, (float) getHeight());
                 }
         }
-        g.setColour (juce::Colour (0xff0b0c0e));
+        g.setColour (Theme::border);
         g.drawHorizontalLine (getHeight() - 1, 0.0f, (float) getWidth());
     }
 
@@ -283,7 +287,7 @@ public:
         const double pps = main.getPixelsPerSecond();
         const auto area = g.getClipBounds();
 
-        g.fillAll (juce::Colour (0xff15171b));
+        g.fillAll (Theme::laneBg);
 
         // grid
         const double bar = main.barSeconds(), beat = main.beatSeconds();
@@ -292,11 +296,11 @@ public:
         {
             const int x = (int) (b * bar * pps);
             if (x > area.getRight()) break;
-            g.setColour (juce::Colours::white.withAlpha (0.10f));
+            g.setColour (Theme::text.withAlpha (0.10f));
             g.drawVerticalLine (x, 0.0f, (float) getHeight());
             if (beat * pps >= 14.0)
             {
-                g.setColour (juce::Colours::white.withAlpha (0.04f));
+                g.setColour (Theme::text.withAlpha (0.04f));
                 for (int k = 1; k < 4; ++k)
                     g.drawVerticalLine (x + (int) (k * beat * pps), 0.0f, (float) getHeight());
             }
@@ -314,13 +318,13 @@ public:
                 continue;
 
             const bool sel = main.isSelected (&track, c.id);
-            g.setColour (sel ? juce::Colour (0xff3f7fb5) : juce::Colour (0xff2f5d8a));
+            g.setColour (sel ? Theme::audioClipSel : Theme::audioClip);
             g.fillRoundedRectangle (r.toFloat(), 4.0f);
 
             const auto& peaks = peaksFor (c, pps);
             const float mid = (float) r.getCentreY();
             const float half = (float) r.getHeight() * 0.5f - 3.0f;
-            g.setColour (juce::Colour (0xffbfe0ff));
+            g.setColour (Theme::audioWave);
             for (int x = juce::jmax (r.getX(), area.getX()); x < juce::jmin (r.getRight(), area.getRight()); ++x)
             {
                 const int idx = x - r.getX();
@@ -328,12 +332,12 @@ public:
                     g.drawVerticalLine (x, mid - peaks[(size_t) idx] * half, mid + peaks[(size_t) idx] * half);
             }
 
-            g.setColour (sel ? juce::Colours::white : juce::Colours::white.withAlpha (0.35f));
+            g.setColour (sel ? Theme::text : Theme::text.withAlpha (0.35f));
             g.drawRoundedRectangle (r.toFloat(), 4.0f, sel ? 2.0f : 1.0f);
 
             g.saveState();
             g.reduceClipRegion (r.reduced (2));
-            g.setColour (juce::Colours::white.withAlpha (0.85f));
+            g.setColour (Theme::text.withAlpha (0.85f));
             g.setFont (11.0f);
             g.drawText (c.sourceFile.getFileNameWithoutExtension(), r.getX() + 5, r.getY() + 2, 400, 13, juce::Justification::left);
             g.restoreState();
@@ -347,7 +351,8 @@ public:
                 continue;
 
             const bool sel = main.isSelected (&track, m.id);
-            g.setColour (sel ? juce::Colour (0xff3fb57f) : juce::Colour (0xff2a7a52));
+            const bool drums = track.kit != nullptr;   // drum clips are yellow, synth/MIDI clips red
+            g.setColour (sel ? (drums ? Theme::drumClipSel : Theme::midiClipSel) : (drums ? Theme::drumClip : Theme::midiClip));
             g.fillRoundedRectangle (r.toFloat(), 4.0f);
 
             int lo = 127, hi = 0;
@@ -362,7 +367,7 @@ public:
 
             g.saveState();
             g.reduceClipRegion (r.reduced (1));
-            g.setColour (juce::Colour (0xffd8ffea));
+            g.setColour (Theme::midiNote);
             for (auto& n : m.notes)
             {
                 const float nx = (float) r.getX() + (float) (n.start * pps);
@@ -370,18 +375,18 @@ public:
                 const float ny = (float) r.getY() + 15.0f + (float) (hi - n.pitch) * rowPx;
                 g.fillRect (nx, ny, nw, juce::jmax (2.0f, rowPx - 1.0f));
             }
-            g.setColour (juce::Colours::white.withAlpha (0.85f));
+            g.setColour (Theme::text.withAlpha (0.85f));
             g.setFont (11.0f);
             g.drawText ("MIDI", r.getX() + 5, r.getY() + 2, 100, 13, juce::Justification::left);
             g.restoreState();
 
-            g.setColour (sel ? juce::Colours::white : juce::Colours::white.withAlpha (0.35f));
+            g.setColour (sel ? Theme::text : Theme::text.withAlpha (0.35f));
             g.drawRoundedRectangle (r.toFloat(), 4.0f, sel ? 2.0f : 1.0f);
         }
 
         paintAutomation (g, pps);
 
-        g.setColour (juce::Colour (0xff0b0c0e));
+        g.setColour (Theme::border);
         g.drawHorizontalLine (getHeight() - 1, 0.0f, (float) getWidth());
     }
 
@@ -584,8 +589,8 @@ private:
                 continue;
 
             const auto pts = engine.getAutomation (track, id);
-            const auto colour = id == "volume" ? juce::Colour (0xffe0922f) : id == "pan" ? juce::Colour (0xffb58cff)
-                                                                                        : juce::Colour (0xff4fc3c3);
+            const auto colour = id == "volume" ? Theme::orange : id == "pan" ? Theme::yellow
+                                                                                        : Theme::redBright;
             g.setColour (colour.withAlpha (full ? 1.0f : 0.5f));
 
             if (pts.empty())
@@ -614,7 +619,7 @@ private:
                 for (int i = 0; i < (int) pts.size(); ++i)
                 {
                     const float x = (float) (pts[(size_t) i].time * pps), y = valueToY (pts[(size_t) i].value, info);
-                    g.setColour (i == autoDrag ? juce::Colours::white : colour);
+                    g.setColour (i == autoDrag ? Theme::text : colour);
                     g.fillEllipse (x - 4.5f, y - 4.5f, 9.0f, 9.0f);
                     g.setColour (juce::Colours::black);
                     g.drawEllipse (x - 4.5f, y - 4.5f, 9.0f, 9.0f, 1.0f);
@@ -800,7 +805,7 @@ MainComponent::MainComponent()
     deviceManager.addMidiInputDeviceCallback ({}, &midiForwarder);   // all enabled MIDI inputs
     midiListConnection = juce::MidiDeviceListConnection::make ([this] { enableAllMidiInputs(); });   // hot-plugging
     statusLabel.setFont (juce::FontOptions (12.0f));
-    statusLabel.setColour (juce::Label::textColourId, juce::Colours::white.withAlpha (0.6f));
+    statusLabel.setColour (juce::Label::textColourId, Theme::text.withAlpha (0.6f));
     addAndMakeVisible (statusLabel);
 
     keysButton.setTooltip ("Play the armed MIDI track with the computer keyboard: A W S E D F T G Y H U J K O L P. "
@@ -820,7 +825,7 @@ MainComponent::MainComponent()
              &openButton, &saveButton, &saveAsButton, &exportButton, &undoButton, &redoButton, &zoomOutButton, &zoomInButton })
         addAndMakeVisible (b);
     loopButton.setClickingTogglesState (true);
-    loopButton.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xffe0922f));
+    loopButton.setColour (juce::TextButton::buttonOnColourId, Theme::orange);
     loopButton.setTooltip ("Loop playback (L). Right-drag on the ruler sets the loop; Shift+L loops the selected clip.");
     loopButton.setWantsKeyboardFocus (false);
     loopButton.onClick = [this] { toggleLoop(); grabKeyboardFocus(); };
@@ -865,6 +870,27 @@ MainComponent::MainComponent()
 
     timeLabel.setFont (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(), 24.0f, juce::Font::plain));
     timeLabel.setJustificationType (juce::Justification::centred);
+    timeLabel.setColour (juce::Label::textColourId, Theme::yellow);
+    timeLabel.setColour (juce::Label::backgroundColourId, Theme::laneBg);
+    timeLabel.setColour (juce::Label::outlineColourId, Theme::border);
+    timeLabel.setTooltip ("Playhead position (minutes:seconds)");
+
+    // hover hints for everything in the top bar
+    addButton.setTooltip ("Add an audio track from a file (you can also drag audio files into the window)");
+    addMidiButton.setTooltip ("Add a synth track: play notes, or draw them in the piano roll");
+    addDrumButton.setTooltip ("Add a drum track: click steps in a grid, or load your own samples per pad");
+    openButton.setTooltip ("Open a project (Ctrl+O)");
+    saveButton.setTooltip ("Save the project (Ctrl+S)");
+    saveAsButton.setTooltip ("Save the project under a new name");
+    exportButton.setTooltip ("Render the whole project to a WAV file");
+    undoButton.setTooltip ("Undo (Ctrl+Z)");
+    redoButton.setTooltip ("Redo (Ctrl+Y)");
+    metroButton.setTooltip ("Click track while playing");
+    snapButton.setTooltip ("Snap moves and notes to a 16th-note grid (hold Alt while dragging to ignore it)");
+    zoomInButton.setTooltip ("Zoom in (Ctrl + mouse wheel)");
+    zoomOutButton.setTooltip ("Zoom out (Ctrl + mouse wheel)");
+    bpmSlider.setTooltip ("Tempo in beats per minute (drag, or double-click to type)");
+    masterSlider.setTooltip ("Master volume");
 
     laneViewport.setViewedComponent (&laneHolder, false);
     laneViewport.setScrollBarsShown (true, true);
@@ -1004,6 +1030,17 @@ void MainComponent::showRoll (Track* t, int clipId)
     roll->showClip (t, clipId);
     if (! wasVisible || panelChanged)
         layoutContent();
+
+    // the panel takes space from the lanes: make sure the clip's own track stays in view
+    for (int i = 0; i < lanes.size(); ++i)
+        if (&lanes[i]->getTrack() == t)
+        {
+            auto pos = laneViewport.getViewPosition();
+            const int top = i * stripHeight, bottom = top + stripHeight, visible = laneViewport.getMaximumVisibleHeight();
+            if (top < pos.y)                   pos.y = top;
+            else if (bottom > pos.y + visible) pos.y = juce::jmax (0, bottom - visible);
+            laneViewport.setViewPosition (pos);
+        }
 }
 
 void MainComponent::hideRoll()
@@ -1423,20 +1460,24 @@ void MainComponent::layoutContent()
 
 void MainComponent::resized()
 {
-    auto top = getLocalBounds().removeFromTop (topBarHeight).reduced (8, 10);
+    // top bar, in groups: add tracks | time and tempo | project files | undo / redo | master volume
+    topSeparators.clear();
+    auto top = getLocalBounds().removeFromTop (topBarHeight - 3).reduced (10, 9);
+    auto separator = [&] { top.removeFromLeft (10); topSeparators.push_back (top.getX()); top.removeFromLeft (11); };
+
     addButton.setBounds (top.removeFromLeft (80));
     top.removeFromLeft (6);
     addMidiButton.setBounds (top.removeFromLeft (70));
     top.removeFromLeft (6);
     addDrumButton.setBounds (top.removeFromLeft (76));
-    top.removeFromLeft (12);
-    timeLabel.setBounds (top.removeFromLeft (160));
-    top.removeFromLeft (16);
+    separator();
+    timeLabel.setBounds (top.removeFromLeft (150));
+    top.removeFromLeft (14);
     bpmLabel.setBounds (top.removeFromLeft (36));
     bpmSlider.setBounds (top.removeFromLeft (70));
     top.removeFromLeft (10);
     metroButton.setBounds (top.removeFromLeft (110));
-    top.removeFromLeft (16);
+    separator();
     openButton.setBounds (top.removeFromLeft (56));
     top.removeFromLeft (4);
     saveButton.setBounds (top.removeFromLeft (56));
@@ -1444,7 +1485,7 @@ void MainComponent::resized()
     saveAsButton.setBounds (top.removeFromLeft (64));
     top.removeFromLeft (4);
     exportButton.setBounds (top.removeFromLeft (90));
-    top.removeFromLeft (16);
+    separator();
     undoButton.setBounds (top.removeFromLeft (50));
     top.removeFromLeft (4);
     redoButton.setBounds (top.removeFromLeft (50));
@@ -1479,17 +1520,33 @@ void MainComponent::resized()
 
 void MainComponent::paint (juce::Graphics& g)
 {
-    g.fillAll (juce::Colour (0xff1b1d22));
+    g.fillAll (Theme::background);
 
-    g.setColour (juce::Colour (0xff24272e));
+    // top bar with a red - orange - yellow strip along its lower edge
+    g.setColour (Theme::panel);
+    g.fillRect (0, 0, getWidth(), topBarHeight);
+    juce::ColourGradient strip (Theme::red, 0.0f, 0.0f, Theme::yellow, (float) getWidth(), 0.0f, false);
+    strip.addColour (0.5, Theme::orange);
+    g.setGradientFill (strip);
+    g.fillRect (0, topBarHeight - 3, getWidth(), 3);
+    g.setColour (Theme::border);
+    for (int x : topSeparators)
+        g.fillRect (x, 12, 1, topBarHeight - 3 - 24);
+
+    g.setColour (Theme::textDim);
+    g.setFont (juce::FontOptions (11.0f, juce::Font::bold));
+    g.drawText ("MASTER", masterSlider.getX() - 58, 10, 54, 14, juce::Justification::centredRight);
+
+    // bottom bar
+    g.setColour (Theme::panel);
     g.fillRect (0, getHeight() - bottomBarHeight, getWidth(), bottomBarHeight);
-    g.setColour (juce::Colour (0xff0b0c0e));
+    g.setColour (Theme::border);
     g.drawHorizontalLine (getHeight() - bottomBarHeight, 0.0f, (float) getWidth());
 
     auto m = juce::Rectangle<int> (getWidth() - 158, 8, 150, 4);
-    g.setColour (juce::Colours::black);
+    g.setColour (Theme::border);
     g.fillRect (m);
-    g.setColour (masterShown > 0.95f ? juce::Colours::red : juce::Colours::limegreen);
+    g.setColour (masterShown > 0.95f ? Theme::redBright : Theme::yellow);
     g.fillRect (m.withWidth ((int) (juce::jlimit (0.0f, 1.0f, masterShown) * (float) m.getWidth())));
 }
 
@@ -1503,7 +1560,7 @@ void MainComponent::paintOverChildren (juce::Graphics& g)
         const int x2 = juce::jmin (lanesArea.getRight(), lanesArea.getX() + (int) (engine.loopEnd * pixelsPerSecond) - getScrollX());
         if (x2 > x1)
         {
-            g.setColour (juce::Colour (0xffe0922f).withAlpha (0.07f));
+            g.setColour (Theme::orange.withAlpha (0.07f));
             g.fillRect (x1, lanesArea.getY(), x2 - x1, lanesArea.getHeight());
         }
     }
@@ -1511,8 +1568,50 @@ void MainComponent::paintOverChildren (juce::Graphics& g)
     const int x = laneViewport.getX() + (int) (engine.getPositionSeconds() * pixelsPerSecond) - getScrollX();
     if (x >= laneViewport.getX() && x < laneViewport.getRight())
     {
-        g.setColour (juce::Colours::orange);
-        g.drawVerticalLine (x, (float) ruler->getY(), (float) laneViewport.getBottom());
+        g.setColour (Theme::playhead);
+        g.fillRect (x - 1, ruler->getY(), 2, laneViewport.getBottom() - ruler->getY());
+        juce::Path head;   // small flag on the ruler so the playhead is easy to spot and grab
+        head.addTriangle ((float) x - 6.0f, (float) ruler->getY() + 1.0f, (float) x + 6.0f, (float) ruler->getY() + 1.0f,
+                          (float) x, (float) ruler->getY() + 11.0f);
+        g.fillPath (head);
+    }
+
+    if (engine.getNumTracks() == 0)   // empty project: say what to do
+    {
+        auto area = juce::Rectangle<int> (0, topBarHeight + rulerHeight, getWidth(), getHeight() - topBarHeight - rulerHeight - bottomBarHeight);
+        auto block = area.withSizeKeepingCentre (560, 230);
+        g.setColour (Theme::background.withAlpha (0.85f));
+        g.fillRoundedRectangle (block.toFloat().expanded (24.0f, 16.0f), 14.0f);
+
+        g.setColour (Theme::yellow);
+        g.setFont (juce::FontOptions (26.0f, juce::Font::bold));
+        g.drawText ("Start making music", block.removeFromTop (40), juce::Justification::centred);
+        g.setColour (Theme::text);
+        g.setFont (juce::FontOptions (15.0f));
+        g.drawText ("Drag audio files into this window, or add a track with the buttons at the top left:",
+                    block.removeFromTop (28), juce::Justification::centred);
+        block.removeFromTop (8);
+
+        struct Chip { const char* button; const char* what; juce::Colour colour; };
+        const Chip chips[] = { { "+ Track", "audio track - from a wav / mp3 / flac file", Theme::orange },
+                               { "+ MIDI",  "synth track - play or draw notes in the piano roll", Theme::redBright },
+                               { "+ Drums", "drum machine - click steps in a grid", Theme::yellow } };
+        for (auto& c : chips)
+        {
+            auto row = block.removeFromTop (26);
+            g.setColour (c.colour);
+            g.fillEllipse ((float) row.getX() + 40.0f, (float) row.getCentreY() - 5.0f, 10.0f, 10.0f);
+            g.setFont (juce::FontOptions (15.0f, juce::Font::bold));
+            g.drawText (c.button, row.withTrimmedLeft (60).withWidth (80), juce::Justification::centredLeft);
+            g.setColour (Theme::textDim);
+            g.setFont (juce::FontOptions (15.0f));
+            g.drawText (c.what, row.withTrimmedLeft (140), juce::Justification::centredLeft);
+        }
+        block.removeFromTop (10);
+        g.setColour (Theme::textFaint);
+        g.setFont (juce::FontOptions (13.0f));
+        g.drawText ("Space = play / pause    R = record    S = split    Ctrl+Z = undo    hover over a button for a hint",
+                    block.removeFromTop (22), juce::Justification::centred);
     }
 }
 

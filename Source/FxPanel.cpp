@@ -1,4 +1,5 @@
 #include "FxPanel.h"
+#include "Theme.h"
 
 namespace
 {
@@ -60,7 +61,7 @@ void FxPanel::addRow (Section& s, const juce::String& name, double lo, double hi
 {
     auto row = std::make_unique<Row>();
     row->label.setText (name, juce::dontSendNotification);
-    row->label.setColour (juce::Label::textColourId, juce::Colours::white.withAlpha (0.8f));
+    row->label.setColour (juce::Label::textColourId, Theme::text.withAlpha (0.8f));
     addAndMakeVisible (row->label);
 
     auto& slider = row->slider;
@@ -82,9 +83,9 @@ void FxPanel::addRow (Section& s, const juce::String& name, double lo, double hi
 
 void FxPanel::paint (juce::Graphics& g)
 {
-    g.fillAll (juce::Colour (0xff24272e));
+    g.fillAll (Theme::panel);
 
-    g.setColour (juce::Colour (0xff15171b));
+    g.setColour (Theme::laneBg);
     for (int i = 0; i < (int) sections.size(); ++i)
     {
         const auto b = getLocalBounds().reduced (gap / 2);

@@ -22,6 +22,9 @@ A small digital audio workstation for Windows, written in C++17 with [JUCE](http
 ## Running
 
 Download `MiniDAW-<version>-win64.zip` (see *Packaging*), unzip it and start `MiniDAW.exe`. No installation is needed.
+`MiniDAW.exe project.mdaw` (or "Open with" on a `.mdaw` file) opens that project right away.
+
+The interface uses a warm dark theme with red, orange and yellow accents; the colours live in `Source/Theme.h`. Track colours tell the types apart: orange = audio, red = MIDI synth, yellow = drums.
 
 ## Sequencer plugins (Stochas etc.) driving a synthesizer
 

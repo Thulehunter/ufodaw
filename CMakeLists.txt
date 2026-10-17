@@ -20,6 +20,7 @@ juce_add_gui_app(MiniDAW PRODUCT_NAME "MiniDAW")
 target_sources(MiniDAW PRIVATE
     Source/Main.cpp
     Source/Engine.cpp
+    Source/Theme.cpp
     Source/Synth.cpp
     Source/Fx.cpp
     Source/FxPanel.cpp

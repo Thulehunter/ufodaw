@@ -41,11 +41,11 @@ public:
                 continue;
 
             const bool black = isBlackKey (p);
-            g.setColour (p == held ? juce::Colour (0xff3fb57f) : black ? juce::Colour (0xff25272d) : juce::Colour (0xffe6e8ec));
+            g.setColour (p == held ? Theme::midiClipSel : black ? Theme::keyBlack : Theme::keyWhite);
             g.fillRect (r.withTrimmedBottom (1));
             if (p % 12 == 0)
             {
-                g.setColour (juce::Colour (0xff444a55));
+                g.setColour (Theme::textFaint);
                 g.drawText (noteName (p), r.withTrimmedLeft (getWidth() / 2), juce::Justification::centredRight);
             }
         }
@@ -129,7 +129,7 @@ public:
     void paint (juce::Graphics& g) override
     {
         const auto area = g.getClipBounds();
-        g.fillAll (juce::Colour (0xff1a1c21));
+        g.fillAll (Theme::gridBg);
         if (! load())
             return;
 
@@ -140,9 +140,9 @@ public:
             const juce::Rectangle<int> r (0, pitchToY (p), getWidth(), rowH);
             if (! r.intersects (area))
                 continue;
-            g.setColour (isBlackKey (p) ? juce::Colour (0xff16181c) : juce::Colour (0xff1f2228));
+            g.setColour (isBlackKey (p) ? Theme::rowDark : Theme::rowLight);
             g.fillRect (r);
-            g.setColour (p % 12 == 0 ? juce::Colour (0xff3a3f4a) : juce::Colour (0xff272a31));
+            g.setColour (p % 12 == 0 ? Theme::gridLineStrong : Theme::gridLine);
             g.drawHorizontalLine (r.getBottom() - 1, 0.0f, (float) getWidth());
         }
 
@@ -157,7 +157,7 @@ public:
             const bool isBar = index % 16 == 0, isBeat = index % 4 == 0;
             if (! isBar && ! isBeat && step * pps < 9.0) continue;
             if (! isBar && isBeat && main.beatSeconds() * pps < 9.0) continue;
-            g.setColour (juce::Colours::white.withAlpha (isBar ? 0.16f : isBeat ? 0.08f : 0.035f));
+            g.setColour (Theme::text.withAlpha (isBar ? 0.16f : isBeat ? 0.08f : 0.035f));
             g.drawVerticalLine (x, 0.0f, (float) getHeight());
         }
 
@@ -173,14 +173,14 @@ public:
             if (! r.intersects (area))
                 continue;
             const bool sel = i == selected;
-            g.setColour (sel ? juce::Colour (0xffa8f0c8) : juce::Colour (0xff3fb57f).withMultipliedBrightness (0.6f + 0.5f * clip.notes[(size_t) i].velocity));
+            g.setColour (sel ? Theme::noteSel : Theme::midiClipSel.withMultipliedBrightness (0.6f + 0.5f * clip.notes[(size_t) i].velocity));
             g.fillRect (r);
-            g.setColour (sel ? juce::Colours::white : juce::Colour (0xff0e1f17));
+            g.setColour (sel ? Theme::text : Theme::noteOutline);
             g.drawRect (r, 1);
         }
 
         const int px = timeToX (main.getEngine().getPositionSeconds());
-        g.setColour (juce::Colours::orange);
+        g.setColour (Theme::playhead);
         g.drawVerticalLine (px, 0.0f, (float) getHeight());
     }
 
@@ -361,11 +361,11 @@ public:
 
     void paint (juce::Graphics& g) override
     {
-        g.fillAll (juce::Colour (0xff16181c));
+        g.fillAll (Theme::rowDark);
         if (! load())
             return;
 
-        g.setColour (juce::Colours::white.withAlpha (0.06f));
+        g.setColour (Theme::text.withAlpha (0.06f));
         for (float f : { 0.25f, 0.5f, 0.75f })
             g.drawHorizontalLine ((int) valueToY (f), 0.0f, (float) getWidth());
 
@@ -375,7 +375,7 @@ public:
             const auto& n = clip.notes[(size_t) i];
             const int x = barX (n);
             const float top = valueToY (n.velocity);
-            g.setColour (i == selected ? juce::Colour (0xffa8f0c8) : juce::Colour (0xff3fb57f).withMultipliedBrightness (0.6f + 0.5f * n.velocity));
+            g.setColour (i == selected ? Theme::noteSel : Theme::midiClipSel.withMultipliedBrightness (0.6f + 0.5f * n.velocity));
             g.fillRect ((float) x - 2.0f, top, 5.0f, (float) getHeight() - top);
             g.fillEllipse ((float) x - 4.0f, top - 4.0f, 8.0f, 8.0f);
         }
@@ -574,21 +574,30 @@ void PianoRoll::repaintGrid()
 
 void PianoRoll::paint (juce::Graphics& g)
 {
-    g.fillAll (juce::Colour (0xff1b1d22));
-    g.setColour (juce::Colour (0xff24272e));
+    g.fillAll (Theme::background);
+    g.setColour (Theme::panel);
     g.fillRect (0, 0, getWidth(), toolbarHeight);
-    g.setColour (juce::Colour (0xff0b0c0e));
+    g.setColour (Theme::border);
     g.drawHorizontalLine (0, 0.0f, (float) getWidth());
     g.drawHorizontalLine (toolbarHeight - 1, 0.0f, (float) getWidth());
 
+    // how-to in the empty space to the left of the keys
+    g.setColour (Theme::textDim);
+    g.setFont (juce::FontOptions (13.0f));
+    g.drawFittedText ("Click an empty spot to add a note, then drag right to make it longer.\n\n"
+                      "Drag a note to move it, drag its right edge to resize, right-click to delete.\n\n"
+                      "Alt = free (no snapping).   Ctrl + mouse wheel = zoom.",
+                      juce::Rectangle<int> (14, toolbarHeight + 14, MainComponent::controlsWidth - keyWidth - 24, 190),
+                      juce::Justification::topLeft, 12);
+
     // label for the velocity lane at the bottom
     const juce::Rectangle<int> labelArea (0, getHeight() - velocityHeight, MainComponent::controlsWidth, velocityHeight);
-    g.setColour (juce::Colour (0xff24272e));
+    g.setColour (Theme::panel);
     g.fillRect (labelArea);
-    g.setColour (juce::Colours::white.withAlpha (0.6f));
+    g.setColour (Theme::text.withAlpha (0.6f));
     g.setFont (12.0f);
     g.drawText ("Velocity (drag the bars)", labelArea.reduced (12, 0), juce::Justification::centredLeft);
-    g.setColour (juce::Colour (0xff0b0c0e));
+    g.setColour (Theme::border);
     g.drawHorizontalLine (getHeight() - velocityHeight, 0.0f, (float) getWidth());
 }
 
