@@ -2856,9 +2856,9 @@ void MainComponent::openSampler (Track& t)
     if (t.sampler == nullptr)
         return;
     samplerWindow.reset();   // one at a time
-    auto* tr = &t;
+    const TrackRef tr (&t);
     juce::Component::SafePointer<MainComponent> safe (this);
-    samplerWindowTrack = &t;
+    samplerRef = tr;
     samplerWindow = std::make_unique<SamplerWindow> ("Sampler - " + t.name, *t.sampler,
         [safe, tr] (const juce::File& f) { return safe != nullptr && safe->engine.loadSamplerSample (*tr, f); },
         [safe] { if (safe != nullptr) ++safe->editCounter; },   // a change counts as an edit of the project (autosave, unsaved changes)
@@ -2885,9 +2885,9 @@ void MainComponent::openPadSampler (Track& t, int pad)
     if (t.kit == nullptr || ! juce::isPositiveAndBelow (pad, DrumKit::numPads) || ! t.kit->hasSample (pad))
         return;
     padSamplerWindow.reset();
-    auto* tr = &t;
+    const TrackRef tr (&t);
     juce::Component::SafePointer<MainComponent> safe (this);
-    padWindowTrack = &t;
+    padRef = tr;
     padWindowPad = pad;
     padSamplerWindow = std::make_unique<SamplerWindow> (t.name + " - " + t.kit->getPad (pad).name, t.kit->getPad (pad).sampler,
         [safe, tr, pad] (const juce::File& f) { return safe != nullptr && safe->engine.loadDrumSample (*tr, pad, f); },
@@ -2923,7 +2923,7 @@ void MainComponent::openDrumRack (Track& t, int selectPad)
     }
     padSamplerWindow.reset();
     drumRackWindow.reset();
-    auto* tr = &t;
+    const TrackRef tr (&t);
     juce::Component::SafePointer<MainComponent> safe (this);
     DrumRackPanel::Hooks hooks;
     hooks.preview = [safe, tr] (int note, bool down)
@@ -2936,7 +2936,7 @@ void MainComponent::openDrumRack (Track& t, int selectPad)
     hooks.editSampler = [safe, tr] (int pad) { if (safe != nullptr) safe->openPadSampler (*tr, pad); };
     hooks.beginEdit = [safe] { if (safe != nullptr) safe->beginEdit(); };
     hooks.changed = [safe] { if (safe != nullptr) { ++safe->editCounter; if (safe->drumRoll != nullptr) safe->drumRoll->repaint(); } };
-    rackWindowTrack = &t;
+    rackRef = tr;
     drumRackWindow = std::make_unique<DrumRackWindow> (t.name + " - drum rack", *t.kit, std::move (hooks),
         [safe] { juce::MessageManager::callAsync ([safe] { if (safe != nullptr) { safe->padSamplerWindow.reset(); safe->drumRackWindow.reset(); } }); });
     drumRackWindow->onKey = [safe] (const juce::KeyPress& k) { return safe != nullptr && safe->handleUndoKey (k); };
@@ -3504,18 +3504,14 @@ bool MainComponent::handleUndoKey (const juce::KeyPress& k)
 
 void MainComponent::restoreSnapshot (const ProjectState& state)
 {
-    // The tool windows point at tracks that are replaced: they are closed, and opened again (same place) once the project is back.
-    struct Reopen { int trackIndex = -1, pad = -1; juce::Point<int> pos; };
-    Reopen reopenSampler, reopenPad, reopenRack;
-    if (samplerWindow != nullptr)
-        reopenSampler = { engine.indexOfTrack (samplerWindowTrack), -1, samplerWindow->getPosition() };
-    if (padSamplerWindow != nullptr)
-        reopenPad = { engine.indexOfTrack (padWindowTrack), padWindowPad, padSamplerWindow->getPosition() };
-    if (drumRackWindow != nullptr)
-        reopenRack = { engine.indexOfTrack (rackWindowTrack), drumRackWindow->getPanel().getSelected(), drumRackWindow->getPosition() };
-    samplerWindow.reset();
-    padSamplerWindow.reset();
-    drumRackWindow.reset();
+    // The tool windows stay open when the sampler / drum rack they edit still exists after the undo (it is the same object, with the
+    // old settings put back): they are pointed at the rebuilt track and refreshed. Otherwise they are closed.
+    const int idxSampler = samplerWindow != nullptr ? engine.indexOfTrack (samplerRef) : -1;
+    const int idxPad = padSamplerWindow != nullptr ? engine.indexOfTrack (padRef) : -1;
+    const int idxRack = drumRackWindow != nullptr ? engine.indexOfTrack (rackRef) : -1;
+    const Sampler* samplerObject = idxSampler >= 0 ? samplerRef->sampler.get() : nullptr;
+    const DrumKit* padKit = idxPad >= 0 ? padRef->kit.get() : nullptr;
+    const DrumKit* rackKit = idxRack >= 0 ? rackRef->kit.get() : nullptr;
     // Remember what was selected so it can be selected again (and the piano roll reopened).
     const int selTrackIndex = selTrack != nullptr ? engine.indexOfTrack (selTrack) : -1;
     const int selClipId = selClip;
@@ -3549,25 +3545,45 @@ void MainComponent::restoreSnapshot (const ProjectState& state)
     updateArmedTrack();   // the old Track pointer is gone
     clipsChanged();
 
-    if (auto* t = engine.getTrack (reopenRack.trackIndex); t != nullptr && t->kit != nullptr)
+    if (samplerWindow != nullptr)
     {
-        openDrumRack (*t, reopenRack.pad);
-        if (drumRackWindow != nullptr)
-            drumRackWindow->setTopLeftPosition (reopenRack.pos);
+        auto* nt = engine.getTrack (idxSampler);
+        if (nt != nullptr && nt->sampler.get() == samplerObject)
+        {
+            *samplerRef.p = nt;
+            samplerWindow->getPanel().refresh();
+        }
+        else
+            samplerWindow.reset();
     }
-    if (auto* t = engine.getTrack (reopenPad.trackIndex); t != nullptr && t->kit != nullptr)
+    if (padSamplerWindow != nullptr)
     {
-        openPadSampler (*t, reopenPad.pad);
-        if (padSamplerWindow != nullptr)
-            padSamplerWindow->setTopLeftPosition (reopenPad.pos);
+        auto* nt = engine.getTrack (idxPad);
+        if (nt != nullptr && nt->kit.get() == padKit)
+        {
+            *padRef.p = nt;
+            padSamplerWindow->getPanel().refresh();
+        }
+        else
+            padSamplerWindow.reset();
     }
-    if (auto* t = engine.getTrack (reopenSampler.trackIndex); t != nullptr && t->sampler != nullptr)
+    if (drumRackWindow != nullptr)
     {
-        openSampler (*t);
-        if (samplerWindow != nullptr)
-            samplerWindow->setTopLeftPosition (reopenSampler.pos);
+        auto* nt = engine.getTrack (idxRack);
+        if (nt != nullptr && nt->kit.get() == rackKit)
+        {
+            *rackRef.p = nt;
+            drumRackWindow->getPanel().refreshControls();
+            drumRackWindow->getPanel().repaint();
+        }
+        else
+        {
+            padSamplerWindow.reset();
+            drumRackWindow.reset();
+        }
     }
 }
+
 
 //==============================================================================
 std::unique_ptr<TrackHeader> MainComponent::makeHeader (Track& t, bool master)
