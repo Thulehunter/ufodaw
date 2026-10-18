@@ -257,6 +257,7 @@ struct Track
     std::vector<std::unique_ptr<ParamAutomation>> autoLanes;
     std::atomic<float> effGain { 0.8f }, effPan { 0.0f }; // what the mixer last used (differs from gain/pan when automated)
     juce::String autoEditId;                              // UI only: id of the envelope the lane is editing ("" = none)
+    bool autoCompView = false;                            // UI only: the lane shows every take in its own row (swipe to comp)
 
     // Buses and sends. A bus track has no clips of its own: it mixes what other tracks send or route to it, runs that through its
     // own effects, inserts, fader and pan, and plays it into the master (a group channel / effect return).
@@ -428,6 +429,7 @@ public:
     void automationRecordTick();   // message thread, about 30 times a second
     int recordedTakeCounter = 0;      // grows with every take that riding creates (the program counts it as an edit)
     bool anyAutomationArmed() const { return ! autoRecs.empty(); }
+    std::function<void()> beforeRecordedTake;   // called just before a ride becomes a take (the program takes its undo snapshot there)
     void finishAutomationRecording();   // closes the takes in progress (playback stopped)
     AutoData getAutomationData (const Track&, const juce::String& id) const;
     void setAutomationData (Track&, const juce::String& id, AutoData data);   // flattens into the envelope

@@ -3485,6 +3485,8 @@ void Engine::finishAutoRec (AutoRec& r)
         double end = juce::jmax (r.lastPos, r.pts.back().time);
         if (end - start < 0.02)
             end = start + 0.02;
+        if (beforeRecordedTake)
+            beforeRecordedTake();
         addAutomationTake (*r.track, r.id, start, end, std::move (thin));
         ++recordedTakeCounter;
     }

@@ -606,7 +606,7 @@ private:
 
 //==============================================================================
 // One track's timeline row: draws and edits its clips.
-class TrackLane : public juce::Component, public juce::FileDragAndDropTarget
+class TrackLane : public juce::Component, public juce::FileDragAndDropTarget, public juce::SettableTooltipClient
 {
 public:
     TrackLane (MainComponent& m, Track& t) : main (m), track (t) {}
@@ -954,6 +954,25 @@ public:
         main.setPlayhead (t);
     }
 
+    // the right edge of a MIDI / drum clip: the pointer says it can be dragged, the tooltip says what the modifiers do
+    void mouseMove (const juce::MouseEvent& e) override
+    {
+        bool edge = false;
+        if (track.autoEditId.isEmpty())
+        {
+            const double pps = main.getPixelsPerSecond();
+            for (auto& h : hits())
+            {
+                const auto r = rectFor (h.start, h.length, pps);
+                if (h.midi && r.getWidth() > 16 && r.contains (e.getPosition()) && e.x >= r.getRight() - 6)
+                    edge = true;
+            }
+        }
+        setTooltip (edge ? "Drag the edge: a longer clip repeats the pattern, a shorter one cuts it off.  Shift+drag: stretch the pattern (half as long = twice as fast).  Alt: no snapping."
+                         : juce::String());
+        setMouseCursor (edge ? juce::MouseCursor::LeftRightResizeCursor : juce::MouseCursor::NormalCursor);
+    }
+
     void mouseDoubleClick (const juce::MouseEvent& e) override
     {
         if (track.type != Track::Type::Midi || track.autoEditId.isNotEmpty())
@@ -1155,6 +1174,7 @@ public:
         dragId = -1;
         autoDrag = -1;
         rangeDragging = false;
+        compMouseUp();
     }
 
     void mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& w) override
@@ -1239,7 +1259,10 @@ private:
             if (full)
             {
                 const auto data = engine.getAutomationData (track, id);
-                drawTakes (g, info, pps, data);
+                if (track.autoCompView)
+                    paintCompView (g, info, pps, data, pts);
+                else
+                    drawTakes (g, info, pps, data);
                 if (rangeA >= 0.0 && std::abs (rangeB - rangeA) > 0.0)
                 {
                     g.setColour (Theme::text.withAlpha (0.18f));
@@ -1256,6 +1279,8 @@ private:
                                 22, getHeight() - 22, 200, 14, juce::Justification::left);
                 }
             }
+            if (full && track.autoCompView)
+                continue;   // (the comp view draws the curves itself)
             const auto colour = id == "volume" ? Theme::orange : id == "pan" ? Theme::yellow
                                                                                         : Theme::redBright;
             g.setColour (colour.withAlpha (full ? 1.0f : 0.5f));
@@ -1293,6 +1318,153 @@ private:
                 }
             }
         }
+    }
+
+    // ---- comp view: every take in a row of its own; swipe across a row to play that take there
+
+    juce::Rectangle<int> compRowRect (int row, int numTakes) const
+    {
+        const int resultH = 34;
+        const int rowH = numTakes > 0 ? juce::jmin (30, (getHeight() - resultH - 6) / numTakes) : 0;
+        if (row < 0)
+            return { 0, 3, getWidth(), resultH - 3 };
+        return { 0, resultH + 2 + row * rowH, getWidth(), rowH };
+    }
+
+    int compRowAt (int y, int numTakes) const
+    {
+        for (int i = 0; i < numTakes; ++i)
+            if (compRowRect (i, numTakes).contains (juce::Point<int> (1, y)))
+                return i;
+        return -2;   // not on a take row
+    }
+
+    static float valueToYInRow (float v, const AutoInfo& info, const juce::Rectangle<int>& r)
+    {
+        const float span = juce::jmax (1.0e-9f, info.hi - info.lo);
+        return (float) r.getY() + 3.0f + (1.0f - (v - info.lo) / span) * (float) (r.getHeight() - 6);
+    }
+
+    void paintCompView (juce::Graphics& g, const AutoInfo& info, double pps, const AutoData& data, const std::vector<AutoPoint>& result)
+    {
+        const int n = (int) data.takes.size();
+
+        // the result (what plays): the flattened envelope, with a strip in each take's colour above where that take plays
+        auto resultRow = compRowRect (-1, n);
+        g.setColour (Theme::background.withAlpha (0.55f));
+        g.fillRect (resultRow);
+        for (auto& seg : data.comp)
+        {
+            int idx = 0, i = 0;
+            for (auto& tk : data.takes) { if (tk.id == seg.takeId) idx = i; ++i; }
+            g.setColour (takeColour (idx).withAlpha (0.8f));
+            g.fillRect (juce::Rectangle<float> ((float) (seg.start * pps), (float) resultRow.getY(), (float) ((seg.end - seg.start) * pps), 3.0f));
+        }
+        {
+            juce::Path p;
+            bool first = true;
+            for (auto& pt : result)
+            {
+                const float x = (float) (pt.time * pps), y = valueToYInRow (pt.value, info, resultRow);
+                if (first) { p.startNewSubPath (x, y); first = false; } else p.lineTo (x, y);
+            }
+            if (! result.empty())
+                p.lineTo ((float) getWidth(), valueToYInRow (result.back().value, info, resultRow));
+            g.setColour (Theme::orange);
+            g.strokePath (p, juce::PathStrokeType (2.0f));
+            g.setFont (11.0f);
+            g.setColour (Theme::text.withAlpha (0.85f));
+            g.drawText ("Result", 6, resultRow.getY() + 4, 80, 14, juce::Justification::left);
+        }
+
+        // one row per take
+        int i = 0;
+        for (auto& tk : data.takes)
+        {
+            const auto row = compRowRect (i, n);
+            const auto colour = takeColour (i);
+            g.setColour (Theme::background.withAlpha (i % 2 == 0 ? 0.35f : 0.2f));
+            g.fillRect (row);
+
+            for (auto& seg : data.comp)   // where this take plays now: a bright band
+                if (seg.takeId == tk.id)
+                {
+                    g.setColour (colour.withAlpha (0.32f));
+                    g.fillRect (juce::Rectangle<float> ((float) (seg.start * pps), (float) row.getY(), (float) ((seg.end - seg.start) * pps), (float) row.getHeight()));
+                }
+
+            juce::Path p;
+            bool first = true;
+            for (auto& pt : tk.points)
+            {
+                const float x = (float) (pt.time * pps), y = valueToYInRow (pt.value, info, row);
+                if (first) { p.startNewSubPath (x, y); first = false; } else p.lineTo (x, y);
+            }
+            g.setColour (colour.withAlpha (0.9f));
+            g.strokePath (p, juce::PathStrokeType (1.5f));
+
+            g.setColour (colour);
+            g.setFont (juce::FontOptions (11.0f, juce::Font::bold));
+            g.drawText (tk.name, 6, row.getY() + 1, 90, 13, juce::Justification::left);
+            g.setColour (Theme::gridLineStrong);
+            g.drawHorizontalLine (row.getBottom() - 1, 0.0f, (float) getWidth());
+
+            if (compDragging && compRow == i && compA != compB)   // the swipe in progress
+            {
+                g.setColour (Theme::text.withAlpha (0.3f));
+                g.fillRect (juce::Rectangle<float> ((float) (juce::jmin (compA, compB) * pps), (float) row.getY(),
+                                                    (float) (std::abs (compB - compA) * pps), (float) row.getHeight()));
+            }
+            ++i;
+        }
+
+        if (data.takes.empty())
+        {
+            g.setColour (Theme::textDim);
+            g.setFont (12.0f);
+            g.drawText ("No takes yet: arm Touch / Latch / Write in the A menu and ride the control. Each pass gets a row here.",
+                        8, 44, getWidth() - 16, 16, juce::Justification::left);
+        }
+    }
+
+    void compMouseDown (const juce::MouseEvent& e)
+    {
+        if (e.mods.isPopupMenu())
+        {
+            showTakeMenu (e);
+            return;
+        }
+        const auto data = main.getEngine().getAutomationData (track, track.autoEditId);
+        compRow = compRowAt (e.y, (int) data.takes.size());
+        if (compRow < 0)
+            return;
+        compDragging = true;
+        compA = compB = autoTime (e);
+        repaint();
+    }
+
+    void compMouseDrag (const juce::MouseEvent& e)
+    {
+        if (! compDragging)
+            return;
+        compB = autoTime (e);
+        repaint();
+    }
+
+    void compMouseUp()
+    {
+        if (! compDragging)
+            return;
+        compDragging = false;
+        const double a = juce::jmin (compA, compB), b = juce::jmax (compA, compB);
+        const auto data = main.getEngine().getAutomationData (track, track.autoEditId);
+        if (b - a > 0.01 && compRow >= 0 && compRow < (int) data.takes.size())
+        {
+            main.beginEdit();
+            main.getEngine().useAutomationTake (track, track.autoEditId, data.takes[(size_t) compRow].id, a, b);
+            main.clipsChanged();
+        }
+        repaint();
     }
 
     // ---- takes and comping (an automation lane that is being edited)
@@ -1389,6 +1561,7 @@ private:
         }
 
         menu.addSeparator();
+        add (menu, "Comp view (a row per take)", true, track_->autoCompView, [track_] { track_->autoCompView = ! track_->autoCompView; });
         juce::PopupMenu xf;
         for (double ms : { 0.0, 10.0, 30.0, 100.0, 300.0 })
             add (xf, ms == 0.0 ? juce::String ("Hard cut") : juce::String ((int) ms) + " ms", true, std::abs (data.crossfade * 1000.0 - ms) < 0.5, [this, track_, id, ms]
@@ -1438,6 +1611,11 @@ private:
 
     void autoMouseDown (const juce::MouseEvent& e)
     {
+        if (track.autoCompView)
+        {
+            compMouseDown (e);
+            return;
+        }
         auto& engine = main.getEngine();
         const auto param = track.autoEditId;
         const auto info = editInfo();
@@ -1492,6 +1670,11 @@ private:
 
     void autoMouseDrag (const juce::MouseEvent& e)
     {
+        if (track.autoCompView)
+        {
+            compMouseDrag (e);
+            return;
+        }
         if (rangeDragging)
         {
             rangeB = autoTime (e);
@@ -1597,6 +1780,9 @@ private:
     bool armedShown = false;
     double rangeA = -1.0, rangeB = -1.0;   // the time range picked with Shift+drag in an automation lane (for comping)
     bool rangeDragging = false;
+    int compRow = -2;
+    double compA = 0.0, compB = 0.0;
+    bool compDragging = false;
 
     int dragId = -1;
     Track* dragTrack = nullptr;   // the track the dragged clip currently lives on
@@ -1770,6 +1956,7 @@ MainComponent::MainComponent (int slot) : tabSlot (slot)
     addChildComponent (*drumRoll);
 
     setWantsKeyboardFocus (true);
+    engine.beforeRecordedTake = [this] { beginEdit(); };   // a recorded ride can be undone
 
     // Start with the audio setup of the last run (driver, device, rate, buffer, channels); fall back to the default device.
     {
@@ -2728,6 +2915,7 @@ void MainComponent::openAutomation (Track& t, juce::Component& anchor)
         rec.addSeparator();
         add (rec, "Off", armed, false, [this, track, editId] { engine.disarmAutomation (*track, editId); });
         menu.addSubMenu (armed ? "Record rides: armed" : "Record rides (takes)", rec);
+        add (menu, "Comp view (a row per take)", true, t.autoCompView, [track] { track->autoCompView = ! track->autoCompView; });
     }
 
     if (t.autoEditId.isNotEmpty())
@@ -5657,6 +5845,7 @@ void MainComponent::exportDialog()
 void MainComponent::suspendAudio()
 {
     finishRecording();
+    engine.finishAutomationRecording();   // a ride in progress ends as a take
     engine.silenceEverything();
     stopTimer();
     if (isDirty())
