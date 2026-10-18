@@ -11,6 +11,7 @@
 
 class SamplerWindow;   // (SamplerPanel.h)
 class DrumRackWindow;  // (DrumRackPanel.h)
+class MixerWindow;     // (MixerPanel.h)
 
 // Settings shared by the track headers and the lanes
 namespace UiSettings
@@ -257,6 +258,8 @@ private:
     void openSampler (Track&);                               // the sampler's window: sample, markers, mode, envelope, filter
     void sampleClip (Track&, int clipId);                    // an audio clip's audio becomes the sample of a new sampler track
     void startSamplerStretch (std::shared_ptr<Sampler>, double ratio, std::function<void (bool)> done);   // in the background, with a progress window
+    std::unique_ptr<MixerWindow> mixerWindow;
+    void openMixer();                                      // channel strips of every track and the master
     std::unique_ptr<SamplerWindow> samplerWindow;
     // A track as the tool windows know it: after an undo the tracks are rebuilt, and the windows that stay open are pointed at the new ones.
     struct TrackRef
@@ -467,6 +470,7 @@ private:
                railAdd { RailButton::Icon::Add, "Add a track", true },
                railPlugins { RailButton::Icon::Plugins, "Plugins: scan and manage VST3 plugins" },
                railTuner { RailButton::Icon::Tuner, "Tuner" },
+               railMixer { RailButton::Icon::Mixer, "Mixer: faders, pan, mute, solo and meters of every track" },
                railAudio { RailButton::Icon::Audio, "Audio and MIDI settings" };
     juce::TextButton openButton { "Open" }, saveButton { "Save" }, saveAsButton { "Save As" }, exportButton { "Export WAV" },
                      exportStemsButton { "Export stems" };

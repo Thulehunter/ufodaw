@@ -7,7 +7,7 @@
 class RailButton : public juce::Button
 {
 public:
-    enum class Icon { Menu, Add, Plugins, Tuner, Audio };
+    enum class Icon { Menu, Add, Plugins, Tuner, Audio, Mixer };
 
     RailButton (Icon i, const juce::String& tip, bool accentFill = false) : juce::Button (tip), icon (i), accent (accentFill)
     {
@@ -49,6 +49,14 @@ public:
             case Icon::Tuner:     // a gauge with a needle
                 p.addArc (c.x - s - 1.0f, c.y - s + 1.0f, 2.0f * s + 2.0f, 2.0f * s + 2.0f, -1.9f, 1.9f, true);
                 p.startNewSubPath (c.x, c.y + 2.0f);  p.lineTo (c.x + 4.0f, c.y - 5.0f);
+                break;
+            case Icon::Mixer:     // level bars of different height
+                for (int i = -1; i <= 1; ++i)
+                {
+                    const float x = c.x + (float) i * 7.0f, h = i == 0 ? 15.0f : i < 0 ? 9.0f : 12.0f;
+                    p.startNewSubPath (x, c.y + 8.0f);
+                    p.lineTo (x, c.y + 8.0f - h);
+                }
                 break;
             case Icon::Audio:     // sliders
                 for (int i = -1; i <= 1; ++i)

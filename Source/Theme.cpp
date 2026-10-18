@@ -101,6 +101,24 @@ void WarmLookAndFeel::drawToggleButton (juce::Graphics& g, juce::ToggleButton& b
 void WarmLookAndFeel::drawLinearSlider (juce::Graphics& g, int x, int y, int width, int height, float sliderPos,
                                         float minSliderPos, float maxSliderPos, juce::Slider::SliderStyle style, juce::Slider& slider)
 {
+    if (style == juce::Slider::LinearVertical)   // a mixer fader: a groove with the level filled from the bottom, and a wide cap
+    {
+        const float cx = (float) x + (float) width * 0.5f;
+        g.setColour (Theme::border);
+        g.fillRoundedRectangle (cx - 3.0f, (float) y, 6.0f, (float) height, 3.0f);
+        g.setGradientFill (juce::ColourGradient (Theme::yellow, cx, (float) y, Theme::red, cx, (float) (y + height), false));
+        g.fillRoundedRectangle (cx - 3.0f, sliderPos, 6.0f, juce::jmax (0.0f, (float) (y + height) - sliderPos), 3.0f);
+        const float capW = slider.isMouseOverOrDragging() ? 26.0f : 24.0f;
+        const juce::Rectangle<float> cap (cx - capW * 0.5f, sliderPos - 7.0f, capW, 14.0f);
+        g.setColour (Theme::background);
+        g.fillRoundedRectangle (cap.expanded (1.5f), 5.0f);
+        g.setColour (Theme::yellow);
+        g.fillRoundedRectangle (cap, 4.0f);
+        g.setColour (Theme::background.withAlpha (0.55f));
+        g.fillRect (cap.getX() + 4.0f, cap.getCentreY() - 0.5f, cap.getWidth() - 8.0f, 1.0f);
+        return;
+    }
+
     if (style != juce::Slider::LinearHorizontal || ! slider.isEnabled())
     {
         if (style == juce::Slider::LinearHorizontal)   // disabled (e.g. automated) horizontal slider: dimmed track only

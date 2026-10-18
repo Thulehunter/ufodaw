@@ -80,18 +80,53 @@ public:
         for (auto* b : { &loadButton, &resetButton, &editButton })
             addAndMakeVisible (*b);
 
-        hint.setText ("Click a pad to hear it. Drop an audio file on a pad to load it. Each pad is a small Simpler: Edit sampler... for start, "
+        hint.setText ("Click a pad, or play the keys Z X C V / A S D F / Q W E R / 1 2 3 4 (like the pads). Drop an audio file on a pad to load it. "
+                      "Each pad is a small Simpler: Edit sampler... for start, "
                       "end, pitch, envelope and filter.", juce::dontSendNotification);
         hint.setFont (juce::FontOptions (12.0f));
         hint.setColour (juce::Label::textColourId, Theme::textFaint);
         addAndMakeVisible (hint);
 
         refreshControls();
+        setWantsKeyboardFocus (true);
         setSize (520, 560);
         startTimerHz (15);   // lights the pads that are playing
     }
 
     ~DrumRackPanel() override { stopTimer(); }
+
+    // The pads on the computer keyboard, laid out like the grid (the bottom row is pads 1-4): Z X C V / A S D F / Q W E R / 1 2 3 4
+    static constexpr int padKeys[16] = { 'Z', 'X', 'C', 'V', 'A', 'S', 'D', 'F', 'Q', 'W', 'E', 'R', '1', '2', '3', '4' };
+
+    bool keyPressed (const juce::KeyPress& k) override
+    {
+        if (k.getModifiers().isAnyModifierKeyDown())
+            return false;   // (Ctrl+Z and friends belong to the window)
+        for (int code : padKeys)
+            if (k.getKeyCode() == code)
+                return true;   // played in keyStateChanged()
+        return false;
+    }
+
+    bool keyStateChanged (bool) override
+    {
+        const bool modifiers = juce::ModifierKeys::currentModifiers.isCtrlDown() || juce::ModifierKeys::currentModifiers.isAltDown()
+                               || juce::ModifierKeys::currentModifiers.isCommandDown();
+        bool used = false;
+        for (int pad = 0; pad < DrumKit::numPads; ++pad)
+        {
+            const bool down = ! modifiers && juce::KeyPress::isKeyCurrentlyDown (padKeys[pad]);
+            if (down != keyDown[(size_t) pad])
+            {
+                keyDown[(size_t) pad] = down;
+                if (hooks.preview)
+                    hooks.preview (kit.getPad (pad).note, down);
+                repaint();
+                used = true;
+            }
+        }
+        return used;
+    }
 
     void select (int pad) { selected = juce::jlimit (0, DrumKit::numPads - 1, pad); refreshControls(); repaint(); }
     int getSelected() const { return selected; }
@@ -125,7 +160,7 @@ public:
             if (p.mute.load())
                 colour = colour.withSaturation (0.1f).withBrightness (0.45f);
 
-            g.setColour (has ? colour.withAlpha (pad == pressed ? 0.95f : 0.38f) : Theme::laneBg);
+            g.setColour (has ? colour.withAlpha (pad == pressed || keyDown[(size_t) pad] ? 0.95f : 0.38f) : Theme::laneBg);
             g.fillRoundedRectangle (r, 8.0f);
             g.setColour (pad == selected ? Theme::yellow : Theme::gridLineStrong);
             g.drawRoundedRectangle (r, 8.0f, pad == selected ? 2.5f : 1.0f);
@@ -137,6 +172,9 @@ public:
             g.setFont (11.0f);
             g.drawText (juce::MidiMessage::getMidiNoteName (p.note, true, true, 3), r.reduced (6.0f, 4.0f), juce::Justification::bottomLeft);
 
+            g.setColour (Theme::textFaint);
+            g.drawText (juce::String::charToString ((juce::juce_wchar) padKeys[pad]), r.reduced (6.0f, 4.0f), juce::Justification::topRight);
+            g.setColour (Theme::textDim);
             juce::String tags;
             if (p.solo.load())        tags << "S ";
             if (p.mute.load())        tags << "M ";
@@ -199,6 +237,7 @@ public:
             return;
         }
         pressed = pad;
+        grabKeyboardFocus();   // (so the keys play the pads from here on)
         if (hooks.preview)
             hooks.preview (kit.getPad (pad).note, true);
         repaint();
@@ -274,6 +313,7 @@ private:
     DrumKit& kit;
     Hooks hooks;
     int selected = 0, pressed = -1;
+    std::array<bool, 16> keyDown {};
     juce::Rectangle<int> gridArea { 12, 12, 496, 330 };
     std::unique_ptr<juce::FileChooser> chooser;
 

@@ -11,6 +11,7 @@
 #include "Stretch.h"
 #include "SamplerPanel.h"
 #include "DrumRackPanel.h"
+#include "MixerPanel.h"
 #include <algorithm>
 #include <map>
 
@@ -2342,8 +2343,9 @@ MainComponent::MainComponent (int slot) : tabSlot (slot)
     railAdd.onClick = [this] { addTrackMenu(); };
     railPlugins.onClick = [this] { pluginHost.showManager(); };
     railTuner.onClick = [this] { openTuner(); };
+    railMixer.onClick = [this] { openMixer(); };
     railAudio.onClick = [this] { openAudioSettings(); };
-    for (auto* rb : { &railFile, &railAdd, &railPlugins, &railTuner, &railAudio })
+    for (auto* rb : { &railFile, &railAdd, &railPlugins, &railTuner, &railMixer, &railAudio })
         addAndMakeVisible (rb);
     for (auto* pill : { &tempoButton, &countInButton, &undoButton, &redoButton, &stopAllButton })
         pill->getProperties().set ("pill", true);
@@ -2463,6 +2465,7 @@ static void readSamplerParams (const juce::var& sv, Sampler::Params& sp)
 
 MainComponent::~MainComponent()
 {
+    mixerWindow.reset();
     stopTimer();
     samplerWindow.reset();   // (it points into the engine's tracks)
     padSamplerWindow.reset();
@@ -2994,6 +2997,19 @@ void MainComponent::openPadSampler (Track& t, int pad)
     padSamplerWindow->getPanel().onBeginEdit = [safe] { if (safe != nullptr) safe->beginEdit(); };
     padSamplerWindow->getPanel().onAbortEdit = [safe] { if (safe != nullptr) safe->cancelEdit(); };
     padSamplerWindow->onKey = [safe] (const juce::KeyPress& k) { return safe != nullptr && safe->handleUndoKey (k); };
+}
+
+void MainComponent::openMixer()
+{
+    if (mixerWindow != nullptr)
+    {
+        mixerWindow->toFront (true);
+        return;
+    }
+    juce::Component::SafePointer<MainComponent> safe (this);
+    mixerWindow = std::make_unique<MixerWindow> (engine, [safe] { if (safe != nullptr) safe->beginEdit(); },
+                                                 [safe] { juce::MessageManager::callAsync ([safe] { if (safe != nullptr) safe->mixerWindow.reset(); }); });
+    mixerWindow->onKey = [safe] (const juce::KeyPress& k) { return safe != nullptr && safe->handleUndoKey (k); };
 }
 
 void MainComponent::openDrumRack (Track& t, int selectPad)
@@ -3616,7 +3632,11 @@ void MainComponent::restoreSnapshot (const ProjectState& state)
     headers.clear();   // they reference the Track objects that restoreState() replaces
     lanes.clear();
 
+    if (mixerWindow != nullptr)
+        mixerWindow->getPanel().detach();   // (the strips point at tracks that are replaced)
     engine.restoreState (state);
+    if (mixerWindow != nullptr)
+        mixerWindow->getPanel().rebuild();
 
     for (int i = 0; i < engine.getNumTracks(); ++i)
         addTrackUI (*engine.getTrack (i));
@@ -3709,6 +3729,8 @@ void MainComponent::addTrackUI (Track& t)
 
 void MainComponent::removeTrackUI (Track* t)
 {
+    if (mixerWindow != nullptr)
+        mixerWindow->getPanel().detach();   // (the strips would point at the removed track)
     samplerWindow.reset();   // (they point into the track)
     padSamplerWindow.reset();
     drumRackWindow.reset();
@@ -3736,6 +3758,8 @@ void MainComponent::removeTrackUI (Track* t)
 
 void MainComponent::clearTracksUI()
 {
+    if (mixerWindow != nullptr)
+        mixerWindow->getPanel().detach();
     samplerWindow.reset();
     padSamplerWindow.reset();
     drumRackWindow.reset();
@@ -3806,6 +3830,7 @@ void MainComponent::resized()
     railAdd.setBounds (0, 8 + rb + 4, R, rb);
     railPlugins.setBounds (0, 8 + 2 * (rb + 4), R, rb);
     railTuner.setBounds (0, 8 + 3 * (rb + 4), R, rb);
+    railMixer.setBounds (0, 8 + 4 * (rb + 4), R, rb);
     railAudio.setBounds (0, getHeight() - rb - 10, R, rb);
     fileButton.setBounds (railFile.getBounds());          // (the hidden buttons sit over their icons)
     addButton.setBounds (railAdd.getBounds());
@@ -6272,6 +6297,7 @@ void MainComponent::exportDialog()
 
 void MainComponent::suspendAudio()
 {
+    mixerWindow.reset();
     finishRecording();
     engine.finishAutomationRecording();   // a ride in progress ends as a take
     engine.silenceEverything();
