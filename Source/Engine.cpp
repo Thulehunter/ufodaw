@@ -1691,6 +1691,8 @@ void Engine::applyAutomation (Track& t, double time)
 TrackState Engine::captureTrack (const Track& t) const
 {
     TrackState ts;
+    ts.subLanes = t.subLanes;
+    ts.subLanesOpen = t.subLanesOpen;
     if (t.sampler != nullptr)
     {
         ts.hasSampler = true;
@@ -1742,6 +1744,9 @@ TrackState Engine::captureTrack (const Track& t) const
 void Engine::applyTrackState (Track& t, const TrackState& ts)
 {
     t.name = ts.name;
+    t.subLanes = ts.subLanes;
+    t.subLanesOpen = ts.subLanesOpen;
+    updateSubLaneMask (t);
     t.bus = ts.bus;
     t.clips = ts.clips;
     t.midiClips = ts.midiClips;
@@ -2460,7 +2465,7 @@ void Engine::collectNoteEvents (Track& t, int n, juce::int64 pos, bool running)
         {
             for (auto& note : clip.notes)
             {
-                if (note.start >= clip.length)
+                if (note.start >= clip.length || ! t.pitchAudible (note.pitch))   // (a muted sub-track, or another one is soloed)
                     continue;
 
                 const double on = (clip.start + note.start) * sampleRate;
@@ -3810,4 +3815,54 @@ bool Engine::moveTrack (Track& t, int delta)
         return false;
     std::swap (tracks[(size_t) index], tracks[(size_t) target]);
     return true;
+}
+
+//==============================================================================
+// Sub-tracks (note lanes) of a MIDI track
+
+void Engine::updateSubLaneMask (Track& t)
+{
+    bool anySolo = false;
+    for (auto& s : t.subLanes)
+        anySolo = anySolo || s.solo;
+
+    std::uint64_t lo = ~0ull, hi = ~0ull;
+    auto clear = [&] (int p) { if (p < 64) lo &= ~(1ull << p); else hi &= ~(1ull << (p - 64)); };
+
+    if (anySolo)   // only the pitches of the soloed sub-tracks play (the others, and pitches no sub-track covers, are silent)
+    {
+        lo = hi = 0;
+        auto set = [&] (int p) { if (p < 64) lo |= 1ull << p; else hi |= 1ull << (p - 64); };
+        for (auto& s : t.subLanes)
+            if (s.solo)
+                for (int p = juce::jmax (0, s.pitchLo); p <= juce::jmin (127, s.pitchHi); ++p)
+                    set (p);
+    }
+    else
+    {
+        for (auto& s : t.subLanes)
+            if (s.mute)
+                for (int p = juce::jmax (0, s.pitchLo); p <= juce::jmin (127, s.pitchHi); ++p)
+                    clear (p);
+    }
+    t.audibleLo = lo;
+    t.audibleHi = hi;
+}
+
+void Engine::setSubLanes (Track& t, std::vector<SubLane> lanes, bool open)
+{
+    const juce::ScopedLock sl (lock);
+    t.subLanes = std::move (lanes);
+    t.subLanesOpen = open && ! t.subLanes.empty();
+    updateSubLaneMask (t);
+}
+
+void Engine::setSubLaneState (Track& t, int index, int mute, int solo)
+{
+    const juce::ScopedLock sl (lock);
+    if (! juce::isPositiveAndBelow (index, (int) t.subLanes.size()))
+        return;
+    if (mute >= 0) t.subLanes[(size_t) index].mute = mute != 0;
+    if (solo >= 0) t.subLanes[(size_t) index].solo = solo != 0;
+    updateSubLaneMask (t);
 }

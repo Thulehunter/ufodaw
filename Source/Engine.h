@@ -199,6 +199,16 @@ inline float evalAutomation (const std::vector<AutoPoint>& pts, double time, flo
     return pts.back().value;
 }
 
+// A sub-track of a MIDI track: it shows (and edits) the notes of one pitch, or a range of pitches, of the track's clips, with its own
+// mute and solo. All sub-tracks play through the same instrument: a drum plugin gets kick on one lane, snare on the next...
+struct SubLane
+{
+    juce::String name;
+    int pitchLo = 36, pitchHi = 36;
+    bool mute = false, solo = false;
+    bool covers (int pitch) const { return pitch >= pitchLo && pitch <= pitchHi; }
+};
+
 struct Track
 {
     enum class Type { Audio, Midi };
@@ -207,6 +217,10 @@ struct Track
     Type type = Type::Audio;
     std::vector<Clip> clips;            // audio tracks, guarded by Engine::lock
     std::vector<MidiClip> midiClips;    // MIDI tracks, guarded by Engine::lock
+    std::vector<SubLane> subLanes;      // MIDI tracks: sub-tracks by pitch (message thread; changed under Engine::lock)
+    bool subLanesOpen = false;          // UI: the sub-tracks are shown under the track
+    std::atomic<std::uint64_t> audibleLo { ~0ull }, audibleHi { ~0ull };   // bit p set = notes of pitch p play (sub-track mute / solo)
+    bool pitchAudible (int p) const { return p < 0 || p > 127 || (((p < 64 ? audibleLo.load() : audibleHi.load()) >> (p & 63)) & 1ull) != 0; }
 
     SynthParams synth;                  // MIDI tracks
     std::unique_ptr<Synth> voices;      // audio-thread state, created for MIDI tracks
@@ -285,6 +299,8 @@ struct TrackState
     Track::Type type = Track::Type::Audio;
     std::vector<Clip> clips;
     std::vector<MidiClip> midiClips;
+    std::vector<SubLane> subLanes;
+    bool subLanesOpen = false;
     float gain = 0.8f, pan = 0.0f;
     bool mute = false, solo = false;
     int waveform = 0;
@@ -346,6 +362,10 @@ public:
     void removeTrack (Track*);
     Track* duplicateTrack (const Track&);              // a copy right after the original: clips, settings, effects, sampler / drum kit (plugins are not copied here)
     bool moveTrack (Track&, int delta);                // -1 = one place up, +1 = one place down; false if it is already at the end
+    // Sub-tracks of a MIDI track (see SubLane): replace the list; the mute / solo state decides which pitches are heard
+    void setSubLanes (Track&, std::vector<SubLane>, bool open);
+    void updateSubLaneMask (Track&);                  // after mute / solo changed (call with the engine lock)
+    void setSubLaneState (Track&, int index, int mute, int solo);   // -1 keeps a flag; 0 / 1 sets it
 
     // ---- Message thread: routing. A track plays into the master or into one bus, and can also send a share of its sound to buses.
     void setTrackOutput (Track&, Track* bus);                                  // nullptr = master; ignored for buses and for non-bus targets

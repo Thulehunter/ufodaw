@@ -9,6 +9,7 @@
 #include "RailButton.h"
 #include "TourOverlay.h"
 #include <map>
+#include <set>
 
 class SamplerWindow;   // (SamplerPanel.h)
 class DrumRackWindow;  // (DrumRackPanel.h)
@@ -84,6 +85,8 @@ private:
 
 class TrackHeader;
 class TrackLane;
+class SubLaneRow;
+class SubLaneHeader;
 class TimeRuler;
 class PianoRoll;
 class DrumSequencer;
@@ -267,6 +270,12 @@ private:
     std::unique_ptr<MixerWindow> mixerWindow;
     void openMixer();                                      // channel strips of every track and the master
     void showTrackMenu (Track&);                          // right-click on a track header
+public:
+    static constexpr int subLaneHeight = 46;
+    void showSubLaneMenu (Track&, int sub);              // right-click on a sub-track: rename, pitch, remove
+    void applySubLaneChoice (Track&, int choice);       // 1 show / hide, 2 from the notes, 3 drum preset, 4 add one, 5 remove all
+    void syncSubLaneUI();                                // builds / removes the sub-track rows to match the tracks
+private:
     void rebuildTrackUI();                                 // headers and lanes again, in the engine's order
 public:
     void startTour();          // the quick tour of the window (first start, and File > Quick tour)
@@ -512,6 +521,10 @@ private:
 
     juce::OwnedArray<TrackHeader> headers;
     juce::OwnedArray<TrackLane> lanes;
+    juce::OwnedArray<SubLaneRow> subRows;          // the sub-tracks shown under MIDI tracks (see Engine.h: SubLane), in arrangement order
+    juce::OwnedArray<SubLaneHeader> subHeaders;
+    juce::String subSignature;                      // what they were built for: they are made again when this changes
+    std::vector<int> trackTops;                     // the top of every track's row in the arrangement (sub-tracks make the rows uneven)
     SyncViewport laneViewport;
     juce::Viewport headerViewport;
     juce::Component laneHolder, headerHolder;
