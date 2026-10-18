@@ -215,3 +215,36 @@ void Sampler::choke()
             v.stage = Voice::Release;
         }
 }
+
+Sampler::State Sampler::captureState() const
+{
+    State s;
+    s.mode = params.mode;            s.rootNote = params.rootNote;      s.slices = params.slices;       s.sliceNote = params.sliceNote;
+    s.tuneCents = params.tuneCents;  s.start = params.start;            s.end = params.end;
+    s.loopStart = params.loopStart;  s.loopEnd = params.loopEnd;        s.loop = params.loop;           s.reverse = params.reverse;
+    s.attack = params.attack;        s.decay = params.decay;            s.sustain = params.sustain;     s.release = params.release;
+    s.cutoff = params.cutoff;        s.volume = params.volume;          s.velocitySens = params.velocitySens;
+    s.sample = sample;
+    s.original = original;
+    s.sampleRate = sampleRate;
+    s.stretch = stretchRatio;
+    s.file = file;
+    s.name = name;
+    return s;
+}
+
+void Sampler::applyState (const State& s)
+{
+    reset();
+    params.mode = s.mode;            params.rootNote = s.rootNote;      params.slices = s.slices;       params.sliceNote = s.sliceNote;
+    params.tuneCents = s.tuneCents;  params.start = s.start;            params.end = s.end;
+    params.loopStart = s.loopStart;  params.loopEnd = s.loopEnd;        params.loop = s.loop;           params.reverse = s.reverse;
+    params.attack = s.attack;        params.decay = s.decay;            params.sustain = s.sustain;     params.release = s.release;
+    params.cutoff = s.cutoff;        params.volume = s.volume;          params.velocitySens = s.velocitySens;
+    sample = s.sample;
+    original = s.original;
+    sampleRate = s.sampleRate;
+    stretchRatio = s.stretch;
+    file = s.file;
+    name = s.name;
+}

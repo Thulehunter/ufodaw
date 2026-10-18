@@ -30,6 +30,20 @@ public:
     };
 
     DrumKit();
+    // For undo / redo: every pad's mixer settings, sample and Simpler (the audio data is shared, not copied)
+    struct PadState
+    {
+        float gain = 1.0f, pan = 0.0f;
+        bool mute = false, solo = false;
+        int chokeGroup = 0;
+        std::shared_ptr<const juce::AudioBuffer<float>> sample;
+        double sampleRate = 44100.0;
+        juce::File file;
+        Sampler::State sampler;
+    };
+    std::vector<PadState> captureState() const;
+    void applyState (const std::vector<PadState>&);   // (callers hold the engine lock)
+
 
     // Message thread (callers hold the engine lock while changing a live kit)
     void setSample (int pad, std::shared_ptr<const juce::AudioBuffer<float>> buffer, double rate, const juce::File& file);

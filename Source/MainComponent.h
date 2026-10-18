@@ -256,6 +256,7 @@ private:
     void addSamplerTrack();                                  // a MIDI track that plays one sample (Simpler-style)
     void openSampler (Track&);                               // the sampler's window: sample, markers, mode, envelope, filter
     void sampleClip (Track&, int clipId);                    // an audio clip's audio becomes the sample of a new sampler track
+    void startSamplerStretch (std::shared_ptr<Sampler>, double ratio, std::function<void (bool)> done);   // in the background, with a progress window
     std::unique_ptr<SamplerWindow> samplerWindow;
 public:
     void openDrumRack (Track&, int selectPad = -1);          // the drum rack: 4 x 4 pads, level / pan / choke per pad, each pad a Simpler

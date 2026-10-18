@@ -1691,6 +1691,16 @@ void Engine::applyAutomation (Track& t, double time)
 TrackState Engine::captureTrack (const Track& t) const
 {
     TrackState ts;
+    if (t.sampler != nullptr)
+    {
+        ts.hasSampler = true;
+        ts.samplerState = t.sampler->captureState();
+    }
+    if (t.kit != nullptr)
+    {
+        ts.hasKit = true;
+        ts.padStates = t.kit->captureState();
+    }
     ts.name = t.name;
     ts.type = t.type;
     ts.bus = t.bus;
@@ -1793,6 +1803,12 @@ void Engine::applyTrackState (Track& t, const TrackState& ts)
             lane->active = ls.active;
         }
     }
+
+    // the sampler and the drum rack settings (the objects are shared with the snapshot: the settings go back into them)
+    if (ts.hasSampler && t.sampler != nullptr)
+        t.sampler->applyState (ts.samplerState);
+    if (ts.hasKit && t.kit != nullptr)
+        t.kit->applyState (ts.padStates);
 }
 
 ProjectState Engine::captureState() const
@@ -3621,4 +3637,15 @@ bool Engine::compTakes (Track& t, int takeIndex, double a, double b)
                 if (std::abs (c.end() - b) < eps && c.takeGroup != 0)   c.fadeOut = juce::jmax (c.fadeOut, juce::jmin (fade, c.length));
             }
     return changed;
+}
+
+bool Engine::applySamplerStretch (Sampler& s, std::shared_ptr<const juce::AudioBuffer<float>> original, std::shared_ptr<const juce::AudioBuffer<float>> result, double timeRatio)
+{
+    if (original == nullptr || result == nullptr)
+        return false;
+    const juce::ScopedLock sl (lock);
+    if (s.getOriginal() != original)
+        return false;
+    s.setStretched (std::move (result), std::abs (timeRatio - 1.0) < 0.001 ? 1.0 : timeRatio);
+    return true;
 }

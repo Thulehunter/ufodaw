@@ -34,6 +34,21 @@ public:
     } params;
 
     Sampler() = default;
+    // Everything that can be edited, for undo / redo: the settings and the sample (the audio data is shared, not copied)
+    struct State
+    {
+        int mode = Classic, rootNote = 60, slices = 8, sliceNote = 36;
+        float tuneCents = 0.0f, start = 0.0f, end = 1.0f, loopStart = 0.0f, loopEnd = 1.0f;
+        float attack = 0.0f, decay = 0.0f, sustain = 0.0f, release = 0.0f, cutoff = 0.0f, volume = 0.0f, velocitySens = 0.0f;
+        bool loop = false, reverse = false;
+        std::shared_ptr<const juce::AudioBuffer<float>> sample, original;
+        double sampleRate = 44100.0, stretch = 1.0;
+        juce::File file;
+        juce::String name;
+    };
+    State captureState() const;
+    void applyState (const State&);   // (silences the voices; callers hold the engine lock)
+
 
     // Message thread (callers hold the engine lock while changing a sampler that is in use)
     void setSample (std::shared_ptr<const juce::AudioBuffer<float>> buffer, double rate, const juce::File& file, const juce::String& name);

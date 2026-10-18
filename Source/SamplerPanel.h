@@ -95,6 +95,8 @@ public:
     void mouseDown (const juce::MouseEvent& e) override
     {
         grabbed = nearestMarker (e.x);
+        if (grabbed >= 0 && onBeginEdit)
+            onBeginEdit();   // (one undo step for the whole drag)
     }
 
     void mouseDrag (const juce::MouseEvent& e) override
@@ -148,6 +150,8 @@ private:
     const void* peaksOf = nullptr;
     std::vector<float> peaks;
     int grabbed = -1;
+public:
+    std::function<void()> onBeginEdit;
 };
 
 // The sampler's own window: sample, markers, mode, root note, envelope, filter. Every change applies at once.
@@ -156,12 +160,13 @@ class SamplerPanel : public juce::Component
 public:
     // `loadFile` puts a file into this sampler (true if it worked). Drum pads use the panel with allowSlice = false.
     SamplerPanel (Sampler& s, std::function<bool (const juce::File&)> loadFile, std::function<void()> onChanged, std::function<void (bool)> onPlay,
-                  bool allowSlice = true, std::function<bool (double)> stretchFile = nullptr)
+                  bool allowSlice = true, std::function<void (double, std::function<void (bool)>)> stretchFile = nullptr)
         : sampler (s), loader (std::move (loadFile)), changed (std::move (onChanged)), play (std::move (onPlay)), slicesAllowed (allowSlice), stretcher (std::move (stretchFile)),
           waveform (s, [this] { changedFn(); }, [this] (const juce::File& f) { load (f); })
     {
         auto& p = sampler.params;
 
+        waveform.onBeginEdit = [this] { beginEditFn(); };
         addAndMakeVisible (waveform);
 
         loadButton.onClick = [this]
@@ -181,14 +186,14 @@ public:
         if (slicesAllowed)
             modeBox.addItem ("Slice (a key per slice)", 3);
         modeBox.setSelectedId (p.mode.load() + 1, juce::dontSendNotification);
-        modeBox.onChange = [this] { sampler.params.mode = modeBox.getSelectedId() - 1; refreshVisibility(); changedFn(); waveform.repaint(); };
+        modeBox.onChange = [this] { beginEditFn(); sampler.params.mode = modeBox.getSelectedId() - 1; refreshVisibility(); changedFn(); waveform.repaint(); };
         addAndMakeVisible (modeBox);
 
         for (int n = 24; n <= 108; ++n)   // C0 .. C8, with C3 = 60 (the naming of Ableton and most DAWs)
             rootBox.addItem (juce::MidiMessage::getMidiNoteName (n, true, true, 3), n + 1);
         rootBox.setSelectedId (p.rootNote.load() + 1, juce::dontSendNotification);
         rootBox.setTooltip ("The key at which the sample plays at its own pitch");
-        rootBox.onChange = [this] { sampler.params.rootNote = rootBox.getSelectedId() - 1; changedFn(); };
+        rootBox.onChange = [this] { beginEditFn(); sampler.params.rootNote = rootBox.getSelectedId() - 1; changedFn(); };
         addAndMakeVisible (rootBox);
         rootLabel.setText ("Root", juce::dontSendNotification);
         rootLabel.setColour (juce::Label::textColourId, Theme::textDim);
@@ -227,7 +232,8 @@ public:
             s.setTextValueSuffix (suffix);
             s.setValue (value, juce::dontSendNotification);
             s.setDoubleClickReturnValue (true, value);
-            s.onValueChange = [this, &s, set] { set (s.getValue()); changedFn(); };
+            s.onDragStart = [this] { beginEditFn(); };
+            s.onValueChange = [this, &s, set] { if (! s.isMouseButtonDown()) beginEditFn(); set (s.getValue()); changedFn(); };
             addAndMakeVisible (s);
         };
         addSlider (tune, tuneLabel, "Tune", -100.0, 100.0, p.tuneCents, 0.0, " ct", 0, [this] (double v) { sampler.params.tuneCents = (float) v; });
@@ -242,19 +248,20 @@ public:
         addSlider (stretch, stretchLabel, "Stretch", 0.25, 4.0, sampler.getStretch(), 1.0, " x", 2, [] (double) {});
         stretch.setTooltip ("Time-stretch: 2 = twice as long, 0.5 = twice as fast. The pitch stays the same (Rubber Band, applied when you let go)");
         stretch.onValueChange = [this] { if (! stretch.isMouseButtonDown()) applyStretch(); };
+        stretch.onDragStart = nullptr;   // (the snapshot is taken when the stretch is applied)
         stretch.onDragEnd = [this] { applyStretch(); };
         slices.setNumDecimalPlacesToDisplay (0);
         slices.setRange (1.0, 32.0, 1.0);
 
         loopToggle.setToggleState (p.loop, juce::dontSendNotification);
-        loopToggle.onClick = [this] { sampler.params.loop = loopToggle.getToggleState(); waveform.repaint(); changedFn(); };
+        loopToggle.onClick = [this] { beginEditFn(); sampler.params.loop = loopToggle.getToggleState(); waveform.repaint(); changedFn(); };
         loopToggle.setTooltip ("Classic mode: the part between the orange markers repeats while the key is held");
         addAndMakeVisible (loopToggle);
         reverseToggle.setToggleState (p.reverse, juce::dontSendNotification);
-        reverseToggle.onClick = [this] { sampler.params.reverse = reverseToggle.getToggleState(); changedFn(); };
+        reverseToggle.onClick = [this] { beginEditFn(); sampler.params.reverse = reverseToggle.getToggleState(); changedFn(); };
         addAndMakeVisible (reverseToggle);
 
-        hint.setText ("Drag the yellow markers to choose the part that plays. Changes here are not part of undo, but they are saved with the project.",
+        hint.setText ("Drag the yellow markers to choose the part that plays. Every change can be undone with Ctrl+Z, and is saved with the project.",
                       juce::dontSendNotification);
         hint.setFont (juce::FontOptions (12.0f));
         hint.setColour (juce::Label::textColourId, Theme::textFaint);
@@ -264,6 +271,8 @@ public:
         refreshVisibility();
         setSize (780, 482);
     }
+
+    std::function<void()> onBeginEdit;   // set by the owner: called before every change (the undo snapshot)
 
     void paint (juce::Graphics& g) override { g.fillAll (Theme::panel); }
 
@@ -329,19 +338,23 @@ public:
 
 private:
     void changedFn() { if (changed) changed(); }
+    void beginEditFn() { if (onBeginEdit) onBeginEdit(); }   // called before a change, so that it can be undone
 
     void applyStretch()
     {
         if (stretcher == nullptr || std::abs (stretch.getValue() - sampler.getStretch()) < 0.001)
             return;
-        juce::MouseCursor::showWaitCursor();
-        const bool ok = stretcher (stretch.getValue());
-        juce::MouseCursor::hideWaitCursor();
-        if (! ok)
-            juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Cannot stretch", "The sample could not be time-stretched.");
-        stretch.setValue (sampler.getStretch(), juce::dontSendNotification);
-        waveform.repaint();
-        changedFn();
+        beginEditFn();
+        // the stretch runs in the background behind a progress window; this comes back when it is done (or cancelled)
+        juce::Component::SafePointer<SamplerPanel> safe (this);
+        stretcher (stretch.getValue(), [safe] (bool)
+        {
+            if (safe == nullptr)
+                return;
+            safe->stretch.setValue (safe->sampler.getStretch(), juce::dontSendNotification);
+            safe->waveform.repaint();
+            safe->changedFn();
+        });
     }
 
     void refreshVisibility()
@@ -356,6 +369,7 @@ private:
 
     void load (const juce::File& file)
     {
+        beginEditFn();
         if (! loader (file))
         {
             juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Cannot load the sample", file.getFullPathName());
@@ -414,6 +428,7 @@ private:
         const double midi = 69.0 + 12.0 * std::log2 ((double) hz / 440.0);
         const int note = juce::jlimit (24, 108, (int) std::lround (midi));
         const float cents = (float) ((midi - (double) note) * 100.0);   // how sharp it is: the tuning takes that away again
+        beginEditFn();
         sampler.params.rootNote = note;
         sampler.params.tuneCents = juce::jlimit (-100.0f, 100.0f, -cents);
         rootBox.setSelectedId (note + 1, juce::dontSendNotification);
@@ -426,7 +441,7 @@ private:
     std::function<void()> changed;
     std::function<void (bool)> play;
     bool slicesAllowed = true;
-    std::function<bool (double)> stretcher;
+    std::function<void (double, std::function<void (bool)>)> stretcher;   // (ratio, done): runs in the background
     bool playing = false;
     std::unique_ptr<juce::FileChooser> chooser;
 
@@ -443,13 +458,15 @@ private:
 class SamplerWindow : public juce::DocumentWindow
 {
 public:
+    SamplerPanel& getPanel() { return *panel; }
     SamplerWindow (const juce::String& title, Sampler& s, std::function<bool (const juce::File&)> loadFile, std::function<void()> onChanged,
                    std::function<void (bool)> onPlay, std::function<void()> onClosed, bool allowSlice = true,
-                   std::function<bool (double)> stretchFile = nullptr)
+                   std::function<void (double, std::function<void (bool)>)> stretchFile = nullptr)
         : juce::DocumentWindow (title, Theme::background, juce::DocumentWindow::closeButton), closed (std::move (onClosed))
     {
         setUsingNativeTitleBar (true);
-        setContentOwned (new SamplerPanel (s, std::move (loadFile), std::move (onChanged), std::move (onPlay), allowSlice, std::move (stretchFile)), true);
+        panel = new SamplerPanel (s, std::move (loadFile), std::move (onChanged), std::move (onPlay), allowSlice, std::move (stretchFile));
+        setContentOwned (panel, true);
         setResizable (false, false);
         centreWithSize (getWidth(), getHeight());
         setVisible (true);
@@ -462,5 +479,6 @@ public:
     }
 
 private:
+    SamplerPanel* panel = nullptr;
     std::function<void()> closed;
 };

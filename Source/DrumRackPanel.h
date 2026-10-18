@@ -17,6 +17,7 @@ public:
         std::function<void (int pad)> reset;                   // back to the built-in sound
         std::function<void (int pad)> editSampler;             // open the pad's Simpler
         std::function<void()> changed;                         // something was edited
+        std::function<void()> beginEdit;                       // called before every change (the undo snapshot)
     };
 
     DrumRackPanel (DrumKit& k, Hooks h) : kit (k), hooks (std::move (h))
@@ -50,11 +51,13 @@ public:
         pan.setRange (-1.0, 1.0);
         pan.setNumDecimalPlacesToDisplay (2);
         pan.setDoubleClickReturnValue (true, 0.0);
-        gain.onValueChange = [this] { kit.getPad (selected).gain = (float) gain.getValue(); edited(); };
-        pan.onValueChange  = [this] { kit.getPad (selected).pan = (float) pan.getValue(); edited(); };
+        gain.onDragStart = [this] { begin(); };
+        pan.onDragStart = [this] { begin(); };
+        gain.onValueChange = [this] { if (! gain.isMouseButtonDown()) begin(); kit.getPad (selected).gain = (float) gain.getValue(); edited(); };
+        pan.onValueChange  = [this] { if (! pan.isMouseButtonDown()) begin(); kit.getPad (selected).pan = (float) pan.getValue(); edited(); };
 
-        muteButton.onClick = [this] { kit.getPad (selected).mute = muteButton.getToggleState(); edited(); repaint(); };
-        soloButton.onClick = [this] { kit.getPad (selected).solo = soloButton.getToggleState(); edited(); repaint(); };
+        muteButton.onClick = [this] { begin(); kit.getPad (selected).mute = muteButton.getToggleState(); edited(); repaint(); };
+        soloButton.onClick = [this] { begin(); kit.getPad (selected).solo = soloButton.getToggleState(); edited(); repaint(); };
         addAndMakeVisible (muteButton);
         addAndMakeVisible (soloButton);
 
@@ -62,7 +65,7 @@ public:
         for (int i = 1; i <= 8; ++i)
             chokeBox.addItem ("Group " + juce::String (i), i + 1);
         chokeBox.setTooltip ("Pads in the same group cut each other off (closed hat / open hat)");
-        chokeBox.onChange = [this] { kit.getPad (selected).chokeGroup = chokeBox.getSelectedId() - 1; edited(); repaint(); };
+        chokeBox.onChange = [this] { begin(); kit.getPad (selected).chokeGroup = chokeBox.getSelectedId() - 1; edited(); repaint(); };
         addAndMakeVisible (chokeBox);
 
         loadButton.onClick = [this]
@@ -72,7 +75,7 @@ public:
             chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
                                   [this, pad] (const juce::FileChooser& fc) { if (fc.getResult().existsAsFile()) loadInto (pad, fc.getResult()); });
         };
-        resetButton.onClick = [this] { if (hooks.reset) hooks.reset (selected); edited(); refreshControls(); repaint(); };
+        resetButton.onClick = [this] { begin(); if (hooks.reset) hooks.reset (selected); edited(); refreshControls(); repaint(); };
         editButton.onClick = [this] { if (hooks.editSampler) hooks.editSampler (selected); };
         for (auto* b : { &loadButton, &resetButton, &editButton })
             addAndMakeVisible (*b);
@@ -249,6 +252,7 @@ private:
 
     void loadInto (int pad, const juce::File& f)
     {
+        begin();
         if (hooks.load && hooks.load (pad, f))
         {
             select (pad);
@@ -259,6 +263,7 @@ private:
     }
 
     void edited() { if (hooks.changed) hooks.changed(); }
+    void begin() { if (hooks.beginEdit) hooks.beginEdit(); }
 
     void timerCallback() override
     {

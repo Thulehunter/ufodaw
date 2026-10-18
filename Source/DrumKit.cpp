@@ -264,3 +264,41 @@ void DrumKit::render (float* outL, float* outR, int numSamples)
         done += n;
     }
 }
+
+std::vector<DrumKit::PadState> DrumKit::captureState() const
+{
+    std::vector<PadState> out;
+    for (auto& p : pads)
+    {
+        PadState s;
+        s.gain = p.gain;
+        s.pan = p.pan;
+        s.mute = p.mute;
+        s.solo = p.solo;
+        s.chokeGroup = p.chokeGroup;
+        s.sample = p.sample;
+        s.sampleRate = p.sampleRate;
+        s.file = p.file;
+        s.sampler = p.sampler.captureState();
+        out.push_back (std::move (s));
+    }
+    return out;
+}
+
+void DrumKit::applyState (const std::vector<PadState>& states)
+{
+    for (size_t i = 0; i < pads.size() && i < states.size(); ++i)
+    {
+        auto& p = pads[i];
+        const auto& s = states[i];
+        p.gain = s.gain;
+        p.pan = s.pan;
+        p.mute = s.mute;
+        p.solo = s.solo;
+        p.chokeGroup = s.chokeGroup;
+        p.sample = s.sample;
+        p.sampleRate = s.sampleRate;
+        p.file = s.file;
+        p.sampler.applyState (s.sampler);
+    }
+}

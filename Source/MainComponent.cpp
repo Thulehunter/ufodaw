@@ -8,6 +8,7 @@
 #include "TempoPanel.h"
 #include "SyncPanels.h"
 #include "ClipPanel.h"
+#include "Stretch.h"
 #include "SamplerPanel.h"
 #include "DrumRackPanel.h"
 #include <algorithm>
@@ -2867,7 +2868,14 @@ void MainComponent::openSampler (Track& t)
         },
         [safe] { juce::MessageManager::callAsync ([safe] { if (safe != nullptr) safe->samplerWindow.reset(); }); },
         true,
-        [safe, tr] (double ratio) { return safe != nullptr && tr->sampler != nullptr && safe->engine.setSamplerStretch (*tr->sampler, ratio); });
+        [safe, tr] (double ratio, std::function<void (bool)> done)
+        {
+            if (safe != nullptr && tr->sampler != nullptr)
+                safe->startSamplerStretch (tr->sampler, ratio, std::move (done));
+            else if (done)
+                done (false);
+        });
+    samplerWindow->getPanel().onBeginEdit = [safe] { if (safe != nullptr) safe->beginEdit(); };
 }
 
 void MainComponent::openPadSampler (Track& t, int pad)
@@ -2887,7 +2895,14 @@ void MainComponent::openPadSampler (Track& t, int pad)
         },
         [safe] { juce::MessageManager::callAsync ([safe] { if (safe != nullptr) safe->padSamplerWindow.reset(); }); },
         false,   // (no slice mode on a pad)
-        [safe, tr, pad] (double ratio) { return safe != nullptr && tr->kit != nullptr && safe->engine.setSamplerStretch (tr->kit->getPad (pad).sampler, ratio); });
+        [safe, tr, pad] (double ratio, std::function<void (bool)> done)
+        {
+            if (safe != nullptr && tr->kit != nullptr)
+                safe->startSamplerStretch (std::shared_ptr<Sampler> (tr->kit, &tr->kit->getPad (pad).sampler), ratio, std::move (done));   // (keeps the whole kit alive)
+            else if (done)
+                done (false);
+        });
+    padSamplerWindow->getPanel().onBeginEdit = [safe] { if (safe != nullptr) safe->beginEdit(); };
 }
 
 void MainComponent::openDrumRack (Track& t, int selectPad)
@@ -2914,6 +2929,7 @@ void MainComponent::openDrumRack (Track& t, int selectPad)
     hooks.load = [safe, tr] (int pad, const juce::File& f) { return safe != nullptr && safe->engine.loadDrumSample (*tr, pad, f); };
     hooks.reset = [safe, tr] (int pad) { if (safe != nullptr) safe->engine.resetDrumPad (*tr, pad); };
     hooks.editSampler = [safe, tr] (int pad) { if (safe != nullptr) safe->openPadSampler (*tr, pad); };
+    hooks.beginEdit = [safe] { if (safe != nullptr) safe->beginEdit(); };
     hooks.changed = [safe] { if (safe != nullptr) { ++safe->editCounter; if (safe->drumRoll != nullptr) safe->drumRoll->repaint(); } };
     drumRackWindow = std::make_unique<DrumRackWindow> (t.name + " - drum rack", *t.kit, std::move (hooks),
         [safe] { juce::MessageManager::callAsync ([safe] { if (safe != nullptr) { safe->padSamplerWindow.reset(); safe->drumRackWindow.reset(); } }); });
@@ -3459,6 +3475,9 @@ void MainComponent::redo()
 
 void MainComponent::restoreSnapshot (const ProjectState& state)
 {
+    samplerWindow.reset();   // (they show the old values, and may point at tracks that change)
+    padSamplerWindow.reset();
+    drumRackWindow.reset();
     // Remember what was selected so it can be selected again (and the piano roll reopened).
     const int selTrackIndex = selTrack != nullptr ? engine.indexOfTrack (selTrack) : -1;
     const int selClipId = selClip;
@@ -4707,6 +4726,66 @@ private:
     int clipId;
     double stretch, semitones;
 };
+
+// A sampler's time-stretch runs in the background behind a progress window with a Cancel button (a long sample takes a while).
+class SamplerStretchJob : public juce::ThreadWithProgressWindow
+{
+public:
+    SamplerStretchJob (MainComponent& m, Engine& e, std::shared_ptr<Sampler> s, double stretchRatio, std::function<void (bool)> onDone)
+        : juce::ThreadWithProgressWindow ("Stretching sample", true, true, 5000, "Cancel", &m),
+          engine (e), sampler (std::move (s)), ratio (stretchRatio), done (std::move (onDone)),
+          original (sampler->getOriginal()), rate (sampler->getSampleRate())
+    {
+    }
+
+    void run() override
+    {
+        if (original == nullptr)
+            return;
+        if (std::abs (ratio - 1.0) < 0.001)
+        {
+            result = original;   // back to the sample as loaded
+            return;
+        }
+        result = Stretch::process (*original, 0, original->getNumSamples(), rate, ratio, 0.0, [this] (double fraction)
+        {
+            setProgress (fraction);
+            return ! threadShouldExit();
+        });
+    }
+
+    // Message thread, when it is done or cancelled (this object deletes itself here, like the stem export).
+    void threadComplete (bool) override
+    {
+        const bool applied = result != nullptr && engine.applySamplerStretch (*sampler, original, result, ratio);
+        if (done)
+            done (applied);
+        delete this;
+    }
+
+private:
+    Engine& engine;
+    std::shared_ptr<Sampler> sampler;   // (keeps the sampler alive if its track is removed meanwhile)
+    double ratio;
+    std::function<void (bool)> done;
+    std::shared_ptr<const juce::AudioBuffer<float>> original, result;
+    double rate;
+};
+
+void MainComponent::startSamplerStretch (std::shared_ptr<Sampler> sampler, double ratio, std::function<void (bool)> done)
+{
+    // later, not inside the panel's own slider handler (the progress window takes the focus)
+    juce::MessageManager::callAsync ([safe = juce::Component::SafePointer<MainComponent> (this), sampler, ratio, done]
+    {
+        if (safe == nullptr || sampler == nullptr)
+        {
+            if (done)
+                done (false);
+            return;
+        }
+        (new SamplerStretchJob (*safe, safe->engine, sampler, ratio, done))->launchThread();   // deletes itself when done
+    });
+}
 
 // Gain, stretch and pitch of an audio clip.
 void MainComponent::openClipPanel (Track& t, int clipId)
