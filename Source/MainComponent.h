@@ -266,6 +266,8 @@ private:
     void startSamplerStretch (std::shared_ptr<Sampler>, double ratio, std::function<void (bool)> done);   // in the background, with a progress window
     std::unique_ptr<MixerWindow> mixerWindow;
     void openMixer();                                      // channel strips of every track and the master
+    void showTrackMenu (Track&);                          // right-click on a track header
+    void rebuildTrackUI();                                 // headers and lanes again, in the engine's order
 public:
     void startTour();          // the quick tour of the window (first start, and File > Quick tour)
     void maybeStartTour();     // ...only if it was not shown before

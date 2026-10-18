@@ -3752,3 +3752,62 @@ int Engine::duplicateAutomationTake (Track& t, const juce::String& id, int takeI
         }
     return -1;
 }
+
+//==============================================================================
+// Copying and ordering tracks
+
+Track* Engine::duplicateTrack (const Track& src)
+{
+    TrackState ts;
+    {
+        const juce::ScopedLock sl (lock);
+        ts = captureTrack (src);
+    }
+    ts.instrument = nullptr;   // (plugin instances are made again by the program: two tracks must not share one)
+    ts.inserts.clear();
+    ts.midiFx.clear();
+    ts.name = src.name + " copy";
+
+    Track* copy = src.kit != nullptr ? addDrumTrack (ts.name)
+                : src.sampler != nullptr ? addSamplerTrack (ts.name)
+                                         : addTrack (ts.name, src.type, src.bus);
+    if (copy == nullptr)
+        return nullptr;
+
+    const juce::ScopedLock sl (lock);
+    ts.kit = copy->kit;           // the new kit / sampler get the settings and samples of the old ones
+    ts.sampler = copy->sampler;
+    applyTrackState (*copy, ts);
+    copy->recordArmed = false;
+    copy->output = src.output;    // plays into the same bus
+    for (auto& s : src.sends)
+        copy->sends.push_back (s);
+
+    // right after the original
+    const int from = (int) tracks.size() - 1;
+    int to = -1;
+    for (int i = 0; i < (int) tracks.size(); ++i)
+        if (tracks[(size_t) i].get() == &src)
+            to = i + 1;
+    if (to >= 0 && to < from)
+    {
+        auto moved = std::move (tracks[(size_t) from]);
+        tracks.erase (tracks.begin() + from);
+        tracks.insert (tracks.begin() + to, std::move (moved));
+    }
+    return copy;
+}
+
+bool Engine::moveTrack (Track& t, int delta)
+{
+    const juce::ScopedLock sl (lock);
+    int index = -1;
+    for (int i = 0; i < (int) tracks.size(); ++i)
+        if (tracks[(size_t) i].get() == &t)
+            index = i;
+    const int target = index + delta;
+    if (index < 0 || target < 0 || target >= (int) tracks.size())
+        return false;
+    std::swap (tracks[(size_t) index], tracks[(size_t) target]);
+    return true;
+}

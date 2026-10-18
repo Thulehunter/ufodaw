@@ -33,6 +33,7 @@ A small digital audio workstation for Windows, written in C++17 with [JUCE](http
   note and tuning from the sample itself. Right-click an audio clip > *Sample this clip* turns it into a sampler track with one note.
   Open it again with the track's instrument button (*Sampler: ...*) or *Sampler window* in the piano roll.
 - **Stretchable patterns** - drag the right edge of a MIDI or drum clip: longer repeats the pattern to fill the clip, shorter cuts it off. Hold **Shift** to stretch the pattern instead (half as long = twice as fast, longer = slower); hold **Alt** to switch snapping off.
+- **Track menu** - right-click a track header: Rename, Duplicate track (clips, settings, effects, sampler / drum rack and plugins with their settings), Delete track, Move up / down, Mute, Solo, Arm for recording, and the instrument panel. Everything can be undone.
 - **Export in more formats** - *File > Export audio* and *Export stems* offer WAV (16 / 24 / 32-bit float), FLAC, AIFF, MP3 (128-320 kbps) and Ogg Vorbis. The mix renders in the background behind a progress window with a Cancel button; the last format is remembered.
 - **Rename tracks** - double-click a track's name (in the track header or in the mixer) and type a new one; Enter keeps it, Esc cancels, and it is one undo step.
 - **Quick tour** - on the first start (and from File > Quick tour) a short tour lights up the rail, the Add button, the clock and tempo, the track headers, the arrangement, the transport and STOP ALL, with a card that explains each. Esc skips it, Enter and the arrow keys step through.

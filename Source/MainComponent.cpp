@@ -50,11 +50,12 @@ public:
                  std::function<void (Track&)> onToggleArm,
                  std::function<void (Track&, juce::Component&)> onOpenInput,
                  std::function<void (Track&, juce::Component&)> onOpenRouting,
+                 std::function<void (Track&)> onContextMenu,
                  bool masterStrip = false)
         : track (t), remove (std::move (onRemove)), beginEdit (std::move (onBeginEdit)), openPlugins (std::move (onOpenPlugins)),
           openAutomation (std::move (onOpenAutomation)), position (std::move (onPosition)), openEditor (std::move (onOpenEditor)),
           toggleArm (std::move (onToggleArm)), openInput (std::move (onOpenInput)), openRouting (std::move (onOpenRouting)),
-          isMaster (masterStrip)
+          contextMenu (std::move (onContextMenu)), isMaster (masterStrip)
     {
         const bool audioTrack = track.type == Track::Type::Audio && ! track.bus;   // (a bus has no input to record)
 
@@ -193,6 +194,7 @@ public:
     }
 
     Track& getTrack() { return track; }
+    void startRename() { if (! isMaster) nameLabel.showEditor(); }
 
     // After the track's values were changed from outside (undo, opening a project).
     void syncControls()
@@ -255,6 +257,12 @@ public:
 
     void mouseDown (const juce::MouseEvent& e) override
     {
+        if (e.mods.isPopupMenu())   // right-click on the header: the track menu
+        {
+            if (! isMaster && contextMenu)
+                contextMenu (track);
+            return;
+        }
         if (e.x >= getWidth() - 24 && e.y < 26)   // the clip lamp: click to clear it
         {
             track.clipped = false;
@@ -482,6 +490,7 @@ private:
     std::function<void (Track&)> toggleArm;
     std::function<void (Track&, juce::Component&)> openInput;
     std::function<void (Track&, juce::Component&)> openRouting;
+    std::function<void (Track&)> contextMenu;   // right-click on the header: rename, duplicate, delete, move...
     juce::TextButton rowButton, monitorButton { "Mon" }, routeButton, monoButton { "Mono" };
     juce::String rowShown, routeShown;
     bool monitorShown = false;
@@ -3718,6 +3727,97 @@ void MainComponent::restoreSnapshot (const ProjectState& state)
 
 
 //==============================================================================
+// Right-click on a track header: the things you do to a whole track.
+void MainComponent::showTrackMenu (Track& t)
+{
+    const int index = engine.indexOfTrack (&t);
+    if (index < 0)
+        return;
+    juce::Component::SafePointer<MainComponent> safe (this);
+    const TrackRef ref (&t);
+
+    juce::PopupMenu menu;
+    menu.addItem (1, "Rename");
+    menu.addItem (2, "Duplicate track");
+    menu.addItem (3, "Delete track");
+    menu.addSeparator();
+    menu.addItem (4, "Move up", index > 0);
+    menu.addItem (5, "Move down", index + 1 < engine.getNumTracks());
+    menu.addSeparator();
+    menu.addItem (6, "Mute", true, t.mute.load());
+    menu.addItem (7, "Solo", true, t.solo.load());
+    if (! t.bus)
+        menu.addItem (8, "Arm for recording", true, t.type == Track::Type::Midi ? t.midiArmed : t.recordArmed);
+    menu.addSeparator();
+    menu.addItem (9, t.sampler != nullptr ? "Open the sampler" : t.kit != nullptr ? "Open the drum rack" : "Instrument and plugins...");
+
+    menu.showMenuAsync (juce::PopupMenu::Options().withTargetScreenArea (juce::Rectangle<int> (1, 1).withCentre (juce::Desktop::getMousePosition())),
+                        [safe, ref] (int result)
+    {
+        if (safe == nullptr || result == 0 || safe->engine.indexOfTrack (ref) < 0)
+            return;
+        auto& self = *safe;
+        auto& track = *ref;
+
+        switch (result)
+        {
+            case 1:
+                for (auto* header : self.headers)
+                    if (&header->getTrack() == &track)
+                        header->startRename();
+                break;
+            case 2:   // a copy right after it (plugins are made again, their settings carried over)
+            {
+                self.beginEdit();
+                auto* copy = self.engine.duplicateTrack (track);
+                if (copy == nullptr)
+                {
+                    self.cancelEdit();
+                    break;
+                }
+                juce::StringArray problems;
+                auto* holder = new juce::DynamicObject();
+                holder->setProperty ("plugins", self.pluginsToVar (track));
+                self.pluginsFromVar (*copy, juce::var (holder), problems);
+                self.rebuildTrackUI();
+                self.selectClip (nullptr, -1);
+                if (problems.size() > 0)
+                    juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Some plugins could not be copied",
+                                                            problems.joinIntoString ("\n"));
+                break;
+            }
+            case 3:
+                juce::MessageManager::callAsync ([safe, ref] { if (safe != nullptr && safe->engine.indexOfTrack (ref) >= 0) safe->removeTrackUI (ref); });
+                break;
+            case 4:
+            case 5:
+                self.beginEdit();
+                if (self.engine.moveTrack (track, result == 4 ? -1 : 1))
+                    self.rebuildTrackUI();
+                else
+                    self.cancelEdit();
+                break;
+            case 6: self.beginEdit(); track.mute = ! track.mute.load(); break;
+            case 7: self.beginEdit(); track.solo = ! track.solo.load(); break;
+            case 8: self.armTrack (track); break;
+            case 9: self.openInstrumentEditor (track); break;
+            default: break;
+        }
+    });
+}
+
+// The headers and lanes again, in the order of the engine's tracks (after a track was moved or copied).
+void MainComponent::rebuildTrackUI()
+{
+    if (mixerWindow != nullptr)
+        mixerWindow->getPanel().detach();
+    headers.clear();
+    lanes.clear();
+    for (int i = 0; i < engine.getNumTracks(); ++i)
+        addTrackUI (*engine.getTrack (i));
+    clipsChanged();
+}
+
 std::unique_ptr<TrackHeader> MainComponent::makeHeader (Track& t, bool master)
 {
     return std::make_unique<TrackHeader> (t, [this] (Track* tr)
@@ -3732,6 +3832,7 @@ std::unique_ptr<TrackHeader> MainComponent::makeHeader (Track& t, bool master)
        [this] (Track& tr) { armTrack (tr); },
        [this] (Track& tr, juce::Component& anchor) { openInputMenu (tr, anchor); },
        [this] (Track& tr, juce::Component& anchor) { openRouting (tr, anchor); },
+       [this] (Track& tr) { showTrackMenu (tr); },
        master);
 }
 

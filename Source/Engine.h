@@ -344,6 +344,8 @@ public:
     Track* addTrack (const juce::String& name, Track::Type type = Track::Type::Audio, bool asBus = false);
     Track* addBus (const juce::String& name) { return addTrack (name, Track::Type::Audio, true); }
     void removeTrack (Track*);
+    Track* duplicateTrack (const Track&);              // a copy right after the original: clips, settings, effects, sampler / drum kit (plugins are not copied here)
+    bool moveTrack (Track&, int delta);                // -1 = one place up, +1 = one place down; false if it is already at the end
 
     // ---- Message thread: routing. A track plays into the master or into one bus, and can also send a share of its sound to buses.
     void setTrackOutput (Track&, Track* bus);                                  // nullptr = master; ignored for buses and for non-bus targets
