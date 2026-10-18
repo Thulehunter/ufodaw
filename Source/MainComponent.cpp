@@ -273,8 +273,33 @@ public:
             track.clipped = false;
             track.inputClipped = false;
             repaint();
+            return;
         }
+        dragArmed = ! isMaster && reorder && e.x < getWidth() - 24;   // grab the header (the name, or any gap between the controls) to move the whole track, sub-tracks with it
     }
+
+    void mouseDrag (const juce::MouseEvent& e) override
+    {
+        if (! dragArmed || (! dragging && e.getDistanceFromDragStart() < 6))
+            return;
+        dragging = true;
+        setMouseCursor (juce::MouseCursor::UpDownResizeCursor);
+        if (auto* holder = getParentComponent())
+            reorder (track, e.getEventRelativeTo (holder).y, false);
+    }
+
+    void mouseUp (const juce::MouseEvent& e) override
+    {
+        const bool was = dragging;
+        dragging = dragArmed = false;
+        setMouseCursor (juce::MouseCursor::NormalCursor);
+        if (was)
+            if (auto* holder = getParentComponent())
+                reorder (track, e.getEventRelativeTo (holder).y, true);   // (this header may be deleted by the call)
+    }
+
+    // Set by the main window: drag the name row up or down to move the track (finished = the mouse was released).
+    std::function<void (Track&, int yInHolder, bool finished)> reorder;
 
     void resized() override
     {
@@ -512,6 +537,7 @@ private:
     std::function<void (Track&)> contextMenu;   // right-click on the header: rename, duplicate, delete, move...
     std::function<void (Track&)> toggleSubLanes;   // the + / - button: show or hide the sub-tracks
     juce::TextButton subToggle { "+" };
+    bool dragArmed = false, dragging = false;
     bool subToggleShown = false;
     juce::TextButton rowButton, monitorButton { "Mon" }, routeButton, monoButton { "Mono" };
     juce::String rowShown, routeShown;
@@ -2259,8 +2285,20 @@ public:
             main.beginEdit();
             main.getEngine().setSubLaneState (*track, sub, -1, soloButton.getToggleState() ? 1 : 0);
         };
+        volume.setSliderStyle (juce::Slider::LinearHorizontal);
+        volume.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
+        volume.setRange (0.0, 1.5, 0.01);
+        volume.setDoubleClickReturnValue (true, 1.0);   // double-click: back to 1 (the notes as written)
+        volume.setTooltip ("Volume of this sub-track (scales the note velocities). Double-click: reset");
+        volume.onDragStart = [this] { main.beginEdit(); };
+        volume.onValueChange = [this]
+        {
+            if (main.getEngine().indexOfTrack (track) >= 0)
+                main.getEngine().setSubLaneVolume (*track, sub, (float) volume.getValue());
+        };
+        addAndMakeVisible (volume);
         refresh();
-        startTimerHz (6);
+        startTimerHz (30);
     }
 
     void paint (juce::Graphics& g) override
@@ -2271,6 +2309,14 @@ public:
         g.fillRoundedRectangle (card, 8.0f);
         g.setColour (subLaneColour (sub));
         g.fillRoundedRectangle (card.getX() + 3.0f, card.getY() + 6.0f, 4.0f, card.getHeight() - 12.0f, 2.0f);
+
+        // level meter: how hard this sub-track is being hit (the velocity of its notes, falling back after each one)
+        const auto m = meterBounds();
+        g.setColour (juce::Colours::black);
+        g.fillRect (m);
+        const float lvl = juce::jlimit (0.0f, 1.0f, shownLevel);
+        g.setColour (lvl > 0.9f ? Theme::redBright : subLaneColour (sub));
+        g.fillRect (m.withTop (m.getBottom() - (int) (lvl * (float) m.getHeight())));
     }
 
     void resized() override
@@ -2281,7 +2327,8 @@ public:
         muteButton.setBounds (buttons.removeFromLeft (27).reduced (1, 8));
         soloButton.setBounds (buttons.reduced (1, 8));
         name.setBounds (r.removeFromTop (r.getHeight() / 2 + 2));
-        pitchLabel.setBounds (r);
+        pitchLabel.setBounds (r.removeFromLeft (juce::jmin (84, r.getWidth() / 2)));
+        volume.setBounds (r);
     }
 
     void mouseDown (const juce::MouseEvent& e) override
@@ -2302,16 +2349,42 @@ private:
         const auto noteName = [] (int p) { return juce::MidiMessage::getMidiNoteName (p, true, true, 3) + " (" + juce::String (p) + ")"; };
         pitchLabel.setText (lane.pitchLo == lane.pitchHi ? noteName (lane.pitchLo) : noteName (lane.pitchLo) + " - " + noteName (lane.pitchHi),
                             juce::dontSendNotification);
+        if (! volume.isMouseButtonDown() && std::abs (volume.getValue() - (double) lane.volume) > 0.001)
+            volume.setValue (lane.volume, juce::dontSendNotification);
         if (muteButton.getToggleState() != lane.mute) muteButton.setToggleState (lane.mute, juce::dontSendNotification);
         if (soloButton.getToggleState() != lane.solo) soloButton.setToggleState (lane.solo, juce::dontSendNotification);
     }
 
-    void timerCallback() override { refresh(); }
+    juce::Rectangle<int> meterBounds() const { return { getWidth() - 21, 8, 8, getHeight() - 16 }; }
+
+    void timerCallback() override
+    {
+        if (++tickCount % 5 == 0)
+            refresh();
+
+        float hit = 0.0f;
+        if (main.getEngine().indexOfTrack (track) >= 0 && juce::isPositiveAndBelow (sub, (int) track->subLanes.size()))
+        {
+            const auto& lane = track->subLanes[(size_t) sub];
+            for (int p = juce::jmax (0, lane.pitchLo); p <= juce::jmin (127, lane.pitchHi); ++p)
+                hit = juce::jmax (hit, track->pitchActivity[p].exchange (0.0f));
+        }
+        shownLevel = hit > shownLevel ? hit : shownLevel * 0.88f;
+        const int bin = (int) (juce::jlimit (0.0f, 1.0f, shownLevel) * 30.0f);
+        if (bin != shownBin)
+        {
+            shownBin = bin;
+            repaint (meterBounds());
+        }
+    }
 
     MainComponent& main;
     Track* track;
     int sub;
+    int tickCount = 0, shownBin = 0;
+    float shownLevel = 0.0f;
     juce::Label name, pitchLabel;
+    juce::Slider volume;
     juce::TextButton muteButton { "M" }, soloButton { "S" };
 };
 
@@ -3228,6 +3301,18 @@ void MainComponent::addSamplerTrack()
     openSampler (*t);   // to load a sample
 }
 
+// The tempo of the first section (what the BPM slider shows), e.g. from the sampler's tempo calculator. One undo step.
+void MainComponent::setFirstTempo (double bpm)
+{
+    beginEdit();
+    auto sections = tempoMap.getSections();
+    sections[0].bpm = bpm;
+    TempoMap m;
+    m.setSections (sections);
+    applyTempoMap (m);
+    bpmSlider.setValue (m.getSections().front().bpm, juce::dontSendNotification);
+}
+
 void MainComponent::openSampler (Track& t)
 {
     if (t.sampler == nullptr)
@@ -3255,6 +3340,8 @@ void MainComponent::openSampler (Track& t)
         });
     samplerWindow->getPanel().onBeginEdit = [safe] { if (safe != nullptr) safe->beginEdit(); };
     samplerWindow->getPanel().onAbortEdit = [safe] { if (safe != nullptr) safe->cancelEdit(); };
+    samplerWindow->getPanel().projectBpm = [safe] { return safe != nullptr ? safe->tempoMap.getSections().front().bpm : 120.0; };
+    samplerWindow->getPanel().setProjectBpm = [safe] (double bpm) { if (safe != nullptr) safe->setFirstTempo (bpm); };
     samplerWindow->onKey = [safe] (const juce::KeyPress& k) { return safe != nullptr && safe->handleUndoKey (k); };
 }
 
@@ -3286,6 +3373,8 @@ void MainComponent::openPadSampler (Track& t, int pad)
         });
     padSamplerWindow->getPanel().onBeginEdit = [safe] { if (safe != nullptr) safe->beginEdit(); };
     padSamplerWindow->getPanel().onAbortEdit = [safe] { if (safe != nullptr) safe->cancelEdit(); };
+    padSamplerWindow->getPanel().projectBpm = [safe] { return safe != nullptr ? safe->tempoMap.getSections().front().bpm : 120.0; };
+    padSamplerWindow->getPanel().setProjectBpm = [safe] (double bpm) { if (safe != nullptr) safe->setFirstTempo (bpm); };
     padSamplerWindow->onKey = [safe] (const juce::KeyPress& k) { return safe != nullptr && safe->handleUndoKey (k); };
 }
 
@@ -4106,7 +4195,68 @@ void MainComponent::rebuildTrackUI()
     clipsChanged();
 }
 
+// Dragging a track's header: shows where it would land (a line), and moves the track there when the mouse is released.
+void MainComponent::dragTrackHeader (Track& t, int y, bool finished)
+{
+    int from = -1;
+    for (int i = 0; i < lanes.size(); ++i)
+        if (&lanes[i]->getTrack() == &t)
+            from = i;
+    if (from < 0 || trackTops.size() != (size_t) lanes.size())
+        return;
+
+    const int n = lanes.size(), total = trackRowsEnd;
+    int to = 0, lineY = 0;
+    bool placed = false;
+    for (int j = 0; j < n; ++j)
+    {
+        if (j == from)
+            continue;
+        const int top = trackTops[(size_t) j];
+        const int bottom = j + 1 < n ? trackTops[(size_t) j + 1] : total;
+        if (! placed && y < (top + bottom) / 2)
+        {
+            lineY = top;
+            placed = true;
+            break;
+        }
+        ++to;
+        lineY = bottom;
+    }
+
+    if (! finished)
+    {
+        if (dropLine.getParentComponent() != &headerHolder)
+            headerHolder.addAndMakeVisible (dropLine);
+        dropLine.setBounds (4, juce::jmax (0, lineY - 2), controlsWidth - 8, 4);
+        dropLine.toFront (false);
+        return;
+    }
+
+    headerHolder.removeChildComponent (&dropLine);
+    int steps = to - from;
+    if (steps == 0)
+        return;
+    beginEdit();
+    const int dir = steps < 0 ? -1 : 1;
+    bool moved = false;
+    for (; steps != 0; steps -= dir)
+        moved = engine.moveTrack (t, dir) || moved;
+    if (moved)
+        juce::MessageManager::callAsync ([safe = juce::Component::SafePointer<MainComponent> (this)] { if (safe != nullptr) safe->rebuildTrackUI(); });
+    else
+        cancelEdit();
+}
+
 std::unique_ptr<TrackHeader> MainComponent::makeHeader (Track& t, bool master)
+{
+    auto header = makeHeaderRaw (t, master);
+    if (! master)
+        header->reorder = [this] (Track& tr, int y, bool finished) { dragTrackHeader (tr, y, finished); };
+    return header;
+}
+
+std::unique_ptr<TrackHeader> MainComponent::makeHeaderRaw (Track& t, bool master)
 {
     return std::make_unique<TrackHeader> (t, [this] (Track* tr)
     {
@@ -4231,6 +4381,7 @@ void MainComponent::layoutContent()
             ++subIndex;
         }
     }
+    trackRowsEnd = y;   // (the bottom of the last track, with its sub-tracks)
     const int contentH = juce::jmax (y, visibleH);
     laneHolder.setSize (contentW, contentH);
     headerHolder.setSize (controlsWidth, contentH);
@@ -5748,6 +5899,7 @@ void MainComponent::saveProject (const juce::File& file, SaveKind kind)
                     lo->setProperty ("hi", sl.pitchHi);
                     lo->setProperty ("mute", sl.mute);
                     lo->setProperty ("solo", sl.solo);
+                    lo->setProperty ("vol", (double) sl.volume);
                     lanesList.add (juce::var (lo));
                 }
                 o->setProperty ("subLanes", lanesList);
@@ -6521,6 +6673,7 @@ void MainComponent::loadProject (const juce::File& file)
                     sl.pitchHi = juce::jlimit (sl.pitchLo, 127, (int) lv.getProperty ("hi", sl.pitchLo));
                     sl.mute = (bool) lv.getProperty ("mute", false);
                     sl.solo = (bool) lv.getProperty ("solo", false);
+                    sl.volume = juce::jlimit (0.0f, 1.5f, (float) (double) lv.getProperty ("vol", 1.0));
                     loaded.push_back (sl);
                 }
                 engine.setSubLanes (*t, std::move (loaded), (bool) item.getProperty ("subLanesOpen", true));
@@ -6951,7 +7104,7 @@ void MainComponent::startTour()
                        [this] { return timeLabel.getBounds().getUnion (followButton.getBounds()); } });
     steps.push_back ({ "Your tracks",
                        "The dot arms a track for recording. A automates volume, pan and effects (and can record your fader rides as takes), "
-                       "VST holds plugins, FX the built-in effects, M and S mute and solo. A drum track opens the drum rack.",
+                       "VST holds plugins, FX the built-in effects, M and S mute and solo. A drum track opens the drum rack. Drag a track by its name to move it up or down.",
                        [this] { return headerViewport.getBounds(); } });
     steps.push_back ({ "The arrangement",
                        "Drag clips to move them, S splits at the playhead, right-click a clip for more (takes, comping, reverse, stretch). "

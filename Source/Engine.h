@@ -206,6 +206,7 @@ struct SubLane
     juce::String name;
     int pitchLo = 36, pitchHi = 36;
     bool mute = false, solo = false;
+    float volume = 1.0f;   // the sub-track's fader (0 - 1.5): scales the velocity of its notes
     bool covers (int pitch) const { return pitch >= pitchLo && pitch <= pitchHi; }
 };
 
@@ -221,6 +222,11 @@ struct Track
     bool subLanesOpen = false;          // UI: the sub-tracks are shown under the track
     bool subAutoDone = false;           // the program already looked at this track's instrument (a drum plugin gets its sub-tracks once, by itself)
     std::atomic<std::uint64_t> audibleLo { ~0ull }, audibleHi { ~0ull };   // bit p set = notes of pitch p play (sub-track mute / solo)
+    std::atomic<float> pitchVolume[128];    // sub-track fader per pitch (1 = as written)
+    std::atomic<float> pitchActivity[128];  // loudest note-on (velocity) of a pitch since the UI looked: the sub-track level meters
+    Track() { for (auto& v : pitchVolume) v.store (1.0f); for (auto& a : pitchActivity) a.store (0.0f); }
+    void noteSeen (int p, float velocity) { if (p >= 0 && p < 128 && velocity > pitchActivity[p].load (std::memory_order_relaxed)) pitchActivity[p].store (velocity, std::memory_order_relaxed); }
+    float pitchGain (int p) const { return p < 0 || p > 127 ? 1.0f : pitchVolume[p].load(); }
     bool pitchAudible (int p) const { return p < 0 || p > 127 || (((p < 64 ? audibleLo.load() : audibleHi.load()) >> (p & 63)) & 1ull) != 0; }
 
     SynthParams synth;                  // MIDI tracks
@@ -367,6 +373,7 @@ public:
     // Sub-tracks of a MIDI track (see SubLane): replace the list; the mute / solo state decides which pitches are heard
     void setSubLanes (Track&, std::vector<SubLane>, bool open);
     void updateSubLaneMask (Track&);                  // after mute / solo changed (call with the engine lock)
+    void setSubLaneVolume (Track&, int index, float volume);        // the sub-track's fader, 0 - 1.5 (velocity scale)
     void setSubLaneState (Track&, int index, int mute, int solo);   // -1 keeps a flag; 0 / 1 sets it
 
     // ---- Message thread: routing. A track plays into the master or into one bus, and can also send a share of its sound to buses.

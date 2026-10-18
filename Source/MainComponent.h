@@ -223,6 +223,7 @@ public:
     const TempoMap& getTempoMap() const { return tempoMap; }   // tempo and time signature sections: grid, snapping, ruler
     void applyTempoMap (const TempoMap&);                       // also re-times MIDI, the loop and the punch region
     void openTempoPanel();
+    void setFirstTempo (double bpm);                            // the tempo of the first section (one undo step)
     double snapTime (double seconds) const;
 
     bool isLiveNoteDown (int pitch) const   // a note being played right now on a MIDI keyboard or the computer keys
@@ -259,6 +260,8 @@ private:
     void layoutContent();
     void layoutMasterLane();                                    // keeps the master strip's lane scrolled with the arrangement
     std::unique_ptr<TrackHeader> makeHeader (Track&, bool master);
+    std::unique_ptr<TrackHeader> makeHeaderRaw (Track&, bool master);
+    void dragTrackHeader (Track&, int yInHolder, bool finished);   // moving a track by its header: the drop line, then the move
     void addTrackDialog();
     void addTrackMenu();                       // "+ Track": an empty audio track, or audio from files
     void addEmptyAudioTrack();
@@ -529,7 +532,13 @@ private:
     juce::OwnedArray<SubLaneRow> subRows;          // the sub-tracks shown under MIDI tracks (see Engine.h: SubLane), in arrangement order
     juce::OwnedArray<SubLaneHeader> subHeaders;
     juce::String subSignature;                      // what they were built for: they are made again when this changes
-    std::vector<int> trackTops;                     // the top of every track's row in the arrangement (sub-tracks make the rows uneven)
+    struct DropLine : juce::Component
+    {
+        DropLine() { setInterceptsMouseClicks (false, false); }
+        void paint (juce::Graphics& g) override { g.setColour (juce::Colour (0xfff28c28)); g.fillRoundedRectangle (getLocalBounds().toFloat(), 2.0f); }
+    } dropLine;
+    int trackRowsEnd = 0;                           // where the last track (with its sub-tracks) ends
+    std::vector<int> trackTops;                    // the top of every track's row in the arrangement (sub-tracks make the rows uneven)
     SyncViewport laneViewport;
     juce::Viewport headerViewport;
     juce::Component laneHolder, headerHolder;

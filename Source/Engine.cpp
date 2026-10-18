@@ -2473,7 +2473,11 @@ void Engine::collectNoteEvents (Track& t, int n, juce::int64 pos, bool running)
                 const double on = (clip.start + note.start) * sampleRate;
                 const double off = on + note.length * sampleRate;
                 if (on >= (double) pos && on < blockEnd)
-                    noteEvents.push_back ({ (int) (on - (double) pos), true, note.pitch, note.velocity });
+                {
+                    const float vel = juce::jlimit (0.0f, 1.0f, note.velocity * t.pitchGain (note.pitch));
+                    noteEvents.push_back ({ (int) (on - (double) pos), true, note.pitch, vel });
+                    t.noteSeen (note.pitch, vel);
+                }
                 if (off >= (double) pos && off < blockEnd)
                     noteEvents.push_back ({ (int) (off - (double) pos), false, note.pitch, 0.0f });
             }
@@ -2494,7 +2498,7 @@ void Engine::collectNoteEvents (Track& t, int n, juce::int64 pos, bool running)
     {
         const auto m = meta.getMessage();
         const int offset = juce::jlimit (0, juce::jmax (0, n - 1), meta.samplePosition);
-        if (m.isNoteOn())       noteEvents.push_back ({ offset, true, m.getNoteNumber(), m.getFloatVelocity(), m.getChannel() });
+        if (m.isNoteOn())       { noteEvents.push_back ({ offset, true, m.getNoteNumber(), m.getFloatVelocity(), m.getChannel() }); t.noteSeen (m.getNoteNumber(), m.getFloatVelocity()); }
         else if (m.isNoteOff()) noteEvents.push_back ({ offset, false, m.getNoteNumber(), 0.0f, m.getChannel() });
     }
 
@@ -3849,6 +3853,12 @@ void Engine::updateSubLaneMask (Track& t)
     }
     t.audibleLo = lo;
     t.audibleHi = hi;
+
+    for (auto& v : t.pitchVolume)
+        v.store (1.0f);
+    for (auto& s : t.subLanes)
+        for (int p = juce::jmax (0, s.pitchLo); p <= juce::jmin (127, s.pitchHi); ++p)
+            t.pitchVolume[p].store (s.volume);
 }
 
 void Engine::setSubLanes (Track& t, std::vector<SubLane> lanes, bool open)
@@ -3856,6 +3866,15 @@ void Engine::setSubLanes (Track& t, std::vector<SubLane> lanes, bool open)
     const juce::ScopedLock sl (lock);
     t.subLanes = std::move (lanes);
     t.subLanesOpen = open && ! t.subLanes.empty();
+    updateSubLaneMask (t);
+}
+
+void Engine::setSubLaneVolume (Track& t, int index, float volume)
+{
+    const juce::ScopedLock sl (lock);
+    if (! juce::isPositiveAndBelow (index, (int) t.subLanes.size()))
+        return;
+    t.subLanes[(size_t) index].volume = juce::jlimit (0.0f, 1.5f, volume);
     updateSubLaneMask (t);
 }
 

@@ -10,15 +10,22 @@ float detectPitchHz (const float* x, int n, double sampleRate, float& rms)
     if (rms < 0.004f)
         return 0.0f;
 
-    // YIN: difference function over lags up to 40 ms back (25 Hz), the window being half the data.
-    const int maxLag = juce::jmin (n / 2, (int) (sampleRate / 25.0));
-    const int minLag = juce::jmax (2, (int) (sampleRate / 1500.0));
+    // YIN over lags from 4200 Hz (C8) down to 16 Hz (C0), as far as the data allows (the window is what is left after the longest lag).
+    // The difference function is made lag by lag and the search stops at the first dip, so a high note costs very little.
+    const int maxLag = juce::jmin (n / 2, (int) (sampleRate / 16.0));
+    const int minLag = juce::jmax (2, (int) (sampleRate / 4200.0));
     const int window = n - maxLag;
     if (window < 256 || maxLag <= minLag + 2)
         return 0.0f;
 
-    std::vector<float> d ((size_t) maxLag + 1, 0.0f);
-    for (int tau = 1; tau <= maxLag; ++tau)
+    // cumulative mean normalised difference
+    std::vector<float> cm ((size_t) maxLag + 2, 1.0f);
+    double running = 0.0;
+
+    // the first dip below the threshold (then down to its bottom) is the period
+    constexpr float threshold = 0.15f;
+    int best = -1;
+    for (int tau = 1; tau < maxLag; ++tau)
     {
         double sum = 0.0;
         for (int j = 0; j < window; ++j)
@@ -26,35 +33,24 @@ float detectPitchHz (const float* x, int n, double sampleRate, float& rms)
             const double diff = (double) x[j] - (double) x[j + tau];
             sum += diff * diff;
         }
-        d[(size_t) tau] = (float) sum;
-    }
+        running += sum;
+        cm[(size_t) tau] = running > 0.0 ? (float) (sum * tau / running) : 1.0f;
 
-    // cumulative mean normalised difference
-    std::vector<float> cm ((size_t) maxLag + 1, 1.0f);
-    double running = 0.0;
-    for (int tau = 1; tau <= maxLag; ++tau)
-    {
-        running += d[(size_t) tau];
-        cm[(size_t) tau] = running > 0.0 ? (float) (d[(size_t) tau] * tau / running) : 1.0f;
-    }
-
-    // the first dip below the threshold (then down to its bottom) is the period
-    constexpr float threshold = 0.15f;
-    int best = -1;
-    for (int tau = minLag; tau < maxLag; ++tau)
-        if (cm[(size_t) tau] < threshold)
+        if (best < 0)
         {
-            while (tau + 1 < maxLag && cm[(size_t) tau + 1] < cm[(size_t) tau])
-                ++tau;
-            best = tau;
-            break;
+            if (tau >= minLag && cm[(size_t) tau] < threshold)
+                best = tau;
         }
+        else if (cm[(size_t) tau] >= cm[(size_t) best])   // past the bottom of the dip (the lag after it is needed for the interpolation)
+            break;
+        else
+            best = tau;
+    }
     if (best < 0)
         return 0.0f;
-
     // parabolic interpolation around the minimum
     float tauF = (float) best;
-    if (best > 1 && best < maxLag)
+    if (best > 1 && best + 1 < maxLag && cm[(size_t) best + 1] < 1.0f)
     {
         const float a = cm[(size_t) best - 1], b = cm[(size_t) best], c = cm[(size_t) best + 1];
         const float denom = a - 2.0f * b + c;
@@ -103,7 +99,7 @@ void TunerPanel::resized()
 
 void TunerPanel::timerCallback()
 {
-    constexpr int n = 4096;
+    constexpr int n = 8192;   // (long enough for the lowest notes: 16 Hz needs more than 3000 samples per period)
     float buf[n];
     if (! engine.readTunerSamples (buf, n))
         return;
