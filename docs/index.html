@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>UFODAW – a small, fast DAW for Windows</title>
+<meta name="description" content="UFODAW is a free, open-source digital audio workstation for Windows: audio and MIDI tracks, VST3 hosting, sampler, drum rack, automation and more.">
+<link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="nav">
+  <a class="brand" href="#top"><img src="icon.png" alt="" width="32" height="32"> UFODAW</a>
+  <nav>
+    <a href="#features">Features</a>
+    <a href="#workflow">Workflow</a>
+    <a href="guide.html">Guide</a>
+    <a href="#download">Download</a>
+    <a href="#faq">FAQ</a>
+    <a class="nav-btn" id="fr-nav" href="#feedback">Request a feature</a>
+  </nav>
+</header>
+
+<main id="top">
+  <section class="hero">
+    <img class="hero-icon" src="icon.png" alt="UFODAW logo: a flying saucer racing a crumbling asteroid in a fiery sky" width="220" height="220">
+    <h1>Record, sequence and mix.<br><span>Abducted by sound.</span></h1>
+    <p class="lead">UFODAW is a small, free digital audio workstation for Windows. Audio and MIDI tracks, VST3 plugins, a sampler, a drum rack and deep automation, in a warm dark interface that stays out of your way.</p>
+    <div class="cta">
+      <a class="btn primary" href="#download">Download for Windows</a>
+      <a class="btn" href="#features">See what it does</a>
+    </div>
+    <p class="meta">Version 0.8.7.3 · Free &amp; open source · AGPLv3 · Windows 64-bit · no installation needed</p>
+  </section>
+
+  <section class="strip" aria-label="Highlights">
+    <div><b>VST3</b><span>instruments &amp; effects</span></div>
+    <div><b>ASIO</b><span>low-latency audio</span></div>
+    <div><b>.mdaw</b><span>self-contained projects</span></div>
+    <div><b>C++ / JUCE</b><span>native, no bloat</span></div>
+  </section>
+
+  <section id="features">
+    <h2>Everything you need to finish a song</h2>
+    <div class="grid">
+      <article>
+        <h3 class="c-orange">Audio tracks</h3>
+        <p>Import wav, aiff, flac, mp3 and ogg by dragging them in. Record several armed tracks at once, each from its own input, with live monitoring through the track's effects.</p>
+      </article>
+      <article>
+        <h3 class="c-red">MIDI &amp; synth</h3>
+        <p>Piano roll with velocity editing, quantize, swing and humanize. A built-in polyphonic synth with ADSR and low-pass, or any VST3 instrument.</p>
+      </article>
+      <article>
+        <h3 class="c-yellow">Drum rack &amp; sampler</h3>
+        <p>16 pads, each a small sampler with velocity layers and round-robin. A Simpler-style sampler with slicing by hits, slices to MIDI, and BPM detection.</p>
+      </article>
+      <article>
+        <h3 class="c-orange">Loop recording &amp; comping</h3>
+        <p>Every loop pass becomes a take. Punch in and out, comp the best parts together in the comp view, and drag takes as blocks.</p>
+      </article>
+      <article>
+        <h3 class="c-red">Mixer &amp; effects</h3>
+        <p>EQ, compressor with sidechain, delay and reverb on every track, plus buses and sends, a master channel, and plugin delay compensation of up to two seconds.</p>
+      </article>
+      <article>
+        <h3 class="c-yellow">Automation</h3>
+        <p>Breakpoint envelopes for volume, pan, every built-in effect and any plugin parameter, with automation rides, takes and comping.</p>
+      </article>
+      <article>
+        <h3 class="c-orange">Warp &amp; stretch</h3>
+        <p>Warp audio clips to the project's beat grid, time-stretch and pitch-shift powered by Rubber Band, with clip gain, fades and crossfades.</p>
+      </article>
+      <article>
+        <h3 class="c-red">Metering &amp; mastering aids</h3>
+        <p>LUFS loudness meter, clipping lamps on every meter, a reference-track A/B switch, and a CPU readout so you see trouble before it crackles.</p>
+      </article>
+      <article>
+        <h3 class="c-yellow">Hardware friendly</h3>
+        <p>MIDI clock, external analog synths, controller support, sequencer plugins like Stochas driving any instrument, and a built-in chromatic tuner.</p>
+      </article>
+    </div>
+  </section>
+
+  <section id="deep" class="center">
+    <h2>Go deeper</h2>
+    <p class="lead">The complicated parts, explained step by step in the guide.</p>
+    <div class="dive">
+      <a href="guide.html#recording"><b>Takes &amp; comping</b><span>Loop record, swipe-comp, punch in and out</span></a>
+      <a href="guide.html#automation"><b>Automation rides</b><span>Touch, Latch and Write with take comping</span></a>
+      <a href="guide.html#sampler"><b>Sampler &amp; slicing</b><span>Slice by hits, slices to MIDI, tempo detection</span></a>
+      <a href="guide.html#warp"><b>Warping audio</b><span>Markers over the beat grid, pitch kept</span></a>
+      <a href="guide.html#midi"><b>MIDI routing</b><span>One sequencer driving many synths</span></a>
+      <a href="guide.html#hardware"><b>Hardware &amp; clock</b><span>External synths and MIDI clock out</span></a>
+      <a href="guide.html#mixing"><b>Sidechain &amp; buses</b><span>Ducking, sends and plugin delay compensation</span></a>
+      <a href="guide.html#export"><b>Stems &amp; export</b><span>Aligned stems, 32-bit float, six formats</span></a>
+    </div>
+    <a class="btn primary" href="guide.html">Read the full guide</a>
+  </section>
+
+  <section id="workflow" class="alt">
+    <h2>Built around how you actually work</h2>
+    <ul class="checks">
+      <li><b>Command palette.</b> Press <kbd>Ctrl</kbd>+<kbd>K</kbd> and type what you want to do.</li>
+      <li><b>Your own shortcuts.</b> Every command can be rebound.</li>
+      <li><b>Project tabs.</b> Several projects open at once, with a clipboard shared between them.</li>
+      <li><b>Arrangement sections.</b> Name verse, chorus and bridge, and navigate by them.</li>
+      <li><b>Safe by default.</b> Autosave and crash recovery, time-stamped backups on every save, and a version history.</li>
+      <li><b>Move your project anywhere.</b> Save with all audio in one folder and take it to another disk or PC.</li>
+      <li><b>Export your way.</b> WAV 16/24/32-bit float and more, plus stem export with every track as its own file.</li>
+      <li><b>Quick tour.</b> A short guided tour on first launch gets you playing quickly.</li>
+    </ul>
+  </section>
+
+  <section id="new" class="alt">
+    <h2>What's new</h2>
+    <div class="log">
+      <div><h3>0.8.7.3 <small>latest</small></h3><ul>
+        <li>Plugin delay compensation up to <b>2 seconds</b> (was 0.5 s), with a 10 ms crossfade when a plugin changes its latency while playing: no gap or click.</li>
+        <li>What you do inside a plugin's own window is now part of <b>undo</b>.</li>
+        <li>macOS build can host Audio Units (untested).</li></ul></div>
+      <div><h3>0.8.7.2</h3><ul><li><kbd>Ctrl</kbd>+<kbd>K</kbd> and the other shortcuts work right after start-up, without clicking in the project first.</li></ul></div>
+      <div><h3>0.8.7.1</h3><ul><li>A new icon: a UFO in front of an orange planet and an asteroid field.</li></ul></div>
+      <div><h3>0.8.7</h3><ul>
+        <li><b>Command palette</b> (<kbd>Ctrl</kbd>+<kbd>K</kbd>) and rebindable shortcuts.</li>
+        <li><b>Sidechain compression</b>, a <b>master meter</b> with LUFS, and a <b>reference track</b> with A/B switching.</li>
+        <li>Copy clips and whole sections between projects.</li></ul></div>
+    </div>
+  </section>
+
+  <section id="download">
+    <h2>Download</h2>
+    <p class="center">Grab <code>UFODAW-0.8.7.3-win64.zip</code> (the latest version) from the Releases page, unzip it and run <code>UFODAW.exe</code>. Double-click any <code>.mdaw</code> file to open a project directly.</p>
+    <div class="cta center">
+      <!-- TODO: replace # with your GitHub Releases URL -->
+      <a class="btn primary" href="#" id="dl">Download 0.8.7.3 (Windows 64-bit)</a>
+      <a class="btn" href="#" id="src">Source code</a>
+    </div>
+    <p class="meta center">Releases are not code-signed yet, so Windows SmartScreen may show a warning. Choose “More info” → “Run anyway”.</p>
+  </section>
+
+  <section id="feedback" class="center">
+    <h2>Missing something?</h2>
+    <p class="lead">UFODAW is shaped by the people who use it. Tell us which feature you want next, or vote for ideas that are already on the list.</p>
+    <div class="cta">
+      <a class="btn primary" id="fr" href="#" target="_blank" rel="noopener">Request a feature</a>
+      <a class="btn" id="fr-list" href="#" target="_blank" rel="noopener">Browse requests</a>
+    </div>
+  </section>
+
+  <section id="faq" class="alt">
+    <h2>FAQ</h2>
+    <details><summary>Is it really free?</summary><p>Yes. UFODAW is free software under the GNU AGPLv3. You can use it, study it and modify it.</p></details>
+    <details><summary>Does it run on macOS or Linux?</summary><p>Not yet. UFODAW is built and tested for Windows. The code has a macOS build that can also host Audio Units, but that is untested because it needs a Mac. There is no Linux build.</p></details>
+    <details><summary>Can I use my audio interface's ASIO driver?</summary><p>Yes. ASIO is supported when built with Steinberg's ASIO SDK. Otherwise WASAPI and DirectSound drivers are available, or an aggregate driver from your interface maker.</p></details>
+    <details><summary>Which plugins work?</summary><p>VST3 instruments and effects, with their own editor windows. Plugin state is stored in the project, and what you do in a plugin window is part of undo. VST2 and CLAP are not supported.</p></details>
+    <details><summary>Can I build it myself?</summary><p>Yes. It is C++17 with CMake and JUCE 8: <code>cmake -S . -B build</code>, then <code>cmake --build build --config Release</code>. Use Release, since Debug is too slow for audio.</p></details>
+  </section>
+</main>
+
+<footer>
+  <img src="icon.png" alt="" width="40" height="40">
+  <p>UFODAW is free software released under the GNU AGPL v3. Built with <a href="https://juce.com">JUCE</a> and the <a href="https://breakfastquay.com/rubberband/">Rubber Band Library</a>.</p>
+</footer>
+
+<script>
+  // Set these once, and both download buttons update.
+  var REPO = "https://github.com/Thulehunter/ufodaw";
+  if (REPO) {
+    document.getElementById("dl").href = REPO + "/releases/latest";
+    document.getElementById("src").href = REPO;
+    var fr = REPO + "/issues/new?labels=enhancement&title=" + encodeURIComponent("Feature request: ");
+    document.getElementById("fr").href = fr;
+    document.getElementById("fr-nav").href = fr;
+    document.getElementById("fr-nav").target = "_blank";
+    document.getElementById("fr-list").href = REPO + "/issues?q=label%3Aenhancement";
+  }
+</script>
+</body>
+</html>

@@ -1,0 +1,301 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>UFODAW Guide – the advanced features explained</title>
+<meta name="description" content="A deep dive into UFODAW's advanced features: take comping, automation rides, sampler and slicing, warping, MIDI routing, sidechain, buses, stems, ASIO and latency.">
+<link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="nav">
+  <a class="brand" href="index.html"><img src="icon.png" alt="" width="32" height="32"> UFODAW</a>
+  <nav>
+    <a href="index.html#features">Features</a>
+    <a href="guide.html" aria-current="page">Guide</a>
+    <a href="index.html#download">Download</a>
+    <a href="index.html#faq">FAQ</a>
+    <a class="nav-btn" id="fr-nav" href="index.html#feedback">Request a feature</a>
+  </nav>
+</header>
+
+<div class="page-head">
+  <h1>The UFODAW guide</h1>
+  <p class="lead">The everyday things are easy to find. This page explains the deeper features: what they do, how to use them, and the details that are easy to miss.</p>
+</div>
+
+<div class="doc">
+  <aside class="toc" aria-label="Contents">
+    <b>On this page</b>
+    <a href="#recording">Recording &amp; takes</a>
+    <a href="#latency">Latency &amp; audio setup</a>
+    <a href="#automation">Automation</a>
+    <a href="#sampler">Sampler &amp; slicing</a>
+    <a href="#warp">Warp &amp; stretch</a>
+    <a href="#drums">Drums &amp; sub-tracks</a>
+    <a href="#midi">MIDI routing &amp; sequencers</a>
+    <a href="#hardware">Hardware &amp; MIDI clock</a>
+    <a href="#mixing">Buses, sends &amp; sidechain</a>
+    <a href="#metering">Metering &amp; reference</a>
+    <a href="#tempo">Tempo map &amp; sections</a>
+    <a href="#export">Exporting &amp; stems</a>
+    <a href="#projects">Projects &amp; safety</a>
+    <a href="#shortcuts">Shortcuts</a>
+    <a href="#limits">Known limitations</a>
+  </aside>
+
+  <main class="prose">
+
+    <section id="recording">
+      <h2>Recording, takes and comping</h2>
+      <p>Every audio track picks its own input (mono, or a stereo pair of your interface), so several armed tracks record at once, each from its own source. <b>Mon</b> lets you hear the input live through the track's effects, volume and pan. Use headphones or your interface's direct monitoring to avoid feedback and double latency.</p>
+
+      <h3>Loop recording</h3>
+      <ol>
+        <li>Set a loop region by right-dragging on the ruler, and turn on <b>Loop</b>.</li>
+        <li>Press <kbd>R</kbd>. Every pass through the loop becomes a <em>take</em>; the newest one plays.</li>
+        <li>Right-click the clip and choose <b>Choose take</b> to audition others.</li>
+      </ol>
+
+      <h3>Comping</h3>
+      <p>Right-click a take and choose <b>Comp takes</b>. Every take gets its own row; swipe across a row to play that take at that spot. The takes are split at the swipe with short fades at the joins, and each swipe is a separate undo step. In the comp view each take is a block: drag an edge to trim it, <kbd>Alt</kbd>+drag the body to move it, right-click to duplicate or delete. <b>Keep this take</b> flattens the result.</p>
+      <p class="tip">Prefer the keyboard? Press <kbd>S</kbd> to cut all takes at the playhead, then pick a different take for each part.</p>
+
+      <h3>Punch in/out</h3>
+      <p>Turn on <b>Punch</b> (<kbd>P</kbd>). The region is the selected clip, or two bars at the playhead; change it with <kbd>Shift</kbd>+right-drag on the ruler. Press Record: playback starts a bar before the region, records inside it, and closes the recording itself at the punch-out. The rest of the take is untouched.</p>
+
+      <h3>Count-in and click</h3>
+      <p><b>Count-in</b> gives 0–4 bars of clicks before recording starts. They follow the tempo and time signature at the playhead, play even when the metronome is off, and nothing is recorded during them. The <b>Click</b> button (<kbd>M</kbd>) toggles the metronome at any time.</p>
+
+      <h3>Several inputs at once</h3>
+      <p>Arm a keyboard track and an e-drum track with their red dots, set each track's <em>MIDI input</em> in its VST panel, and press Record: they record together, each from its own device and channel. This works alongside armed audio tracks too. Mod wheel, expression, pedals, pitch bend and aftertouch are recorded with the notes and edited in the lane under the piano roll.</p>
+    </section>
+
+    <section id="latency">
+      <h2>Latency and audio setup</h2>
+      <p>Sound needs time to travel to your headphones and back through the interface, so a recording arrives late. UFODAW places it on the timeline <em>earlier</em> by that round trip, so it lines up with what you played along to. This also applies to loop takes and punch recordings. Open the <b>Audio</b> icon for three tabs:</p>
+      <dl>
+        <dt>Automatic</dt><dd>Uses the input and output latency the driver reports.</dd>
+        <dt>Measured</dt><dd>Press <b>Measure</b>. UFODAW plays a short click out of the first two outputs and listens for it on the input you pick. Connect an output to that input with a cable (or point a microphone at the speakers), turn the monitors down, and measure. The result is remembered.</dd>
+        <dt>None</dt><dd>Switches compensation off.</dd>
+        <dt>Extra offset</dt><dd>Fine-tune in milliseconds (positive = earlier). Record a click or clap and check that it lands on the grid.</dd>
+      </dl>
+
+      <h3>Drivers and ASIO</h3>
+      <p>Out of the box you get Windows Audio (WASAPI), its Exclusive and Low Latency modes, and DirectSound. For <b>ASIO</b> drivers (PreSonus, Roland Rubix, AudioBox and others) a build has to include Steinberg's ASIO SDK, which cannot be shipped with the sources. If you build UFODAW yourself:</p>
+      <ol>
+        <li>Download the SDK from Steinberg and accept their licence.</li>
+        <li>Unzip it into <code>third_party\</code> so that <code>third_party\asiosdk_&lt;version&gt;\common\iasiodrv.h</code> exists.</li>
+        <li>Run CMake again. It prints <code>ASIO support: ON</code> and ASIO shows up as a driver type.</li>
+      </ol>
+      <p class="tip">Windows lets a program use one ASIO driver at a time. To use two interfaces together, choose Windows Audio (input and output can be different devices) or an aggregate driver from the interface maker.</p>
+    </section>
+
+    <section id="automation">
+      <h2>Automation</h2>
+      <p>Press <kbd>A</kbd> on a track and pick what to automate: volume, pan, any built-in effect parameter, the synth or sampler, or any parameter of a hosted VST3 plugin. Click in the lane to add breakpoints, drag to move, right-click to remove. Pan envelopes honour <b>Pan snap 5%</b>.</p>
+
+      <h3>Recording rides</h3>
+      <ol>
+        <li>Pick an envelope, then <b>Record rides</b> and a mode: <em>Touch</em>, <em>Latch</em> or <em>Write</em>.</li>
+        <li>Press play and move the fader or knob.</li>
+        <li>Every pass is kept as a take and comped into the envelope with a short crossfade.</li>
+      </ol>
+      <p>In the lane, <kbd>Shift</kbd>+drag selects a time range, and right-click offers <b>Play here</b> (per take), <b>Delete take</b> and <b>Fade between takes</b>. <b>Comp view</b> shows the result on top and every take in its own row; swipe across a row and the result updates at once.</p>
+    </section>
+
+    <section id="sampler">
+      <h2>The sampler and slicing</h2>
+      <p>Choose <b>+ &gt; Sampler</b> for a MIDI track that plays one sample. Load a file (or drop one on the track), drag the yellow start and end markers, and pick a mode:</p>
+      <dl>
+        <dt>Classic</dt><dd>Pitched by the key relative to the root note, with loop, ADSR and a low-pass filter. <b>Detect pitch</b> sets the root note and tuning from the sample itself.</dd>
+        <dt>One-shot</dt><dd>Plays out completely, whatever the key does.</dd>
+        <dt>Slice</dt><dd>The region is cut into equal slices, one key each.</dd>
+      </dl>
+
+      <h3>Slice by hits</h3>
+      <p>In Slice mode, <b>Slice by hits</b> cuts the region at its transients (kicks, snares, hats) instead of in equal parts. The slider next to it sets the sensitivity. <b>To MIDI</b> places the slices on the track as a pattern, one note per slice from the slice key upward, in the original timing, at the playhead. That is the quickest way to rearrange a drum loop.</p>
+
+      <h3>Tempo tools</h3>
+      <p><b>Tempo…</b> tells you how many beats the marked part lasts and what tempo that makes. <b>Detect the tempo</b> finds it from the audio. Then either set the project tempo to it, or stretch the sample (pitch kept) to the project's tempo.</p>
+      <p>Right-click any audio clip and choose <b>Sample this clip</b> to turn it into a sampler track with one note. The <b>Stretch</b> slider (0.25x–4x) changes length without changing pitch, and works on drum pads too.</p>
+    </section>
+
+    <section id="warp">
+      <h2>Warping and stretching audio</h2>
+      <p>Right-click an audio clip and choose <b>Warp…</b>. The clip is drawn over the project's beat grid.</p>
+      <ol>
+        <li><b>Find hits</b> places a marker on every transient.</li>
+        <li><b>Match tempo</b> brings the clip to the project tempo.</li>
+        <li><b>Snap to grid</b> moves every marker to the nearest sixteenth.</li>
+        <li>Drag markers to fine-tune: double-click adds one, right-click removes one.</li>
+        <li><b>Apply</b> stretches the audio between markers with pitch kept, in the background. It is saved with the project and can be undone.</li>
+      </ol>
+      <h3>Simple stretch and pitch</h3>
+      <p><b>Gain, stretch and pitch…</b> sets clip gain (with <em>Normalize</em>), length as a percentage (200% = twice as long, or <em>Fit to project tempo</em> from the clip's own BPM), and pitch in semitones. It is rendered offline with Rubber Band from the original, so <b>Reset</b> always restores the untouched audio, and results are cached on disk. <b>Edit volume curve</b> draws a multiplier over the clip; splitting the clip splits the curve too.</p>
+    </section>
+
+    <section id="drums">
+      <h2>Drum rack and sub-tracks</h2>
+      <p>The <b>Drum Rack</b> has 16 pads, each a small sampler with start/end, pitch, envelope, filter, reverse, level, pan, mute, solo and a choke group (closed and open hi-hat). With the pad window focused, <kbd>Z X C V</kbd> / <kbd>A S D F</kbd> / <kbd>Q W E R</kbd> / <kbd>1 2 3 4</kbd> play the pads. A step sequencer plays all 16.</p>
+      <h3>Velocity layers and round-robin</h3>
+      <p>A pad can hold up to three more samples, each with a velocity range. Samples with overlapping ranges take turns, so a repeated snare never sounds identical. Ranges side by side make a soft/hard pair.</p>
+      <h3>Sub-tracks for drum plugins</h3>
+      <p>Load a drum plugin (EZdrummer, Superior Drummer, Addictive Drums, BFD…) and its drum sub-tracks appear by themselves: one lane per pitch (kick, snare, hats) under the track. You can also create them from the notes the track uses, from a General MIDI preset, or by hand. Each sub-track has its own mute, solo, name, pitch range, a volume fader (0–1.5, scaling the velocity of that pitch) and a small meter showing how hard it is hit. Click an empty spot in a lane to add a note and a note to remove it. Everything is saved with the project and undoable.</p>
+      <h3>Stretchable patterns</h3>
+      <p>Drag the right edge of a MIDI or drum clip: longer repeats the pattern, shorter cuts it. Hold <kbd>Shift</kbd> to stretch the pattern itself (half as long = twice as fast), and <kbd>Alt</kbd> to switch snapping off.</p>
+    </section>
+
+    <section id="midi">
+      <h2>MIDI routing and sequencer plugins</h2>
+      <p>A sequencer plugin such as Stochas makes notes but no sound. UFODAW lets it play the synth of one or more other tracks.</p>
+      <ol>
+        <li>Add two MIDI tracks: one for the sequencer, one for the synth.</li>
+        <li>On the synth track, open <b>VST</b> and pick your synthesizer.</li>
+        <li>On the sequencer track, open <b>VST</b>, set <b>Use as</b> to <em>Sequencer</em>, and pick the plugin.</li>
+        <li>Tick the track(s) that should play its notes. Each ticked track has a channel setting: <em>All channels</em> passes notes unchanged; <em>Channel N</em> sends only that channel, delivered as channel 1.</li>
+        <li>Press play. The plugin receives tempo, bar position and play state from the DAW. The sequencer track itself is silent.</li>
+      </ol>
+      <p>Because each channel can go to a different synth, one multi-track sequencer can drive a whole rack of instruments.</p>
+      <p class="tip">An arpeggiator or chord tool that should change the notes of <em>one</em> track belongs under <b>MIDI effects</b> in that track's VST panel instead.</p>
+      <h3>Quantize, swing, humanize</h3>
+      <p>Press <kbd>Q</kbd> on a MIDI clip: grid from 1/4 to 1/32 and triplets, strength, swing (100% = triplet feel), random timing (ms) and velocity variation, optionally note lengths. It works on drum clips too.</p>
+    </section>
+
+    <section id="hardware">
+      <h2>Hardware synths and MIDI clock</h2>
+      <h3>Playing an external synth</h3>
+      <ol>
+        <li>Connect the interface's (or a USB) MIDI OUT to the synth's MIDI IN, and set the synth to the channel you send on.</li>
+        <li>In a MIDI or sequencer track's <b>VST</b> panel, tick the MIDI output under <em>External MIDI instruments (hardware)</em>.</li>
+        <li><b>From channel</b> chooses which sequencer channel goes there; <b>Send as channel</b> is what the hardware receives.</li>
+        <li>Press play. Notes leave shifted by the output latency so the synth stays in time, and <em>all notes off</em> is sent when you stop.</li>
+      </ol>
+      <p>A track that sends to hardware makes no sound itself and gives no stem. To hear the synth in the DAW, connect its audio to an interface input and record it on an audio track. A sequencer can drive internal synths and several hardware synths at once.</p>
+      <h3>MIDI clock</h3>
+      <p>Under <b>Audio… &gt; MIDI clock</b>, tick the outputs of drum machines or sequencers that should follow UFODAW. They get 24 ticks per quarter note following the tempo map, Start (or Continue with the song position), a new position when you jump, and Stop. <b>Clock shift</b> nudges the clock a few milliseconds to line hardware up with the audio. Exports never play hardware or send clock.</p>
+    </section>
+
+    <section id="mixing">
+      <h2>Buses, sends and sidechain</h2>
+      <h3>Buses and sends</h3>
+      <p><b>+ &gt; Bus</b> creates a group or effects-return channel. Put a reverb or delay on it, then use the <b>Out</b> button on any track: play the track <em>into</em> the bus (a drum bus, say) and/or <em>send</em> part of it with a level per bus, post-fader or <em>Pre</em>. Muting a track mutes its sends; soloing a track keeps its bus audible.</p>
+      <h3>Sidechain compression</h3>
+      <p>In a track's <b>FX</b> panel, the compressor has a <b>Listens to</b> box. Pick another track (the kick) and this track ducks whenever that one is loud, so a bass or pad pumps with the kick. Picking a track turns the compressor on with fitting settings. The track being listened to can be muted and still does its job, and both stems and the mix contain the ducking.</p>
+      <h3>Plugin delay compensation</h3>
+      <p>Tracks are delayed to line up with plugins that report latency (up to two seconds), so a lookahead limiter on one track does not smear it against the others. If a plugin reports a different latency while playing, the compensation crossfades over about 10 ms, so there is no gap or click.</p>
+      <h3>Mono check</h3>
+      <p>The <b>Mono</b> button on any track, bus or the master sums left and right. Use it to check a source or the whole mix in mono, or to centre a stereo recording.</p>
+      <h3>Plugins and CPU</h3>
+      <p>VST3 instruments and effects open in their own windows and are saved with the project. A track name turns yellow at 25% and orange at 50% of the audio time, so you can see which plugin is heavy; hover the header for the exact figure. The status line shows the device load.</p>
+    </section>
+
+    <section id="metering">
+      <h2>Metering and reference tracks</h2>
+      <p>The <b>Meter</b> button on the master strip shows loudness in LUFS (momentary, short-term, integrated, measured as streaming services do: ITU-R BS.1770 / EBU R128), the highest sample, a 20 Hz–20 kHz spectrum and a target to aim for: −14 LUFS for Spotify and YouTube, −16 for Apple Music, −23 for broadcast.</p>
+      <h3>A/B against a reference</h3>
+      <ol>
+        <li>In the master meter, press <b>Load reference…</b> and choose a finished song.</li>
+        <li><b>Start here</b> lines it up at the playhead.</li>
+        <li><b>Match loudness</b> sets it to the loudness of your mix so louder does not sound better.</li>
+        <li>Press <kbd>B</kbd> to switch between your mix and the reference while playing, with a short crossfade.</li>
+      </ol>
+      <p>The reference is saved with the project and is never part of an export.</p>
+      <h3>Clipping lamps</h3>
+      <p>A red <b>CLIP</b> lamp lights in the top bar, on every meter and as a red frame on the strip when a track output, the master (over 0 dB before the limiter) or an armed input reaches full scale. They stay lit until clicked. A recording that clips cannot be repaired, so lower the gain on the interface.</p>
+    </section>
+
+    <section id="tempo">
+      <h2>Tempo map and sections</h2>
+      <p><b>Tempo</b> (next to BPM) opens a list of sections, each starting at a bar with its own BPM and time signature (3/4, 6/8, 7/8…). The ruler, grid, snapping, metronome and the tempo given to plugins all follow it. Changing tempo or meter keeps MIDI, the loop and the punch region in place <em>in the music</em> (same bar, same beat), while audio clips stay where they are in time.</p>
+      <h3>Arrangement sections</h3>
+      <p>The <b>Sections</b> button names parts of the song (verse, chorus…) as coloured bands on the ruler. <b>Go</b> moves the playhead, <b>Loop</b> loops the part, <b>Copy</b> duplicates it with everything inside it and moves later material along, and <b>&lt;</b> / <b>&gt;</b> swap neighbours. <b>Clip</b> and <b>Paste section</b> move a whole section between projects; tracks that do not exist yet (by name) are created.</p>
+    </section>
+
+    <section id="export">
+      <h2>Exporting and stems</h2>
+      <p><b>Export audio</b> and <b>Export stems</b> offer WAV (16 / 24 / 32-bit float), FLAC, AIFF, MP3 (128–320 kbps) and Ogg Vorbis. Rendering happens in the background with a Cancel button, and your last format is remembered.</p>
+      <p><b>Export stems</b> writes one file per track into a folder you pick, named <code>01 - Bass loop.wav</code>, <code>02 - Synth 1.wav</code> and so on, in track order.</p>
+      <ul>
+        <li>Each stem is the track as you hear it: after effects and plugins, with volume, pan and automation.</li>
+        <li>Stems are dry: they ignore buses and sends, so a shared reverb is not included. Use <b>Export audio</b> for the full mix.</li>
+        <li>Muted, empty and sequencer tracks are skipped, and the summary tells you which.</li>
+        <li><b>32-bit float</b> cannot clip, even when a stem goes above 0 dBFS.</li>
+        <li>By default the stems add up exactly to the mix. Optionally each stem can get the master volume and soft limiter.</li>
+        <li>Every stem is as long as the whole project plus reverb and delay tails, so they line up in any other DAW.</li>
+      </ul>
+    </section>
+
+    <section id="projects">
+      <h2>Projects, tabs and safety</h2>
+      <ul>
+        <li><b>Project tabs.</b> Open several projects at once (<kbd>Ctrl</kbd>+<kbd>N</kbd>, <kbd>Ctrl</kbd>+<kbd>W</kbd>, <kbd>Ctrl</kbd>+<kbd>Tab</kbd>). All tabs share one audio device; only the visible tab is connected to it and to MIDI, so switching is instant. Unsaved tabs have a yellow dot.</li>
+        <li><b>Copy between projects.</b> The clipboard is shared by all tabs.</li>
+        <li><b>Autosave.</b> Every two minutes, when something changed, a recovery file is written. After a crash, the next start offers to restore it.</li>
+        <li><b>Backups and version history.</b> Every save leaves a time-stamped copy (the newest twenty are kept), plus one every ten minutes of unsaved work. <b>File &gt; Version history…</b> opens one in a new tab or goes back to it, keeping the current state as a copy first.</li>
+        <li><b>Save As.</b> <em>Save a new version</em> (jam, jam v2, jam v3…) or <em>Save with all audio in one folder</em>, which copies every audio file into <code>&lt;folder&gt;Audio</code> so the project can move to another disk or PC.</li>
+        <li><b>Track templates.</b> Right-click a track header &gt; <b>Save as a template…</b> keeps its settings, effects, plugins with state and clips. <b>+ &gt; From a template</b> adds it to any project.</li>
+        <li><b>STOP ALL</b> (<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Space</kbd>) stops playback and recording and silences every sound at once, plugins and MIDI hardware included.</li>
+      </ul>
+      <p>Under the hood, the audio thread never blocks: the interface edits the project under a lock that the audio callback only <em>tries</em> to take. Undo uses cheap snapshots of the whole project, where sample data is shared rather than copied.</p>
+    </section>
+
+    <section id="shortcuts">
+      <h2>Shortcuts</h2>
+      <p>Every command can be rebound under <b>File &gt; Keyboard shortcuts…</b>. Press <kbd>Ctrl</kbd>+<kbd>K</kbd> for the command palette. These are the defaults:</p>
+      <div class="table-wrap">
+      <table>
+        <tr><th>Action</th><th>Key</th></tr>
+        <tr><td>Play / pause</td><td><kbd>Space</kbd></td></tr>
+        <tr><td>Rewind</td><td><kbd>Enter</kbd></td></tr>
+        <tr><td>Record</td><td><kbd>R</kbd></td></tr>
+        <tr><td>Loop on / off · loop selected clip</td><td><kbd>L</kbd> · <kbd>Shift</kbd>+<kbd>L</kbd></td></tr>
+        <tr><td>Punch</td><td><kbd>P</kbd></td></tr>
+        <tr><td>Metronome</td><td><kbd>M</kbd></td></tr>
+        <tr><td>Split at playhead</td><td><kbd>S</kbd></td></tr>
+        <tr><td>Quantize MIDI clip</td><td><kbd>Q</kbd></td></tr>
+        <tr><td>Automation lane</td><td><kbd>A</kbd></td></tr>
+        <tr><td>Duplicate clip</td><td><kbd>Ctrl</kbd>+<kbd>D</kbd></td></tr>
+        <tr><td>Cut / copy / paste</td><td><kbd>Ctrl</kbd>+<kbd>X</kbd> / <kbd>C</kbd> / <kbd>V</kbd></td></tr>
+        <tr><td>Undo / redo</td><td><kbd>Ctrl</kbd>+<kbd>Z</kbd> / <kbd>Y</kbd></td></tr>
+        <tr><td>Save / open</td><td><kbd>Ctrl</kbd>+<kbd>S</kbd> / <kbd>O</kbd></td></tr>
+        <tr><td>A/B reference</td><td><kbd>B</kbd></td></tr>
+        <tr><td>Zoom</td><td><kbd>Ctrl</kbd> + mouse wheel</td></tr>
+        <tr><td>Ignore snapping while dragging</td><td><kbd>Alt</kbd></td></tr>
+        <tr><td>Play with the computer keyboard</td><td>Keys on, then <kbd>A W S E D F T G Y H U J K O L P</kbd></td></tr>
+        <tr><td>Set the loop region</td><td>right-drag on the ruler</td></tr>
+      </table>
+      </div>
+    </section>
+
+    <section id="limits">
+      <h2>Known limitations</h2>
+      <ul>
+        <li>Delay compensation covers audio plugins (instrument and effect inserts) up to 2 s. When a plugin reports another latency while playing, the compensation crossfades over about 10 ms.</li>
+        <li>What you do inside a plugin's own window is one undo step, taken when you open the window. Plugins that keep state outside what they save (a sample loaded by hand, say) may not go back completely.</li>
+        <li>Effect and plugin parameter automation is applied every 64 samples (volume and pan are ramped); synth parameters once per audio block. While a parameter is automated, the envelope wins during playback.</li>
+        <li>VST3 on Windows. VST2 cannot be hosted (Steinberg no longer licenses it) and CLAP is not supported by the hosting code UFODAW is built on. A macOS build can host Audio Units, but it is untested.</li>
+        <li>Windows only so far.</li>
+      </ul>
+      <p>Missing something? <a id="fr-link" href="index.html#feedback">Request a feature</a>.</p>
+    </section>
+
+  </main>
+</div>
+
+<footer>
+  <img src="icon.png" alt="" width="40" height="40">
+  <p>UFODAW is free software released under the GNU AGPL v3. Built with <a href="https://juce.com">JUCE</a> and the <a href="https://breakfastquay.com/rubberband/">Rubber Band Library</a>.</p>
+</footer>
+
+<script>
+  var REPO = "https://github.com/Thulehunter/ufodaw";
+  var fr = REPO + "/issues/new?labels=enhancement&title=" + encodeURIComponent("Feature request: ");
+  ["fr-nav", "fr-link"].forEach(function (id) {
+    var a = document.getElementById(id); a.href = fr; a.target = "_blank"; a.rel = "noopener";
+  });
+</script>
+</body>
+</html>
