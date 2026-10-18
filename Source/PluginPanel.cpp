@@ -9,8 +9,8 @@ namespace
     constexpr int sectionGap = 12;
 }
 
-PluginPanel::PluginPanel (Track& t, Engine& e, PluginHost& h, std::function<void()> onBeginEdit)
-    : track (t), engine (e), host (h), beginEdit (std::move (onBeginEdit))
+PluginPanel::PluginPanel (Track& t, Engine& e, PluginHost& h, std::function<void()> onBeginEdit, std::function<void()> onOpenBuiltIn)
+    : track (t), engine (e), host (h), beginEdit (std::move (onBeginEdit)), openBuiltIn (std::move (onOpenBuiltIn))
 {
     isMidi = track.type == Track::Type::Midi;
 
@@ -40,7 +40,16 @@ PluginPanel::PluginPanel (Track& t, Engine& e, PluginHost& h, std::function<void
         instrumentEdit.onClick = [this]
         {
             if (track.instrument != nullptr)
+            {
                 host.showEditor (*track.instrument);
+            }
+            else if (openBuiltIn)   // the built-in sampler / drum rack: its own window
+            {
+                auto callback = openBuiltIn;
+                if (auto* box = findParentComponentOfClass<juce::CallOutBox>())
+                    box->dismiss();   // (this panel goes away with its callout: the window is opened afterwards)
+                juce::MessageManager::callAsync (callback);
+            }
         };
         addAndMakeVisible (instrumentEdit);
 

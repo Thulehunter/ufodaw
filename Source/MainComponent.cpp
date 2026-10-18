@@ -3015,7 +3015,15 @@ void MainComponent::openInstrumentEditor (Track& t)
 
 void MainComponent::openPlugins (Track& t, juce::Component& anchor)
 {
-    juce::CallOutBox::launchAsynchronously (std::make_unique<PluginPanel> (t, engine, pluginHost, [this] { beginEdit(); }),
+    juce::Component::SafePointer<MainComponent> safe (this);
+    const TrackRef ref (&t);
+    juce::CallOutBox::launchAsynchronously (std::make_unique<PluginPanel> (t, engine, pluginHost, [this] { beginEdit(); },
+                                                                            [safe, ref]
+                                                                            {
+                                                                                if (safe != nullptr && safe->engine.indexOfTrack (ref) >= 0)
+                                                                                    if (ref->sampler != nullptr || ref->kit != nullptr)
+                                                                                        safe->openInstrumentEditor (*ref);
+                                                                            }),
                                             anchor.getScreenBounds(), nullptr);
 }
 

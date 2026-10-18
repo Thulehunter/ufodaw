@@ -10,7 +10,7 @@
 class PluginPanel : public juce::Component
 {
 public:
-    PluginPanel (Track&, Engine&, PluginHost&, std::function<void()> onBeginEdit);
+    PluginPanel (Track&, Engine&, PluginHost&, std::function<void()> onBeginEdit, std::function<void()> onOpenBuiltIn = nullptr);
 
     void paint (juce::Graphics&) override;
     void resized() override;
@@ -60,6 +60,7 @@ private:
     void openInstrumentSearch();
     void updateInstrumentButton();
     juce::TextButton instrumentEdit { "Edit" };
+    std::function<void()> openBuiltIn;   // the built-in instrument's own window (the sampler, the drum rack)
     juce::Array<juce::PluginDescription> instruments;
 
     // Which MIDI input (keyboard, e-drum...) and channel this track listens to and records from.
