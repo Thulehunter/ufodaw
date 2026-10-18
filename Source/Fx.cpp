@@ -68,10 +68,10 @@ void TrackFx::reset()
     reverb.reset();
 }
 
-void TrackFx::process (float* l, float* r, int n, const FxParams& p)
+void TrackFx::process (float* l, float* r, int n, const FxParams& p, const float* keyL, const float* keyR)
 {
     if (p.eqOn)     processEq (l, r, n, p);
-    if (p.compOn)   processCompressor (l, r, n, p);
+    if (p.compOn)   processCompressor (l, r, n, p, keyL, keyR);
     if (p.delayOn)  processDelay (l, r, n, p);
     if (p.reverbOn) processReverb (l, r, n, p);
 }
@@ -102,7 +102,7 @@ void TrackFx::processEq (float* l, float* r, int n, const FxParams& p)
     }
 }
 
-void TrackFx::processCompressor (float* l, float* r, int n, const FxParams& p)
+void TrackFx::processCompressor (float* l, float* r, int n, const FxParams& p, const float* keyL, const float* keyR)
 {
     const float threshold = p.compThreshold;
     const float slope = 1.0f - 1.0f / juce::jmax (1.0f, p.compRatio.load());
@@ -112,7 +112,8 @@ void TrackFx::processCompressor (float* l, float* r, int n, const FxParams& p)
 
     for (int i = 0; i < n; ++i)
     {
-        const float level = juce::jmax (std::abs (l[i]), std::abs (r[i]));   // linked stereo detector
+        const float level = keyL != nullptr ? juce::jmax (std::abs (keyL[i]), std::abs (keyR != nullptr ? keyR[i] : keyL[i]))   // sidechain: the other track decides
+                                            : juce::jmax (std::abs (l[i]), std::abs (r[i]));                                    // linked stereo detector
         const float coef = level > compEnv ? attack : release;
         compEnv = coef * compEnv + (1.0f - coef) * level;
 

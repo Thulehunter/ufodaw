@@ -15,6 +15,10 @@ class SamplerWindow;   // (SamplerPanel.h)
 class DrumRackWindow;  // (DrumRackPanel.h)
 class MixerWindow;     // (MixerPanel.h)
 class WarpWindow;      // (WarpEditor.h)
+class MasterMeterWindow;   // (MasterMeter.h)
+struct Command;        // (Commands.h)
+class CommandPalette;
+class ShortcutsWindow;
 class VersionHistoryWindow;   // (VersionHistory.h)
 
 // Settings shared by the track headers and the lanes
@@ -323,6 +327,8 @@ private:
     void openPadSampler (Track&, int pad);
     std::unique_ptr<SamplerWindow> padSamplerWindow;
     std::unique_ptr<WarpWindow> warpWindow;
+    std::unique_ptr<MasterMeterWindow> meterWindow;
+    void openMasterMeter();                           // loudness, spectrum and the reference track
     std::unique_ptr<VersionHistoryWindow> historyWindow;
     std::unique_ptr<DrumRackWindow> drumRackWindow;
     void openRouting (Track&, juce::Component& anchor);      // output (master or a bus) and sends of a track
@@ -383,7 +389,11 @@ private:
         Clip audio;
         MidiClip midi;
     };
-    ClipboardItem clipboard;
+    static inline ClipboardItem clipboard;   // (one for all projects: copy in one tab, paste in another)
+    struct SectionClipboard { bool valid = false; RangeBundle bundle; ArrSection section; };
+    static inline SectionClipboard sectionClipboard;
+    void sectionToClipboard (int index);
+    void sectionPaste();                                      // the section on the clipboard at the playhead (to a bar)
     void copySelected (bool cut);
     void pasteClip (Track*, double atSeconds);
     Track* pasteTargetTrack() const;
@@ -403,6 +413,12 @@ private:
     // Autosave: every two minutes, when something changed, the project goes to a recovery file. A normal save (or a normal exit
     // without unsaved changes) removes it; if the program dies, or is closed with unsaved changes, it is offered at the next start.
     void openVersionHistory();                        // File > Version history...
+    std::vector<Command> commands;                    // everything the program can do (the palette and the shortcuts come from it)
+    std::unique_ptr<CommandPalette> palette;
+    std::unique_ptr<ShortcutsWindow> shortcutsWindow;
+    void buildCommands();
+    void openPalette();                               // Ctrl+K
+    void openShortcuts();                             // see and change the keyboard shortcuts
     static juce::File templatesFolder();              // track templates (one track saved as a small project file)
     void saveTrackTemplate (Track&);
     void addFromTemplate (const juce::File&);

@@ -13,6 +13,7 @@
 #include "TempoMap.h"
 #include "Sampler.h"
 #include "AudioExport.h"
+#include "Loudness.h"
 
 // A breakpoint envelope: linear between points, flat before the first and after the last.
 // (Automation lanes use seconds on the timeline; a clip's volume curve uses seconds from the start of the clip.)
@@ -225,6 +226,11 @@ struct Track
 
     juce::String name;
     juce::uint32 colour = 0;            // the colour of the track in the headers, mixer and clips (ARGB); 0 = the colour of its type
+    // Sidechain: this track's compressor listens to the sound of sidechainSource instead of its own (it ducks when that one is loud). A track
+    // that is used this way (sidechainTapped) is rendered first and leaves a copy of its sound in scL / scR for the others.
+    std::atomic<Track*> sidechainSource { nullptr };
+    std::atomic<bool> sidechainTapped { false };
+    std::vector<float> scL, scR;
     Type type = Type::Audio;
     std::vector<Clip> clips;            // audio tracks, guarded by Engine::lock
     std::vector<MidiClip> midiClips;    // MIDI tracks, guarded by Engine::lock
@@ -346,6 +352,7 @@ struct TrackState
     std::vector<std::pair<int, int>> midiOuts;   // (index of the target track, channel) of each MIDI route
     bool bus = false;
     int outputIndex = -1;                        // index of the bus this track plays into (-1 = master)
+    int sidechainIndex = -1;                     // index of the track its compressor listens to (-1 = its own signal)
     struct SendState { int bus = -1; float level = 0.5f; bool preFader = false; };
     std::vector<SendState> sends;
     std::vector<ExternalRoute> externalOuts;
@@ -364,6 +371,22 @@ struct ArrSection
     int startBar = 0;          // 0-based
     int bars = 4;
     juce::uint32 colour = 0;   // 0 = by position
+};
+
+// What plays in a stretch of the timeline, on every track: the clips (their start counted from the start of the stretch). Used to copy a
+// section within a project and to take one to another project (tracks are found again by name and type).
+struct RangeBundle
+{
+    struct Item
+    {
+        int trackIndex = 0;
+        juce::String name;
+        Track::Type type = Track::Type::Audio;
+        std::vector<Clip> audio;
+        std::vector<MidiClip> midi;
+    };
+    std::vector<Item> items;
+    double length = 0.0;
 };
 
 struct ProjectState
@@ -400,6 +423,28 @@ public:
 
     // ---- Message thread: routing. A track plays into the master or into one bus, and can also send a share of its sound to buses.
     void setTrackOutput (Track&, Track* bus);                                  // nullptr = master; ignored for buses and for non-bus targets
+    // ---- The master meter: loudness (LUFS) and spectrum of what is heard. They run only while analysisOn (the meter window is open).
+    LoudnessMeter loudness;
+    SpectrumTap spectrum;
+    std::atomic<bool> analysisOn { false };
+
+    // ---- A reference track: another piece of music (a finished song you want to sound like) that replaces the mix while you listen, with a
+    // short crossfade, at a level you set (or matched to the loudness of your mix). It plays along with the transport. Not part of exports.
+    bool loadReference (const juce::File&);
+    void clearReference();
+    bool hasReference() const { return referenceLoaded.load(); }
+    juce::String getReferenceName() const;
+    juce::File getReferenceFile() const;
+    double getReferenceLufs() const { return referenceLufs.load(); }
+    void setReferenceOn (bool on) { referenceOn = on && referenceLoaded.load(); }
+    bool isReferenceOn() const { return referenceOn.load(); }
+    void setReferenceGainDb (float db) { referenceGain = juce::Decibels::decibelsToGain (juce::jlimit (-30.0f, 20.0f, db)); referenceGainDb = juce::jlimit (-30.0f, 20.0f, db); }
+    float getReferenceGainDb() const { return referenceGainDb.load(); }
+    void setReferenceOffset (double seconds) { referenceOffset = seconds; }   // where in the project the reference starts (seconds)
+    double getReferenceOffset() const { return referenceOffset.load(); }
+
+    void setSidechain (Track&, Track* source);           // the compressor of the track listens to source (null: its own signal)
+    void updateSidechainTaps();                          // (callers hold the lock)
     void setSend (Track&, Track& bus, float level, bool preFader);             // level <= 0 removes the send
     bool getSend (const Track&, const Track& bus, float& level, bool& preFader) const;
     std::vector<Track*> getBuses() const;
@@ -478,6 +523,10 @@ public:
     void setSections (std::vector<ArrSection> s) { arrangement = std::move (s); }
     void shiftClipsFrom (double fromSeconds, double deltaSeconds);                   // every clip that starts at or after `from` moves by `delta`
     int copyRange (double fromSeconds, double toSeconds, double destSeconds);        // copies what plays in [from, to) of every track to `dest`; the number of clips made
+    RangeBundle captureRange (double fromSeconds, double toSeconds) const;           // what plays in [from, to), to keep or to take to another project
+    // Puts a captured stretch at `dest`. Tracks are found by position (the same project) or by name and type, then by position, else a new
+    // track is made (`created` counts those). Returns the number of clips made.
+    int pasteRange (const RangeBundle&, double destSeconds, bool sameProject, int* created = nullptr);
     void swapRanges (double aFrom, double aTo, double bFrom, double bTo);            // adjacent stretches (a then b) change places, with their clips
 
     // ---- Message thread: editing that works on audio and MIDI clips alike
@@ -824,6 +873,15 @@ private:
     double blockStartMs = 0.0;                      // the millisecond clock at the start of the block being mixed
 
     std::atomic<bool> offlineRendering { false };   // an export owns the mixer; the audio callback stays silent
+    std::shared_ptr<const juce::AudioBuffer<float>> reference;   // (guarded by lock)
+    double referenceRate = 44100.0;
+    juce::String referenceName;
+    juce::File referenceFile;
+    std::atomic<bool> referenceLoaded { false }, referenceOn { false };
+    std::atomic<double> referenceLufs { -120.0 }, referenceOffset { 0.0 };
+    std::atomic<float> referenceGain { 1.0f }, referenceGainDb { 0.0f };
+    float referenceMix = 0.0f;   // (audio thread) 0 = the mix, 1 = the reference
+    void applyReference (float* l, float* r, int n, juce::int64 pos, bool running);
     const Track* renderOnly = nullptr;              // set during an offline render of a single track
     bool renderMaster = true;
 

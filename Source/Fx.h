@@ -50,11 +50,13 @@ class TrackFx
 public:
     void prepare (double sampleRate);
     void reset();
-    void process (float* left, float* right, int numSamples, const FxParams&);
+    // keyL / keyR: another track's signal for the compressor to listen to (sidechain: the compressor ducks this track when the key is loud);
+    // null = it listens to its own signal.
+    void process (float* left, float* right, int numSamples, const FxParams&, const float* keyL = nullptr, const float* keyR = nullptr);
 
 private:
     void processEq (float* l, float* r, int n, const FxParams&);
-    void processCompressor (float* l, float* r, int n, const FxParams&);
+    void processCompressor (float* l, float* r, int n, const FxParams&, const float* keyL, const float* keyR);
     void processDelay (float* l, float* r, int n, const FxParams&);
     void processReverb (float* l, float* r, int n, const FxParams&);
 

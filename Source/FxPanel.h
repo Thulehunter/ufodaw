@@ -9,7 +9,8 @@ class FxPanel : public juce::Component
 {
 public:
     // `onBeginEdit` is called right before each user change, so the host can take an undo snapshot.
-    FxPanel (Track&, std::function<void()> onBeginEdit);
+    // With an engine, the compressor can listen to another track (sidechain): a box under its sliders picks that track.
+    FxPanel (Track&, std::function<void()> onBeginEdit, Engine* engine = nullptr);
 
     void paint (juce::Graphics&) override;
     void resized() override;
@@ -34,6 +35,11 @@ private:
 
     juce::ToggleButton monoToggle;
     Track& track;
+    Engine* engine = nullptr;
+    Section* compSection = nullptr;
+    juce::Label sideLabel;
+    juce::ComboBox sideBox;
+    std::vector<Track*> sideTracks;
     std::function<void()> beginEdit;
     std::vector<std::unique_ptr<Section>> sections;
 

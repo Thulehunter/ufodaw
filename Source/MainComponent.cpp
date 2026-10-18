@@ -12,6 +12,8 @@
 #include "WarpEditor.h"
 #include "VersionHistory.h"
 #include "SectionsPanel.h"
+#include "Commands.h"
+#include "MasterMeter.h"
 #include "AudioExport.h"
 #include "SamplerPanel.h"
 #include "DrumRackPanel.h"
@@ -175,7 +177,10 @@ public:
         fxButton.setTooltip ("Effects: EQ, compressor, delay, reverb");
         fxButton.onClick = [this]
         {
-            juce::CallOutBox::launchAsynchronously (std::make_unique<FxPanel> (track, beginEdit), fxButton.getScreenBounds(), nullptr);
+            if (openFxPanel)
+                openFxPanel (track, fxButton);
+            else
+                juce::CallOutBox::launchAsynchronously (std::make_unique<FxPanel> (track, beginEdit), fxButton.getScreenBounds(), nullptr);
         };
         addAndMakeVisible (fxButton);
 
@@ -198,6 +203,9 @@ public:
             fxButton.setTooltip ("Effects on the whole mix: EQ, compressor, delay, reverb");
             vstButton.setTooltip ("VST3 effect plugins on the whole mix (a limiter or EQ, for example)");
             autoButton.setTooltip ("Automation of the master volume and its effects");
+            meterButton.setTooltip ("The master meter: loudness (LUFS), spectrum and a reference track to compare your mix with");
+            meterButton.onClick = [this] { if (openMeter) openMeter(); };
+            addAndMakeVisible (meterButton);
         }
     }
 
@@ -304,6 +312,8 @@ public:
 
     // Set by the main window: drag the name row up or down to move the track (finished = the mouse was released).
     std::function<void (Track&, int yInHolder, bool finished)> reorder;
+    std::function<void (Track&, juce::Component&)> openFxPanel;   // the effects panel (the main window gives it the engine, for the sidechain)
+    std::function<void()> openMeter;                              // the master's Meter button
 
     void resized() override
     {
@@ -316,6 +326,8 @@ public:
             vstButton.setBounds (row.removeFromRight (38));
             row.removeFromRight (4);
             autoButton.setBounds (row.removeFromRight (26));
+            row.removeFromRight (4);
+            meterButton.setBounds (row.removeFromRight (48));
             nameLabel.setBounds (row);
             m.removeFromTop (6);
             auto fader = m.removeFromTop (24);
@@ -558,6 +570,7 @@ private:
     juce::Slider volume;
     PanSlider pan;
     juce::TextButton muteButton { "M" }, soloButton { "S" }, deleteButton { "x" }, fxButton { "FX" }, vstButton { "VST" }, autoButton { "A" }, armButton { juce::String::fromUTF8 ("\xe2\x97\x8f") };
+    juce::TextButton meterButton { "Meter" };   // the master only
 };
 
 //==============================================================================
@@ -2874,6 +2887,7 @@ MainComponent::MainComponent (int slot, std::shared_ptr<juce::AudioDeviceManager
     addAndMakeVisible (headerViewport);
     addAndMakeVisible (*ruler);
 
+    buildCommands();
     setSize (1400, 640);   // last: resized() touches all the children above
     startTimerHz (30);
 }
@@ -2945,6 +2959,9 @@ static void readSamplerParams (const juce::var& sv, Sampler::Params& sp)
 MainComponent::~MainComponent()
 {
     mixerWindow.reset();
+    meterWindow.reset();
+    shortcutsWindow.reset();
+    palette.reset();
     warpWindow.reset();
     historyWindow.reset();
     stopTimer();
@@ -3027,6 +3044,9 @@ void MainComponent::openSectionsPanel()
     hooks.goTo = [safe] (int i) { if (safe != nullptr) safe->sectionGoTo (i); };
     hooks.loop = [safe] (int i) { if (safe != nullptr) safe->sectionLoop (i); };
     hooks.copy = [safe] (int i) { if (safe != nullptr) safe->sectionCopy (i); };
+    hooks.toClipboard = [safe] (int i) { if (safe != nullptr) safe->sectionToClipboard (i); };
+    hooks.pasteClipboard = [safe] { if (safe != nullptr) safe->sectionPaste(); };
+    hooks.canPaste = [] { return sectionClipboard.valid; };
     hooks.moveEarlier = [safe] (int i) { if (safe != nullptr) safe->sectionSwap (i - 1); };
     hooks.moveLater = [safe] (int i) { if (safe != nullptr) safe->sectionSwap (i); };
     juce::CallOutBox::launchAsynchronously (std::make_unique<SectionsPanel> (std::move (hooks)), sectionsButton.getScreenBounds(), nullptr);
@@ -3070,6 +3090,41 @@ void MainComponent::sectionCopy (int i)
     copy.name += " 2";
     s.insert (s.begin() + i + 1, copy);
     engine.setSections (std::move (s));
+    clipsChanged();
+}
+
+// The section (and what plays in it, on every track) onto the clipboard: for this project or another one.
+void MainComponent::sectionToClipboard (int i)
+{
+    const auto& s = engine.getSections();
+    if (! juce::isPositiveAndBelow (i, (int) s.size()))
+        return;
+    sectionClipboard.section = s[(size_t) i];
+    sectionClipboard.bundle = engine.captureRange (tempoMap.barBeatToSeconds (s[(size_t) i].startBar, 0.0),
+                                                   tempoMap.barBeatToSeconds (s[(size_t) i].startBar + s[(size_t) i].bars, 0.0));
+    sectionClipboard.valid = true;
+}
+
+// The section from the clipboard at the bar of the playhead (what plays there is not moved away: it plays along). Tracks that are not here
+// (by name) are made. The audio stays the same files, also when it comes from another project.
+void MainComponent::sectionPaste()
+{
+    if (! sectionClipboard.valid)
+        return;
+    const int bar = tempoMap.barAtSeconds (engine.getPositionSeconds());
+    const double dest = tempoMap.barBeatToSeconds (bar, 0.0);
+
+    beginEdit();
+    int created = 0;
+    const int made = engine.pasteRange (sectionClipboard.bundle, dest, false, &created);
+    auto s = engine.getSections();
+    ArrSection pasted = sectionClipboard.section;
+    pasted.startBar = bar;
+    s.push_back (pasted);
+    std::stable_sort (s.begin(), s.end(), [] (const ArrSection& a, const ArrSection& b) { return a.startBar < b.startBar; });
+    engine.setSections (std::move (s));
+    if (created > 0 || made > 0)
+        rebuildTrackUI();
     clipsChanged();
 }
 
@@ -4552,6 +4607,13 @@ std::unique_ptr<TrackHeader> MainComponent::makeHeader (Track& t, bool master)
     auto header = makeHeaderRaw (t, master);
     if (! master)
         header->reorder = [this] (Track& tr, int y, bool finished) { dragTrackHeader (tr, y, finished); };
+    if (master)
+        header->openMeter = [this] { openMasterMeter(); };
+    header->openFxPanel = [this, master] (Track& tr, juce::Component& anchor)
+    {
+        juce::CallOutBox::launchAsynchronously (std::make_unique<FxPanel> (tr, [this] { beginEdit(); }, master ? nullptr : &engine),
+                                                anchor.getScreenBounds(), nullptr);
+    };
     return header;
 }
 
@@ -5243,6 +5305,163 @@ void MainComponent::focusLost (FocusChangeType)
         }
 }
 
+// ---- The command list: what the palette (Ctrl+K) searches and what the keyboard shortcuts come from
+
+void MainComponent::buildCommands()
+{
+    commands.clear();
+    auto add = [this] (const char* id, const char* name, const char* category, juce::KeyPress key, std::function<void()> run,
+                       std::function<bool()> enabled = nullptr, bool hidden = false)
+    {
+        Command c;
+        c.id = id;
+        c.name = name;
+        c.category = category;
+        c.defaultKey = key;
+        c.run = std::move (run);
+        c.enabled = std::move (enabled);
+        c.hidden = hidden;
+        commands.push_back (std::move (c));
+    };
+    using K = juce::KeyPress;
+    const int ctrl = juce::ModifierKeys::ctrlModifier | 0, shift = juce::ModifierKeys::shiftModifier;
+    const auto none = K();
+    auto hasClip = [this] { return selTrack != nullptr && selClip >= 0; };
+    auto hasAudioClip = [this] { Clip c; return selTrack != nullptr && selClip >= 0 && engine.getClip (*selTrack, selClip, c); };
+    auto hasMidiClip = [this] { return selTrack != nullptr && selClip >= 0 && engine.isMidiClip (*selTrack, selClip); };
+
+    // transport
+    add ("play", "Play / pause", "Transport", K (K::spaceKey), [this] { if (engine.isPlaying()) pausePlayback(); else startPlayback(); });
+    add ("rewind", "Back to the start", "Transport", K (K::returnKey), [this] { rewindButton.triggerClick(); });
+    add ("record", "Record", "Transport", K ('R'), [this] { toggleRecording(); });
+    add ("stopall", "STOP ALL (stops everything, cuts every sound)", "Transport", K (K::spaceKey, ctrl | shift, 0), [this] { stopAllButton.triggerClick(); });
+    add ("loop", "Loop on / off", "Transport", K ('L'), [this] { loopButton.triggerClick(); });
+    add ("loopsel", "Loop the selected clip", "Transport", K ('L', shift, 0), [this] { loopToSelection(); }, hasClip);
+    add ("metronome", "Metronome (click) on / off", "Transport", K ('M'), [this]
+        {
+            metroButton.setToggleState (! metroButton.getToggleState(), juce::dontSendNotification);
+            engine.metronome = metroButton.getToggleState();
+        });
+    add ("punch", "Punch in / out on / off", "Transport", K ('P'), [this] { punchButton.setToggleState (! punchButton.getToggleState(), juce::dontSendNotification); togglePunch(); });
+    add ("countin", "Count-in: change the number of bars", "Transport", none, [this] { countInButton.triggerClick(); });
+    add ("follow", "Follow the playhead on / off", "Transport", none, [this] { followButton.triggerClick(); });
+    add ("snap", "Snap to the grid on / off", "Transport", none, [this] { snapButton.triggerClick(); });
+    add ("pianokeys", "Computer keyboard as a piano on / off", "Transport", none, [this] { keysButton.triggerClick(); });
+
+    // editing
+    add ("undo", "Undo", "Edit", K ('Z', ctrl, 0), [this] { undo(); });
+    add ("redo", "Redo", "Edit", K ('Y', ctrl, 0), [this] { redo(); });
+    add ("duplicate", "Duplicate the selected clip", "Edit", K ('D', ctrl, 0), [this] { duplicateSelected(); }, hasClip);
+    add ("cut", "Cut the selected clip", "Edit", K ('X', ctrl, 0), [this] { copySelected (true); }, hasClip);
+    add ("copy", "Copy the selected clip", "Edit", K ('C', ctrl, 0), [this] { copySelected (false); }, hasClip);
+    add ("paste", "Paste the clip at the playhead", "Edit", K ('V', ctrl, 0), [this] { pasteClip (pasteTargetTrack(), engine.getPositionSeconds()); });
+    add ("delete", "Delete the selected clip", "Edit", K (K::deleteKey), [this] { deleteSelected(); });
+    add ("delete2", "Delete the selected clip (second key)", "Edit", K (K::backspaceKey), [this] { deleteSelected(); }, nullptr, true);
+    add ("split", "Split at the playhead", "Edit", K ('S'), [this] { splitAtPlayhead(); });
+    add ("quantize", "Quantize / swing / humanize the MIDI clip", "Edit", K ('Q'), [this] { if (selTrack != nullptr) openQuantize (*selTrack, selClip); }, hasMidiClip);
+    add ("clipgain", "Gain, stretch and pitch of the audio clip...", "Edit", none, [this] { openClipPanel (*selTrack, selClip); }, hasAudioClip);
+    add ("warp", "Warp the audio clip (markers on the hits)...", "Edit", none, [this] { openWarpEditor (*selTrack, selClip); }, hasAudioClip);
+
+    // file
+    add ("new", "New project", "File", K ('N', ctrl, 0), [this] { newProject(); });
+    add ("open", "Open a project...", "File", K ('O', ctrl, 0), [this] { openButton.triggerClick(); });
+    add ("save", "Save", "File", K ('S', ctrl, 0), [this] { saveButton.triggerClick(); });
+    add ("saveas", "Save as...", "File", none, [this] { saveProjectAs(); });
+    add ("newversion", "Save a new version (v2, v3...)", "File", none, [this] { saveNewVersion(); });
+    add ("collect", "Save with all audio in one folder...", "File", none, [this] { collectProject(); });
+    add ("history", "Version history...", "File", none, [this] { openVersionHistory(); });
+    add ("exportaudio", "Export audio (WAV, FLAC, MP3...)...", "File", none, [this] { exportDialog(); });
+    add ("exportstems", "Export stems...", "File", none, [this] { exportStemsDialog(); });
+    add ("closetab", "Close this project (tab)", "File", K ('W', ctrl, 0), [this] { if (requestCloseTab) requestCloseTab(); }, [this] { return (bool) requestCloseTab; });
+    add ("nexttab", "Next project (tab)", "File", K (K::tabKey, ctrl, 0), [this] { if (requestSwitchTab) requestSwitchTab (1); }, [this] { return (bool) requestSwitchTab; });
+    add ("prevtab", "Previous project (tab)", "File", K (K::tabKey, ctrl | shift, 0), [this] { if (requestSwitchTab) requestSwitchTab (-1); }, [this] { return (bool) requestSwitchTab; });
+
+    // tracks
+    add ("addaudio", "Add an audio track", "Tracks", none, [this] { addEmptyAudioTrack(); });
+    add ("addaudiofile", "Add audio track(s) from file(s)...", "Tracks", none, [this] { addTrackDialog(); });
+    add ("addmidi", "Add a MIDI track", "Tracks", none, [this] { addMidiTrack (false); });
+    add ("adddrums", "Add a drum track", "Tracks", none, [this] { addMidiTrack (true); });
+    add ("addsampler", "Add a sampler track", "Tracks", none, [this] { addSamplerTrack(); });
+    add ("addbus", "Add a bus (group / effects return)", "Tracks", none, [this] { addBusTrack(); });
+
+    // windows and panels
+    add ("mixer", "Open the mixer", "Windows", none, [this] { openMixer(); });
+    add ("meter", "Master meter: loudness (LUFS) and spectrum...", "Windows", none, [this] { openMasterMeter(); });
+    add ("refab", "Reference track: switch between your mix and the reference", "Windows", K ('B'), [this]
+        {
+            if (engine.hasReference())
+                engine.setReferenceOn (! engine.isReferenceOn());
+            else
+                openMasterMeter();   // (no reference yet: the window where one is loaded)
+        });
+    add ("tuner", "Open the tuner", "Windows", none, [this] { openTuner(); });
+    add ("plugins", "Plugins (scan, manage)...", "Windows", none, [this] { pluginsButton.triggerClick(); });
+    add ("audiosettings", "Audio settings (driver, interface, buffer)...", "Windows", none, [this] { openAudioSettings(); });
+    add ("tempo", "Tempo and time signature...", "Windows", none, [this] { openTempoPanel(); });
+    add ("sections", "Sections of the arrangement (verse, chorus...)...", "Windows", none, [this] { openSectionsPanel(); });
+    add ("zoomin", "Zoom in", "View", none, [this] { zoomBy (1.4, laneViewport.getMaximumVisibleWidth() / 2); });
+    add ("zoomout", "Zoom out", "View", none, [this] { zoomBy (1.0 / 1.4, laneViewport.getMaximumVisibleWidth() / 2); });
+    add ("tour", "Quick tour of the window", "Help", none, [this] { startTour(); });
+    add ("palette", "Command palette (this list)", "Help", K ('K', ctrl, 0), [this] { openPalette(); });
+    add ("shortcuts", "Keyboard shortcuts: see and change...", "Help", none, [this] { openShortcuts(); });
+}
+
+// The master meter (loudness, spectrum) and the reference track
+void MainComponent::openMasterMeter()
+{
+    if (meterWindow != nullptr)
+    {
+        meterWindow->toFront (true);
+        return;
+    }
+    juce::Component::SafePointer<MainComponent> safe (this);
+    auto closeIt = [safe] { juce::MessageManager::callAsync ([safe] { if (safe != nullptr) safe->meterWindow.reset(); }); };
+    meterWindow = std::make_unique<MasterMeterWindow> (engine, [safe] { if (safe != nullptr) ++safe->editCounter; }, closeIt);
+}
+
+void MainComponent::openPalette()
+{
+    if (palette != nullptr)
+        return;
+    std::vector<CommandPalette::Entry> entries;
+    for (auto& c : commands)
+    {
+        if (c.hidden)
+            continue;
+        CommandPalette::Entry e;
+        e.name = c.name;
+        e.category = c.category;
+        e.shortcut = Shortcuts::describe (Shortcuts::keyFor (c));
+        e.run = c.run;
+        e.enabled = c.isEnabled();
+        entries.push_back (std::move (e));
+    }
+    juce::Component::SafePointer<MainComponent> safe (this);
+    palette = std::make_unique<CommandPalette> (std::move (entries), [safe]
+    {
+        if (safe == nullptr)
+            return;
+        safe->palette.reset();
+        safe->grabKeyboardFocus();
+    });
+    addAndMakeVisible (*palette);
+    palette->setBounds (getLocalBounds());
+    palette->toFront (true);
+    palette->focusInput();
+}
+
+void MainComponent::openShortcuts()
+{
+    if (shortcutsWindow != nullptr)
+    {
+        shortcutsWindow->toFront (true);
+        return;
+    }
+    juce::Component::SafePointer<MainComponent> safe (this);
+    auto closeIt = [safe] { juce::MessageManager::callAsync ([safe] { if (safe != nullptr) safe->shortcutsWindow.reset(); }); };
+    shortcutsWindow = std::make_unique<ShortcutsWindow> (new ShortcutsPanel (commands, [] {}, closeIt), closeIt);
+}
+
 bool MainComponent::keyPressed (const juce::KeyPress& k)
 {
     const auto mods = k.getModifiers();
@@ -5258,37 +5477,23 @@ bool MainComponent::keyPressed (const juce::KeyPress& k)
                 return true;   // played in keyStateChanged(); not a shortcut
     }
 
+    // Ctrl+Z / Ctrl+Y can arrive as control characters (kept as they are)
     if (mods.isCommandDown())
     {
-        if (ch == 's' || k.getKeyCode() == 'S') { saveButton.triggerClick(); return true; }
-        if (ch == 'o' || k.getKeyCode() == 'O') { openButton.triggerClick(); return true; }
-        if (k.getKeyCode() == 'N')              { newProject(); return true; }
-        if (k.getKeyCode() == 'W' && requestCloseTab) { requestCloseTab(); return true; }
-        if (k.getKeyCode() == juce::KeyPress::tabKey && requestSwitchTab) { requestSwitchTab (mods.isShiftDown() ? -1 : 1); return true; }
-        if (k.getKeyCode() == juce::KeyPress::spaceKey && mods.isShiftDown()) { stopAllButton.triggerClick(); return true; }
-        if (k.getKeyCode() == 'D')              { duplicateSelected(); return true; }
-        if (k.getKeyCode() == 'X')              { copySelected (true); return true; }
-        if (k.getKeyCode() == 'C')              { copySelected (false); return true; }
-        if (k.getKeyCode() == 'V')              { pasteClip (pasteTargetTrack(), engine.getPositionSeconds()); return true; }
-        if (k.getKeyCode() == 'Z' || k.getKeyCode() == 26) { if (mods.isShiftDown()) redo(); else undo(); return true; }
-        if (k.getKeyCode() == 'Y' || k.getKeyCode() == 25) { redo(); return true; }
-        return false;
+        if (k.getKeyCode() == 26) { undo(); return true; }
+        if (k.getKeyCode() == 25) { redo(); return true; }
+        if (k.getKeyCode() == 'Z' && mods.isShiftDown()) { redo(); return true; }
     }
 
-    if (k.getKeyCode() == 'L' && ! mods.isAltDown())
-    {
-        if (mods.isShiftDown()) loopToSelection(); else loopButton.triggerClick();
-        return true;
-    }
-    if (k == juce::KeyPress::spaceKey)  { if (engine.isPlaying()) pausePlayback(); else startPlayback(); return true; }
-    if (k == juce::KeyPress::returnKey) { rewindButton.triggerClick(); return true; }
-    if (k.getKeyCode() == 'R' && ! mods.isAnyModifierKeyDown()) { toggleRecording(); return true; }
-    if (k.getKeyCode() == 'M' && ! mods.isAnyModifierKeyDown())   // metronome on / off, also during playback and recording
-    {
-        metroButton.setToggleState (! metroButton.getToggleState(), juce::dontSendNotification);
-        engine.metronome = metroButton.getToggleState();
-        return true;
-    }
+    // everything else comes from the command list: the key each command has now (its default, or the one the user chose)
+    for (auto& c : commands)
+        if (Shortcuts::matches (k, Shortcuts::keyFor (c)))
+        {
+            if (c.isEnabled() && c.run)
+                c.run();
+            return true;
+        }
+
     if (k == juce::KeyPress::escapeKey && envelopeClipId >= 0)   // done editing the volume curve
     {
         envelopeClipId = -1;
@@ -5296,21 +5501,7 @@ bool MainComponent::keyPressed (const juce::KeyPress& k)
         laneHolder.repaint();
         return true;
     }
-    if (k.getKeyCode() == 'Q' && ! mods.isAnyModifierKeyDown())
-    {
-        if (selTrack != nullptr && selClip >= 0 && engine.isMidiClip (*selTrack, selClip))
-            openQuantize (*selTrack, selClip);
-        return true;
-    }
-    if (k.getKeyCode() == 'P' && ! mods.isAnyModifierKeyDown())
-    {
-        punchButton.setToggleState (! punchButton.getToggleState(), juce::dontSendNotification);
-        togglePunch();
-        return true;
-    }
-    if (k == juce::KeyPress::deleteKey || k == juce::KeyPress::backspaceKey) { deleteSelected(); return true; }
-    if (k.getKeyCode() == 'S' && ! mods.isAnyModifierKeyDown()) { splitAtPlayhead(); return true; }
-    return false;
+    juce::ignoreUnused (ch);    return false;
 }
 
 void MainComponent::timerCallback()
@@ -6396,6 +6587,8 @@ void MainComponent::saveProject (const juce::File& file, SaveKind kind)
             o->setProperty ("bus", true);
         if (t->output != nullptr)
             o->setProperty ("output", engine.indexOfTrack (t->output));   // buses and sends point at tracks by index
+        if (t->sidechainSource.load() != nullptr)                         // the track the compressor listens to
+            o->setProperty ("sidechain", engine.indexOfTrack (t->sidechainSource.load()));
         if (! t->sends.empty())
         {
             juce::Array<juce::var> sendList;
@@ -6473,6 +6666,15 @@ void MainComponent::saveProject (const juce::File& file, SaveKind kind)
         root->setProperty ("arrangement", arrangementList);
     }
     root->setProperty ("master", juce::var (masterObject));
+    if (engine.hasReference())   // the reference track (a file) and how it is heard
+    {
+        auto* ro = new juce::DynamicObject();
+        const auto refFile = engine.getReferenceFile();
+        ro->setProperty ("file", projectFilePath ? projectFilePath (refFile) : refFile.getRelativePathFrom (baseDir));
+        ro->setProperty ("gainDb", (double) engine.getReferenceGainDb());
+        ro->setProperty ("offset", engine.getReferenceOffset());
+        root->setProperty ("reference", juce::var (ro));
+    }
     root->setProperty ("metronome", engine.metronome.load());
     root->setProperty ("loopEnabled", engine.loopEnabled.load());
     root->setProperty ("loopStart", engine.loopStart.load());
@@ -6923,9 +7125,13 @@ void MainComponent::fileMenu()
     menu.addItem (8, "Export audio (WAV, FLAC, MP3...)...");
     menu.addItem (9, "Export stems...");
     menu.addSeparator();
+    menu.addItem (12, "Command palette...   Ctrl+K");
+    menu.addItem (13, "Keyboard shortcuts...");
     menu.addItem (10, "Quick tour...");
     menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&railFile), [this, recent] (int result)
     {
+        if (result == 12) openPalette();
+        else if (result == 13) openShortcuts();
         if (result == 1) newProject();
         else if (result == 2) openProjectDialog();
         else if (result == 3) saveButton.triggerClick();
@@ -6936,7 +7142,7 @@ void MainComponent::fileMenu()
         else if (result == 11) openVersionHistory();
         else if (result == 8) exportDialog();
         else if (result == 9) exportStemsDialog();
-        else if (result == 10) startTour();
+        if (result == 10) startTour();
         else if (result >= 100 && result - 100 < recent.size())
         {
             const juce::File chosen (recent[result - 100]);
@@ -6996,6 +7202,7 @@ void MainComponent::resetToEmptyProject()
     tempoMap.setSections ({ TempoSection() });
     engine.setTempoMap (tempoMap, false);
     engine.setSections ({});
+    engine.clearReference();
     engine.metronome = false;
     metroButton.setToggleState (false, juce::dontSendNotification);
     bpmSlider.setValue (120.0, juce::dontSendNotification);
@@ -7118,6 +7325,22 @@ void MainComponent::loadProject (const juce::File& file, bool asTemplate)
 
     juce::StringArray missing, pluginProblems;
     const auto baseDir = file.getParentDirectory();
+
+    if (! asTemplate)   // the reference track
+    {
+        engine.clearReference();
+        if (const auto ref = root["reference"]; ref.isObject())
+        {
+            const auto refFile = baseDir.getChildFile (ref["file"].toString());
+            if (engine.loadReference (refFile))
+            {
+                engine.setReferenceGainDb ((float) (double) ref.getProperty ("gainDb", 0.0));
+                engine.setReferenceOffset ((double) ref.getProperty ("offset", 0.0));
+            }
+            else
+                missing.add (refFile.getFullPathName());
+        }
+    }
 
     // master channel (projects from before it had effects only stored a master volume)
     if (! asTemplate)
@@ -7383,6 +7606,9 @@ void MainComponent::loadProject (const juce::File& file, bool asTemplate)
                 if (! asTemplate && item.hasProperty ("output"))
                     if (auto* bus = engine.getTrack ((int) item["output"]))
                         engine.setTrackOutput (*from, bus);
+                if (! asTemplate && item.hasProperty ("sidechain"))
+                    if (auto* source = engine.getTrack ((int) item["sidechain"]))
+                        engine.setSidechain (*from, source);
                 if (auto* sendArray = asTemplate ? nullptr : item["sends"].getArray())
                     for (auto& sv : *sendArray)
                         if (auto* bus = engine.getTrack ((int) sv["bus"]))

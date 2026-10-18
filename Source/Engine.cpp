@@ -38,6 +38,7 @@ Engine::Engine()
     master->gain = 0.9f;
     master->fxState = std::make_unique<TrackFx>();
     master->fxState->prepare (sampleRate);
+    loudness.prepare (sampleRate);
 }
 
 void Engine::resetMaster()
@@ -77,9 +78,11 @@ void Engine::prepareToPlay (int samplesPerBlock, double newRate)
         trackR.assign ((size_t) samplesPerBlock * 2, 0.0f);
     }
     master->fxState->prepare (newRate);
+    loudness.prepare (newRate);
     for (auto& p : master->inserts)
         preparePlugin (*p);
 
+    updateSidechainTaps();   // (their buffers follow the size of the block buffers)
     for (auto& t : tracks)
     {
         if (t->bus && t->busInL.size() != trackL.size())
@@ -523,6 +526,32 @@ void Engine::setTrackOutput (Track& t, Track* bus)
     t.output = bus;
 }
 
+void Engine::setSidechain (Track& t, Track* source)
+{
+    const juce::ScopedLock sl (lock);
+    if (t.bus || source == &t || (source != nullptr && (source->bus || indexOfTrack (source) < 0)))
+        source = nullptr;
+    t.sidechainSource = source;
+    updateSidechainTaps();
+}
+
+// Which tracks are listened to by the compressor of another one: they leave a copy of their sound (and are rendered first).
+void Engine::updateSidechainTaps()
+{
+    for (auto& t : tracks)
+        t->sidechainTapped = false;
+    for (auto& t : tracks)
+        if (auto* src = t->sidechainSource.load())
+        {
+            src->sidechainTapped = true;
+            if (src->scL.size() != trackL.size())
+            {
+                src->scL.assign (trackL.size(), 0.0f);
+                src->scR.assign (trackL.size(), 0.0f);
+            }
+        }
+}
+
 void Engine::setSend (Track& t, Track& bus, float level, bool preFader)
 {
     const juce::ScopedLock sl (lock);
@@ -582,10 +611,13 @@ void Engine::removeTrack (Track* t)
                             other->sends.end());
         if (other->output == t)
             other->output = nullptr;   // what played into a removed bus goes to the master again
+        if (other->sidechainSource.load() == t)
+            other->sidechainSource = nullptr;
     }
     tracks.erase (std::remove_if (tracks.begin(), tracks.end(),
                                   [t] (auto& p) { return p.get() == t; }),
                   tracks.end());
+    updateSidechainTaps();
 }
 
 void Engine::removeAllTracks()
@@ -2010,6 +2042,8 @@ ProjectState Engine::captureState() const
         {
             if (tracks[k].get() == t->output)
                 ts.outputIndex = (int) k;
+            if (tracks[k].get() == t->sidechainSource.load())
+                ts.sidechainIndex = (int) k;
             for (auto& s : t->sends)
                 if (tracks[k].get() == s.bus)
                     ts.sends.push_back ({ (int) k, s.level, s.preFader });
@@ -2055,6 +2089,9 @@ void Engine::restoreState (const ProjectState& s)
         for (auto& snd : ts.sends)
             if (! fresh[i]->bus && isBus (snd.bus))
                 fresh[i]->sends.push_back ({ fresh[(size_t) snd.bus].get(), snd.level, snd.preFader });
+        if (ts.sidechainIndex >= 0 && ts.sidechainIndex < (int) fresh.size() && ts.sidechainIndex != (int) i && ! fresh[(size_t) ts.sidechainIndex]->bus
+            && ! fresh[i]->bus)
+            fresh[i]->sidechainSource = fresh[(size_t) ts.sidechainIndex].get();
     }
 
     for (size_t i = 0; i < s.tracks.size(); ++i)   // MIDI routes point at tracks by index
@@ -2071,6 +2108,7 @@ void Engine::restoreState (const ProjectState& s)
         tempoMap = s.tempo;   // (the MIDI of the snapshot already matches it)
         bpm = (float) tempoMap.getSections().front().bpm;
         tracks.swap (fresh);
+        updateSidechainTaps();
         applyTrackState (*master, s.master);   // master channel: volume, effects, plugins, automation
     }
     // `fresh` now holds the old tracks and is destroyed here, outside the lock
@@ -2957,6 +2995,12 @@ void Engine::mixBlock (float* outL, float* outR, int n, juce::int64 pos, bool wi
                 }
                 t->busFed = false;
             }
+        for (auto& t : tracks)
+            if (t->sidechainTapped && (int) t->scL.size() >= clearN)
+            {
+                std::fill (t->scL.begin(), t->scL.begin() + clearN, 0.0f);
+                std::fill (t->scR.begin(), t->scR.begin() + clearN, 0.0f);
+            }
     }
 
     // MIDI routing first: sequencer tracks run and fill the routedMidi of the tracks they play,
@@ -2978,11 +3022,15 @@ void Engine::mixBlock (float* outL, float* outR, int n, juce::int64 pos, bool wi
             }
         }
 
-    // Two passes: ordinary tracks first (they fill the buses), then the buses, which play into the master.
+    // Two passes: ordinary tracks first (they fill the buses), then the buses, which play into the master. In the first pass the tracks that
+    // the compressor of another track listens to (sidechain) go before the others, so their sound is ready for them.
     for (int pass = 0; pass < 2; ++pass)
+    for (int sub = 0; sub < 2; ++sub)
     for (auto& t : tracks)
     {
         if ((t->bus ? 1 : 0) != pass)
+            continue;
+        if ((pass == 0 && (t->sidechainTapped.load() ? 0 : 1) != sub) || (pass == 1 && sub == 1))
             continue;
 
         // How long this track took, as a share of the time the block lasts (smoothed): shown in the track header, so it is
@@ -3001,15 +3049,16 @@ void Engine::mixBlock (float* outL, float* outR, int n, juce::int64 pos, bool wi
             }
         } timer { *t, (double) n / sampleRate };
 
-        if (renderOnly != nullptr && t.get() != renderOnly)   // exporting one stem: the other tracks stay out of it
+        if (renderOnly != nullptr && t.get() != renderOnly && ! t->sidechainTapped.load())   // exporting one stem: the other tracks stay out of it
         {
             t->level = 0.0f;
-            continue;
+            continue;   // (except one that a compressor of the stem listens to: it is made, not heard)
         }
 
         float peak = 0.0f;
         // (a bus is heard when something audible feeds it, so soloing a track also lets its bus through)
-        const bool audible = renderOnly != nullptr || (! t->mute && (! anySolo || t->solo || (t->bus && t->busFed)));
+        const bool audible = renderOnly != nullptr ? t.get() == renderOnly
+                                                   : (! t->mute && (! anySolo || t->solo || (t->bus && t->busFed)));
 
         // Fader and pan, possibly automated: evaluated at both ends of the block and ramped in between.
         const double t0 = (double) pos / sampleRate, t1 = (double) (pos + n) / sampleRate;
@@ -3176,7 +3225,17 @@ void Engine::mixBlock (float* outL, float* outR, int n, juce::int64 pos, bool wi
             if (sliced)
                 applyAutomation (*t, (double) (pos + s) / sampleRate);
             if (t->fx.anyOn())
-                t->fxState->process (bufL + s, bufR + s, len, t->fx);
+            {
+                const float* keyL = nullptr;
+                const float* keyR = nullptr;
+                if (t->fx.compOn)
+                    if (auto* src = t->sidechainSource.load(); src != nullptr && src != t.get() && src->sidechainTapped.load() && (int) src->scL.size() >= nn)
+                    {
+                        keyL = src->scL.data() + s;   // the sound of the other track in this block
+                        keyR = src->scR.data() + s;
+                    }
+                t->fxState->process (bufL + s, bufR + s, len, t->fx, keyL, keyR);
+            }
             for (auto& p : t->inserts)
                 if (! p->bypass)
                     processInsert (*p, bufL + s, bufR + s, len);
@@ -3190,6 +3249,12 @@ void Engine::mixBlock (float* outL, float* outR, int n, juce::int64 pos, bool wi
         const int delay = maxLatency - trackLatency (*t);
         if (! t->bus && (delay > 0 || t->pdcDelay != 0))
             applyDelay (*t, bufL, bufR, nn, delay);
+
+        if (t->sidechainTapped.load() && (int) t->scL.size() >= nn)   // what the compressors that listen to this track hear
+        {
+            std::copy (bufL, bufL + nn, t->scL.begin());
+            std::copy (bufR, bufR + nn, t->scR.begin());
+        }
 
         // Where it goes: the master, or the bus this track plays into (stems always go straight to the master).
         Track* const target = renderOnly == nullptr && ! t->bus && t->output != nullptr && t->output->bus
@@ -3331,6 +3396,99 @@ void Engine::mixBlock (float* outL, float* outR, int n, juce::int64 pos, bool wi
     setMasterLevel (mp);
     if (renderMaster && beforeLimiter >= 1.0f)
         master->clipped = true;   // the mix is over 0 dBFS before the limiter: it is being squashed
+
+    if (renderMaster && ! offlineRendering.load())
+    {
+        if (analysisOn.load())   // the meter measures the mix (also while the reference is heard)
+        {
+            loudness.process (outL, outR, n);
+            spectrum.write (outL, outR, n);
+        }
+        applyReference (outL, outR, n, pos, running);
+    }
+}
+
+// The reference track replaces the mix (crossfaded over 10 ms), at its own level.
+void Engine::applyReference (float* l, float* r, int n, juce::int64 pos, bool running)
+{
+    const bool want = referenceOn.load() && reference != nullptr;
+    if (reference == nullptr)
+        referenceMix = 0.0f;
+    if (! want && referenceMix <= 0.0f)
+        return;
+
+    const float step = 1.0f / (0.01f * (float) sampleRate), target = want ? 1.0f : 0.0f;
+    const float gain = referenceGain.load();
+    const double offset = referenceOffset.load();
+    const auto& audio = *reference;
+    const int length = audio.getNumSamples();
+    const float* rl = audio.getReadPointer (0);
+    const float* rr = audio.getNumChannels() > 1 ? audio.getReadPointer (1) : rl;
+
+    for (int i = 0; i < n; ++i)
+    {
+        referenceMix = referenceMix < target ? juce::jmin (target, referenceMix + step) : juce::jmax (target, referenceMix - step);
+        float a = 0.0f, b = 0.0f;
+        if (running)
+        {
+            const double sp = ((double) (pos + i) / sampleRate - offset) * referenceRate;
+            if (sp >= 0.0 && sp < (double) (length - 1))
+            {
+                const int i0 = (int) sp;
+                const float frac = (float) (sp - i0);
+                a = rl[i0] + frac * (rl[i0 + 1] - rl[i0]);
+                b = rr[i0] + frac * (rr[i0 + 1] - rr[i0]);
+            }
+        }
+        l[i] = l[i] * (1.0f - referenceMix) + a * gain * referenceMix;
+        if (r != nullptr)
+            r[i] = r[i] * (1.0f - referenceMix) + b * gain * referenceMix;
+    }
+}
+
+bool Engine::loadReference (const juce::File& file)
+{
+    std::unique_ptr<juce::AudioFormatReader> reader (formats.createReaderFor (file));
+    if (reader == nullptr || reader->lengthInSamples <= 0)
+        return false;
+    const int channels = (int) juce::jmin<juce::uint32> (reader->numChannels, 2);
+    const int length = (int) juce::jmin<juce::int64> (reader->lengthInSamples, (juce::int64) (reader->sampleRate * 1800.0));   // half an hour is plenty
+    auto buffer = std::make_shared<juce::AudioBuffer<float>> (channels, length);
+    reader->read (buffer.get(), 0, length, 0, true, true);
+    const double lufsValue = Loudness::integratedOfAudio (*buffer, reader->sampleRate);
+
+    const juce::ScopedLock sl (lock);
+    reference = std::move (buffer);
+    referenceRate = reader->sampleRate;
+    referenceName = file.getFileNameWithoutExtension();
+    referenceFile = file;
+    referenceLufs = lufsValue;
+    referenceLoaded = true;
+    referenceOn = false;
+    return true;
+}
+
+void Engine::clearReference()
+{
+    referenceOn = false;
+    const juce::ScopedLock sl (lock);
+    referenceLoaded = false;
+    reference = nullptr;
+    referenceName = {};
+    referenceFile = juce::File();
+    referenceLufs = -120.0;
+}
+
+juce::String Engine::getReferenceName() const
+{
+    const juce::ScopedLock sl (lock);
+    return referenceName;
+}
+
+juce::File Engine::getReferenceFile() const
+{
+    const juce::ScopedLock sl (lock);
+    return referenceFile;
 }
 
 // True if a track has something to put in a stem: clips, or notes routed to it by a sequencer plugin.
@@ -3959,26 +4117,30 @@ void Engine::shiftClipsFrom (double fromSeconds, double deltaSeconds)
     }
 }
 
-int Engine::copyRange (double from, double to, double dest)
+RangeBundle Engine::captureRange (double from, double to) const
 {
     const juce::ScopedLock sl (lock);
-    int made = 0;
-    for (auto& tp : tracks)
+    RangeBundle bundle;
+    bundle.length = to - from;
+    for (int index = 0; index < (int) tracks.size(); ++index)
     {
-        auto& t = *tp;
-        std::vector<Clip> audio;
+        auto& t = *tracks[(size_t) index];
+        RangeBundle::Item item;
+        item.trackIndex = index;
+        item.name = t.name;
+        item.type = t.type;
+
         for (auto& c : t.clips)
         {
             const double s = juce::jmax (c.start, from), e = juce::jmin (c.end(), to);
             if (! c.audible() || e - s < 0.002)
                 continue;
             Clip k = c;
-            k.id = nextClipId++;
             k.takeGroup = 0;
             k.takeIndex = 0;
             k.takeActive = true;
             const double cut = s - c.start;
-            k.start = dest + (s - from);
+            k.start = s - from;
             k.length = e - s;
             k.offset = c.reverse ? c.offset + (c.end() - e) : c.offset + cut;
             if (cut > 0.001)             k.fadeIn = 0.0;
@@ -3990,21 +4152,16 @@ int Engine::copyRange (double from, double to, double dest)
                     p.time -= cut;
                     k.envelope.push_back (p);
                 }
-            audio.push_back (std::move (k));
-            ++made;
+            item.audio.push_back (std::move (k));
         }
-        for (auto& k : audio)
-            t.clips.push_back (std::move (k));
 
-        std::vector<MidiClip> midi;
         for (auto& m : t.midiClips)
         {
             const double s = juce::jmax (m.start, from), e = juce::jmin (m.end(), to);
             if (e - s < 0.002)
                 continue;
             MidiClip k;
-            k.id = nextClipId++;
-            k.start = dest + (s - from);
+            k.start = s - from;
             k.length = e - s;
             for (auto n : m.notes)
             {
@@ -4024,15 +4181,77 @@ int Engine::copyRange (double from, double to, double dest)
                     k.ccs.push_back (cc);
                 }
             }
-            midi.push_back (std::move (k));
+            item.midi.push_back (std::move (k));
+        }
+        if (! item.audio.empty() || ! item.midi.empty())
+            bundle.items.push_back (std::move (item));
+    }
+    return bundle;
+}
+
+int Engine::pasteRange (const RangeBundle& bundle, double dest, bool sameProject, int* created)
+{
+    if (created != nullptr)
+        *created = 0;
+
+    // the tracks first (a missing one is made: that takes the lock itself)
+    std::vector<Track*> targets;
+    for (auto& item : bundle.items)
+    {
+        Track* target = nullptr;
+        {
+            const juce::ScopedLock sl (lock);
+            if (sameProject && juce::isPositiveAndBelow (item.trackIndex, (int) tracks.size()) && tracks[(size_t) item.trackIndex]->type == item.type)
+                target = tracks[(size_t) item.trackIndex].get();
+            if (target == nullptr)
+                for (auto& t : tracks)
+                    if (t->name == item.name && t->type == item.type && ! t->bus)
+                    {
+                        target = t.get();
+                        break;
+                    }
+            if (target == nullptr && juce::isPositiveAndBelow (item.trackIndex, (int) tracks.size()) && tracks[(size_t) item.trackIndex]->type == item.type
+                && ! tracks[(size_t) item.trackIndex]->bus)
+                target = tracks[(size_t) item.trackIndex].get();
+        }
+        if (target == nullptr)
+        {
+            target = addTrack (item.name, item.type);
+            if (created != nullptr && target != nullptr)
+                ++*created;
+        }
+        targets.push_back (target);
+    }
+
+    const juce::ScopedLock sl (lock);
+    int made = 0;
+    for (size_t i = 0; i < bundle.items.size(); ++i)
+    {
+        auto* t = targets[i];
+        if (t == nullptr)
+            continue;
+        for (auto k : bundle.items[i].audio)
+        {
+            k.id = nextClipId++;
+            k.start += dest;
+            t->clips.push_back (std::move (k));
             ++made;
         }
-        for (auto& k : midi)
-            t.midiClips.push_back (std::move (k));
+        for (auto k : bundle.items[i].midi)
+        {
+            k.id = nextClipId++;
+            k.start += dest;
+            t->midiClips.push_back (std::move (k));
+            ++made;
+        }
     }
     return made;
 }
 
+int Engine::copyRange (double from, double to, double dest)
+{
+    return pasteRange (captureRange (from, to), dest, true);
+}
 void Engine::swapRanges (double a0, double a1, double b0, double b1)
 {
     const juce::ScopedLock sl (lock);
@@ -4075,6 +4294,8 @@ Track* Engine::duplicateTrack (const Track& src)
     applyTrackState (*copy, ts);
     copy->recordArmed = false;
     copy->output = src.output;    // plays into the same bus
+    copy->sidechainSource = src.sidechainSource.load();
+    updateSidechainTaps();
     for (auto& s : src.sends)
         copy->sends.push_back (s);
 

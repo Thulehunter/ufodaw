@@ -14,7 +14,9 @@ public:
     {
         std::function<std::vector<ArrSection>()> fetch;                 // the sections as they are now
         std::function<void (std::vector<ArrSection>)> edited;           // names, bars, colours (one undo step per panel opening is taken by the owner)
-        std::function<void (int index)> goTo, loop, copy, moveEarlier, moveLater;
+        std::function<void (int index)> goTo, loop, copy, moveEarlier, moveLater, toClipboard;
+        std::function<void()> pasteClipboard;                           // the section on the clipboard (maybe from another project) at the playhead
+        std::function<bool()> canPaste;
     };
 
     static const std::array<juce::uint32, 8>& palette()
@@ -47,6 +49,16 @@ public:
             push (std::move (s));
         };
         addAndMakeVisible (addButton);
+
+        pasteButton.setTooltip ("Puts the section on the clipboard (Clip, here or in another project) at the playhead, with its clips; missing tracks are made");
+        pasteButton.onClick = [this]
+        {
+            if (hooks.pasteClipboard)
+                hooks.pasteClipboard();
+            juce::Component::SafePointer<SectionsPanel> safe (this);
+            juce::MessageManager::callAsync ([safe] { if (safe != nullptr) safe->reload(); });
+        };
+        addAndMakeVisible (pasteButton);
 
         hint.setText ("Sections show as coloured bands on the ruler. Copy puts a copy of a section (with its clips) after it and moves everything "
                       "later along; < and > swap a section with its neighbour.",
@@ -91,13 +103,19 @@ public:
             row->go.setBounds (line.removeFromLeft (34).reduced (0, 2));
             row->loop.setBounds (line.removeFromLeft (46).reduced (0, 2));
             row->copy.setBounds (line.removeFromLeft (46).reduced (0, 2));
+            row->clip.setBounds (line.removeFromLeft (40).reduced (0, 2));
             line.removeFromLeft (4);
             row->earlier.setBounds (line.removeFromLeft (24).reduced (0, 2));
             row->later.setBounds (line.removeFromLeft (24).reduced (0, 2));
             row->remove.setBounds (line.removeFromLeft (24).reduced (0, 2));
             r.removeFromTop (4);
         }
-        addButton.setBounds (r.removeFromTop (26).removeFromLeft (130));
+        {
+            auto bottomRow = r.removeFromTop (26);
+            addButton.setBounds (bottomRow.removeFromLeft (130));
+            bottomRow.removeFromLeft (8);
+            pasteButton.setBounds (bottomRow.removeFromLeft (150));
+        }
         r.removeFromTop (6);
         hint.setBounds (r.removeFromTop (46));
     }
@@ -105,7 +123,7 @@ public:
 private:
     struct Row
     {
-        juce::TextButton colour, go { "Go" }, loop { "Loop" }, copy { "Copy" }, earlier { "<" }, later { ">" }, remove { "x" };
+        juce::TextButton colour, go { "Go" }, loop { "Loop" }, copy { "Copy" }, clip { "Clip" }, earlier { "<" }, later { ">" }, remove { "x" };
         juce::TextEditor name;
         juce::Slider bar, bars;
     };
@@ -198,6 +216,13 @@ private:
             r->go.onClick = [this, act] () mutable { act (hooks.goTo); };
             r->loop.onClick = [this, act] () mutable { act (hooks.loop); };
             r->copy.onClick = [this, act] () mutable { act (hooks.copy); };
+            r->clip.onClick = [this, i]
+            {
+                if (hooks.toClipboard)
+                    hooks.toClipboard ((int) i);
+                pasteButton.setEnabled (hooks.canPaste && hooks.canPaste());
+            };
+            r->clip.setTooltip ("Copy this section (with its clips) to the clipboard: paste it here or in another project with Paste section");
             r->earlier.onClick = [this, act] () mutable { act (hooks.moveEarlier); };
             r->later.onClick = [this, act] () mutable { act (hooks.moveLater); };
             r->earlier.setTooltip ("Swap with the section before it (the clips go along)");
@@ -220,12 +245,13 @@ private:
                     safe->push (std::move (s));
                 });
             };
-            for (auto* b : { &r->go, &r->loop, &r->copy, &r->earlier, &r->later, &r->remove })
+            for (auto* b : { &r->go, &r->loop, &r->copy, &r->clip, &r->earlier, &r->later, &r->remove })
                 addAndMakeVisible (b);
 
             rows.push_back (std::move (row));
         }
-        setSize (590, 10 + 18 + 4 + (int) rows.size() * 32 + 26 + 6 + 46 + 10);
+        pasteButton.setEnabled (hooks.canPaste && hooks.canPaste());
+        setSize (640, 10 + 18 + 4 + (int) rows.size() * 32 + 26 + 6 + 46 + 10);
         resized();
     }
 
@@ -233,5 +259,5 @@ private:
     std::vector<ArrSection> sections;
     std::vector<std::unique_ptr<Row>> rows;
     juce::Label nameHeader, barHeader, lenHeader, hint;
-    juce::TextButton addButton { "+ Add section" };
+    juce::TextButton addButton { "+ Add section" }, pasteButton { "Paste section" };
 };
