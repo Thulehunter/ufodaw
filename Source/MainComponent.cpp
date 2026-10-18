@@ -1409,6 +1409,18 @@ private:
                     g.fillRect (juce::Rectangle<float> ((float) (seg.start * pps), (float) row.getY(), (float) ((seg.end - seg.start) * pps), (float) row.getHeight()));
                 }
 
+            // the take as a block: its range, with a handle at each end (drag to trim; Alt+drag the body to move)
+            {
+                const auto block = juce::Rectangle<float> ((float) (tk.start * pps), (float) row.getY() + 1.0f, (float) ((tk.end - tk.start) * pps), (float) row.getHeight() - 2.0f);
+                g.setColour (colour.withAlpha (0.10f));
+                g.fillRoundedRectangle (block, 3.0f);
+                g.setColour (colour.withAlpha (0.65f));
+                g.drawRoundedRectangle (block, 3.0f, 1.0f);
+                g.setColour (colour.withAlpha (0.9f));
+                g.fillRect (block.getX(), block.getY() + 2.0f, 3.0f, block.getHeight() - 4.0f);
+                g.fillRect (block.getRight() - 3.0f, block.getY() + 2.0f, 3.0f, block.getHeight() - 4.0f);
+            }
+
             juce::Path p;
             bool first = true;
             for (auto& pt : tk.points)
@@ -1441,7 +1453,23 @@ private:
             g.drawText ("No takes yet: arm Touch / Latch / Write in the A menu and ride the control. Each pass gets a row here.",
                         8, 44, getWidth() - 16, 16, juce::Justification::left);
         }
+        else
+        {
+            g.setColour (Theme::textFaint);
+            g.setFont (10.5f);
+            g.drawText ("Swipe a row = play that take there.  Drag a block's edge = trim.  Alt+drag a block = move.  Right-click = duplicate / delete.",
+                        8, getHeight() - 14, juce::jmin (getWidth() - 16, 640), 12, juce::Justification::left);
+        }
     }
+
+    // Takes as blocks: drag a block's edge to trim it, Alt+drag its body to move it (both are recomputed from how it was when the
+    // drag began, so nothing is lost on the way); a plain drag swipes (comping).
+    enum class BlockMode { None, TrimStart, TrimEnd, Move };
+    BlockMode blockMode = BlockMode::None;
+    int blockTakeId = -1;
+    double blockGrab = 0.0;
+    bool blockEdited = false;
+    AutoData blockOriginal;
 
     void compMouseDown (const juce::MouseEvent& e)
     {
@@ -1454,6 +1482,22 @@ private:
         compRow = compRowAt (e.y, (int) data.takes.size());
         if (compRow < 0)
             return;
+
+        const double pps = main.getPixelsPerSecond();
+        const auto& tk = data.takes[(size_t) compRow];
+        blockMode = BlockMode::None;
+        if (std::abs (e.x - tk.start * pps) <= 6.0)        blockMode = BlockMode::TrimStart;
+        else if (std::abs (e.x - tk.end * pps) <= 6.0)     blockMode = BlockMode::TrimEnd;
+        else if (e.mods.isAltDown() && e.x >= tk.start * pps && e.x <= tk.end * pps)   blockMode = BlockMode::Move;
+        if (blockMode != BlockMode::None)
+        {
+            blockTakeId = tk.id;
+            blockGrab = e.x / pps;
+            blockEdited = false;
+            blockOriginal = data;
+            repaint();
+            return;
+        }
         compDragging = true;
         compA = compB = autoTime (e);
         repaint();
@@ -1461,6 +1505,35 @@ private:
 
     void compMouseDrag (const juce::MouseEvent& e)
     {
+        if (blockMode != BlockMode::None)
+        {
+            auto& engine = main.getEngine();
+            const double pps = main.getPixelsPerSecond();
+            const double now = e.mods.isAltDown() && blockMode != BlockMode::Move ? e.x / pps : main.snapTime (e.x / pps);
+            const AutoTake* orig = nullptr;
+            for (auto& tk : blockOriginal.takes)
+                if (tk.id == blockTakeId)
+                    orig = &tk;
+            if (orig == nullptr)
+                return;
+            if (! blockEdited)
+            {
+                if (std::abs (e.x / pps - blockGrab) < 0.01)
+                    return;   // still a click
+                main.beginEdit();
+                blockEdited = true;
+            }
+            engine.setAutomationData (track, track.autoEditId, blockOriginal);   // (always from the start of the drag)
+            if (blockMode == BlockMode::Move)
+                engine.moveAutomationTake (track, track.autoEditId, blockTakeId, main.snapTime (e.x / pps) - main.snapTime (blockGrab));
+            else if (blockMode == BlockMode::TrimStart)
+                engine.trimAutomationTake (track, track.autoEditId, blockTakeId, juce::jmin (now, orig->end - 0.05), orig->end);
+            else
+                engine.trimAutomationTake (track, track.autoEditId, blockTakeId, orig->start, juce::jmax (now, orig->start + 0.05));
+            main.clipsChanged();
+            repaint();
+            return;
+        }
         if (! compDragging)
             return;
         compB = autoTime (e);
@@ -1469,6 +1542,12 @@ private:
 
     void compMouseUp()
     {
+        if (blockMode != BlockMode::None)
+        {
+            blockMode = BlockMode::None;
+            repaint();
+            return;
+        }
         if (! compDragging)
             return;
         compDragging = false;
@@ -1693,6 +1772,11 @@ private:
             {
                 main.beginEdit();
                 main.getEngine().useAutomationTake (*track_, id, takeId, from, to);
+            });
+            add (sub, "Duplicate take (after it)", true, false, [this, track_, id, takeId, tk]
+            {
+                main.beginEdit();
+                main.getEngine().duplicateAutomationTake (*track_, id, takeId, tk.end - tk.start);
             });
             add (sub, "Delete take", true, false, [this, track_, id, takeId]
             {
@@ -2877,6 +2961,7 @@ void MainComponent::openSampler (Track& t)
                 done (false);
         });
     samplerWindow->getPanel().onBeginEdit = [safe] { if (safe != nullptr) safe->beginEdit(); };
+    samplerWindow->getPanel().onAbortEdit = [safe] { if (safe != nullptr) safe->cancelEdit(); };
     samplerWindow->onKey = [safe] (const juce::KeyPress& k) { return safe != nullptr && safe->handleUndoKey (k); };
 }
 
@@ -2907,6 +2992,7 @@ void MainComponent::openPadSampler (Track& t, int pad)
                 done (false);
         });
     padSamplerWindow->getPanel().onBeginEdit = [safe] { if (safe != nullptr) safe->beginEdit(); };
+    padSamplerWindow->getPanel().onAbortEdit = [safe] { if (safe != nullptr) safe->cancelEdit(); };
     padSamplerWindow->onKey = [safe] (const juce::KeyPress& k) { return safe != nullptr && safe->handleUndoKey (k); };
 }
 

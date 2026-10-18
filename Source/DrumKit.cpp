@@ -128,6 +128,8 @@ DrumKit::DrumKit()
 {
     scratchL.assign (16384, 0.0f);
     scratchR.assign (16384, 0.0f);
+    kitL.assign (16384, 0.0f);
+    kitR.assign (16384, 0.0f);
 
     for (int i = 0; i < numPads; ++i)
     {
@@ -234,9 +236,20 @@ void DrumKit::render (float* outL, float* outR, int numSamples)
     for (auto& p : pads)
         anySolo = anySolo || p.solo.load();
 
+    // A soft limiter on the sum of the pads: below 0.7 the sound is untouched, above it the peaks bend towards full scale instead of
+    // clipping (kick, snare and hats hitting together stay clean).
+    auto soft = [] (float x)
+    {
+        constexpr float knee = 0.7f;
+        const float a = std::abs (x);
+        return a <= knee ? x : std::copysign (knee + (1.0f - knee) * std::tanh ((a - knee) / (1.0f - knee)), x);
+    };
+
     for (int done = 0; done < numSamples;)
     {
         const int n = juce::jmin ((int) scratchL.size(), numSamples - done);
+        std::fill (kitL.begin(), kitL.begin() + n, 0.0f);
+        std::fill (kitR.begin(), kitR.begin() + n, 0.0f);
 
         for (auto& p : pads)
         {
@@ -257,9 +270,15 @@ void DrumKit::render (float* outL, float* outR, int numSamples)
             const float gl = std::cos (angle) * juce::MathConstants<float>::sqrt2 * g, gr = std::sin (angle) * juce::MathConstants<float>::sqrt2 * g;
             for (int i = 0; i < n; ++i)
             {
-                outL[done + i] += scratchL[(size_t) i] * gl;
-                outR[done + i] += scratchR[(size_t) i] * gr;
+                kitL[(size_t) i] += scratchL[(size_t) i] * gl;
+                kitR[(size_t) i] += scratchR[(size_t) i] * gr;
             }
+        }
+
+        for (int i = 0; i < n; ++i)
+        {
+            outL[done + i] += soft (kitL[(size_t) i]);
+            outR[done + i] += soft (kitR[(size_t) i]);
         }
         done += n;
     }

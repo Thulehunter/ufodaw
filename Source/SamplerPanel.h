@@ -273,6 +273,7 @@ public:
     }
 
     std::function<void()> onBeginEdit;   // set by the owner: called before every change (the undo snapshot)
+    std::function<void()> onAbortEdit;   // set by the owner: the change did not happen after all (a cancelled stretch)
 
     void paint (juce::Graphics& g) override { g.fillAll (Theme::panel); }
 
@@ -368,10 +369,12 @@ private:
         beginEditFn();
         // the stretch runs in the background behind a progress window; this comes back when it is done (or cancelled)
         juce::Component::SafePointer<SamplerPanel> safe (this);
-        stretcher (stretch.getValue(), [safe] (bool)
+        stretcher (stretch.getValue(), [safe] (bool applied)
         {
             if (safe == nullptr)
                 return;
+            if (! applied && safe->onAbortEdit)
+                safe->onAbortEdit();   // cancelled: the undo step taken before is dropped again
             safe->stretch.setValue (safe->sampler.getStretch(), juce::dontSendNotification);
             safe->waveform.repaint();
             safe->changedFn();

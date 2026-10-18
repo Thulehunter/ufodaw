@@ -3649,3 +3649,104 @@ bool Engine::applySamplerStretch (Sampler& s, std::shared_ptr<const juce::AudioB
     s.setStretched (std::move (result), std::abs (timeRatio - 1.0) < 0.001 ? 1.0 : timeRatio);
     return true;
 }
+
+//==============================================================================
+// Automation takes as blocks
+
+void Engine::moveAutomationTake (Track& t, const juce::String& id, int takeId, double delta)
+{
+    const juce::ScopedLock sl (lock);
+    std::vector<AutoPoint>* pts = nullptr;
+    auto* d = autoDataFor (t, id, &pts);
+    if (d == nullptr)
+        return;
+    for (auto& tk : d->takes)
+        if (tk.id == takeId)
+        {
+            delta = juce::jmax (delta, -tk.start);   // (not before the start of the project)
+            tk.start += delta;
+            tk.end += delta;
+            for (auto& p : tk.points)
+                p.time += delta;
+            break;
+        }
+
+    std::vector<AutoCompSeg> moved;   // where it played goes with it, and wins over what it lands on
+    for (auto it = d->comp.begin(); it != d->comp.end();)
+        if (it->takeId == takeId)
+        {
+            moved.push_back (*it);
+            it = d->comp.erase (it);
+        }
+        else
+            ++it;
+    for (auto& s : moved)
+        useAutomationTake (t, id, takeId, s.start + delta, s.end + delta);
+    *pts = flattenAutomation (*d);
+}
+
+void Engine::trimAutomationTake (Track& t, const juce::String& id, int takeId, double newStart, double newEnd)
+{
+    if (newEnd - newStart < 0.02)
+        return;
+    const juce::ScopedLock sl (lock);
+    std::vector<AutoPoint>* pts = nullptr;
+    auto* d = autoDataFor (t, id, &pts);
+    if (d == nullptr)
+        return;
+    for (auto& tk : d->takes)
+        if (tk.id == takeId)
+        {
+            // the curve keeps its values inside the new range; the ends get points with the value the curve had there
+            const float first = evalAutomation (tk.points, newStart, tk.points.empty() ? 0.0f : tk.points.front().value);
+            const float last = evalAutomation (tk.points, newEnd, tk.points.empty() ? 0.0f : tk.points.back().value);
+            std::vector<AutoPoint> kept;
+            kept.push_back ({ newStart, first });
+            for (auto& p : tk.points)
+                if (p.time > newStart + 1.0e-9 && p.time < newEnd - 1.0e-9)
+                    kept.push_back (p);
+            kept.push_back ({ newEnd, last });
+            tk.points = std::move (kept);
+            tk.start = newStart;
+            tk.end = newEnd;
+        }
+
+    std::vector<AutoCompSeg> segs;   // where this take plays can only shrink with it
+    for (auto s : d->comp)
+    {
+        if (s.takeId == takeId)
+        {
+            s.start = juce::jmax (s.start, newStart);
+            s.end = juce::jmin (s.end, newEnd);
+            if (s.end - s.start < 0.001)
+                continue;
+        }
+        segs.push_back (s);
+    }
+    d->comp = std::move (segs);
+    *pts = flattenAutomation (*d);
+}
+
+int Engine::duplicateAutomationTake (Track& t, const juce::String& id, int takeId, double offset)
+{
+    const juce::ScopedLock sl (lock);
+    std::vector<AutoPoint>* pts = nullptr;
+    auto* d = autoDataFor (t, id, &pts);
+    if (d == nullptr)
+        return -1;
+    for (auto& tk : d->takes)
+        if (tk.id == takeId)
+        {
+            AutoTake copy = tk;
+            copy.id = d->nextTakeId++;
+            copy.name = tk.name + " copy";
+            offset = juce::jmax (offset, -tk.start);
+            copy.start += offset;
+            copy.end += offset;
+            for (auto& p : copy.points)
+                p.time += offset;
+            d->takes.push_back (copy);   // (a copy plays nowhere until it is swiped in)
+            return copy.id;
+        }
+    return -1;
+}

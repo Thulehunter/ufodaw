@@ -67,5 +67,5 @@ private:
     void setupSampler (int pad);
 
     std::array<Pad, numPads> pads;
-    std::vector<float> scratchL, scratchR;
+    std::vector<float> scratchL, scratchR, kitL, kitR;   // (the kit sums its pads into kitL / kitR, then a soft limiter keeps the sum below full scale)
 };

@@ -444,6 +444,10 @@ public:
     int addAutomationTake (Track&, const juce::String& id, double start, double end, std::vector<AutoPoint> points, const juce::String& name = {});
     void useAutomationTake (Track&, const juce::String& id, int takeId, double start, double end);   // that take plays in this range
     void deleteAutomationTake (Track&, const juce::String& id, int takeId);
+    // Takes as blocks: move one in time (its comp segments go with it), trim it to a new range, or copy it
+    void moveAutomationTake (Track&, const juce::String& id, int takeId, double deltaSeconds);
+    void trimAutomationTake (Track&, const juce::String& id, int takeId, double newStart, double newEnd);
+    int duplicateAutomationTake (Track&, const juce::String& id, int takeId, double offsetSeconds);
 
     // ---- Message thread: hosted plugins
     void setMidiOuts (Track& source, std::vector<MidiRoute> routes);   // empty = this track plays its own sound; only other MIDI tracks count
