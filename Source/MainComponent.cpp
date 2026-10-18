@@ -2858,6 +2858,7 @@ void MainComponent::openSampler (Track& t)
     samplerWindow.reset();   // one at a time
     auto* tr = &t;
     juce::Component::SafePointer<MainComponent> safe (this);
+    samplerWindowTrack = &t;
     samplerWindow = std::make_unique<SamplerWindow> ("Sampler - " + t.name, *t.sampler,
         [safe, tr] (const juce::File& f) { return safe != nullptr && safe->engine.loadSamplerSample (*tr, f); },
         [safe] { if (safe != nullptr) ++safe->editCounter; },   // a change counts as an edit of the project (autosave, unsaved changes)
@@ -2876,6 +2877,7 @@ void MainComponent::openSampler (Track& t)
                 done (false);
         });
     samplerWindow->getPanel().onBeginEdit = [safe] { if (safe != nullptr) safe->beginEdit(); };
+    samplerWindow->onKey = [safe] (const juce::KeyPress& k) { return safe != nullptr && safe->handleUndoKey (k); };
 }
 
 void MainComponent::openPadSampler (Track& t, int pad)
@@ -2885,6 +2887,8 @@ void MainComponent::openPadSampler (Track& t, int pad)
     padSamplerWindow.reset();
     auto* tr = &t;
     juce::Component::SafePointer<MainComponent> safe (this);
+    padWindowTrack = &t;
+    padWindowPad = pad;
     padSamplerWindow = std::make_unique<SamplerWindow> (t.name + " - " + t.kit->getPad (pad).name, t.kit->getPad (pad).sampler,
         [safe, tr, pad] (const juce::File& f) { return safe != nullptr && safe->engine.loadDrumSample (*tr, pad, f); },
         [safe] { if (safe != nullptr) ++safe->editCounter; },
@@ -2903,6 +2907,7 @@ void MainComponent::openPadSampler (Track& t, int pad)
                 done (false);
         });
     padSamplerWindow->getPanel().onBeginEdit = [safe] { if (safe != nullptr) safe->beginEdit(); };
+    padSamplerWindow->onKey = [safe] (const juce::KeyPress& k) { return safe != nullptr && safe->handleUndoKey (k); };
 }
 
 void MainComponent::openDrumRack (Track& t, int selectPad)
@@ -2931,8 +2936,10 @@ void MainComponent::openDrumRack (Track& t, int selectPad)
     hooks.editSampler = [safe, tr] (int pad) { if (safe != nullptr) safe->openPadSampler (*tr, pad); };
     hooks.beginEdit = [safe] { if (safe != nullptr) safe->beginEdit(); };
     hooks.changed = [safe] { if (safe != nullptr) { ++safe->editCounter; if (safe->drumRoll != nullptr) safe->drumRoll->repaint(); } };
+    rackWindowTrack = &t;
     drumRackWindow = std::make_unique<DrumRackWindow> (t.name + " - drum rack", *t.kit, std::move (hooks),
         [safe] { juce::MessageManager::callAsync ([safe] { if (safe != nullptr) { safe->padSamplerWindow.reset(); safe->drumRackWindow.reset(); } }); });
+    drumRackWindow->onKey = [safe] (const juce::KeyPress& k) { return safe != nullptr && safe->handleUndoKey (k); };
     if (selectPad >= 0)
         drumRackWindow->getPanel().select (selectPad);
 }
@@ -3473,9 +3480,40 @@ void MainComponent::redo()
     restoreSnapshot (state);
 }
 
+// Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z in the sampler and drum rack windows undo the project, like in the main window.
+bool MainComponent::handleUndoKey (const juce::KeyPress& k)
+{
+    const auto mods = k.getModifiers();
+    if (! mods.isCommandDown())
+        return false;
+    const int code = k.getKeyCode();
+    const bool isZ = code == 'Z' || code == 26, isY = code == 'Y' || code == 25;   // (Ctrl+letter can arrive as the control character, too)
+    const bool isUndo = isZ && ! mods.isShiftDown();
+    const bool isRedo = (isZ && mods.isShiftDown()) || isY;
+    if (! isUndo && ! isRedo)
+        return false;
+    // later: undo closes and opens these windows again
+    juce::MessageManager::callAsync ([safe = juce::Component::SafePointer<MainComponent> (this), isUndo]
+    {
+        if (safe == nullptr)
+            return;
+        if (isUndo) safe->undo(); else safe->redo();
+    });
+    return true;
+}
+
 void MainComponent::restoreSnapshot (const ProjectState& state)
 {
-    samplerWindow.reset();   // (they show the old values, and may point at tracks that change)
+    // The tool windows point at tracks that are replaced: they are closed, and opened again (same place) once the project is back.
+    struct Reopen { int trackIndex = -1, pad = -1; juce::Point<int> pos; };
+    Reopen reopenSampler, reopenPad, reopenRack;
+    if (samplerWindow != nullptr)
+        reopenSampler = { engine.indexOfTrack (samplerWindowTrack), -1, samplerWindow->getPosition() };
+    if (padSamplerWindow != nullptr)
+        reopenPad = { engine.indexOfTrack (padWindowTrack), padWindowPad, padSamplerWindow->getPosition() };
+    if (drumRackWindow != nullptr)
+        reopenRack = { engine.indexOfTrack (rackWindowTrack), drumRackWindow->getPanel().getSelected(), drumRackWindow->getPosition() };
+    samplerWindow.reset();
     padSamplerWindow.reset();
     drumRackWindow.reset();
     // Remember what was selected so it can be selected again (and the piano roll reopened).
@@ -3510,6 +3548,25 @@ void MainComponent::restoreSnapshot (const ProjectState& state)
     updateUndoButtons();
     updateArmedTrack();   // the old Track pointer is gone
     clipsChanged();
+
+    if (auto* t = engine.getTrack (reopenRack.trackIndex); t != nullptr && t->kit != nullptr)
+    {
+        openDrumRack (*t, reopenRack.pad);
+        if (drumRackWindow != nullptr)
+            drumRackWindow->setTopLeftPosition (reopenRack.pos);
+    }
+    if (auto* t = engine.getTrack (reopenPad.trackIndex); t != nullptr && t->kit != nullptr)
+    {
+        openPadSampler (*t, reopenPad.pad);
+        if (padSamplerWindow != nullptr)
+            padSamplerWindow->setTopLeftPosition (reopenPad.pos);
+    }
+    if (auto* t = engine.getTrack (reopenSampler.trackIndex); t != nullptr && t->sampler != nullptr)
+    {
+        openSampler (*t);
+        if (samplerWindow != nullptr)
+            samplerWindow->setTopLeftPosition (reopenSampler.pos);
+    }
 }
 
 //==============================================================================
@@ -4188,8 +4245,8 @@ bool MainComponent::keyPressed (const juce::KeyPress& k)
         if (k.getKeyCode() == 'X')              { copySelected (true); return true; }
         if (k.getKeyCode() == 'C')              { copySelected (false); return true; }
         if (k.getKeyCode() == 'V')              { pasteClip (pasteTargetTrack(), engine.getPositionSeconds()); return true; }
-        if (k.getKeyCode() == 'Z')              { if (mods.isShiftDown()) redo(); else undo(); return true; }
-        if (k.getKeyCode() == 'Y')              { redo(); return true; }
+        if (k.getKeyCode() == 'Z' || k.getKeyCode() == 26) { if (mods.isShiftDown()) redo(); else undo(); return true; }
+        if (k.getKeyCode() == 'Y' || k.getKeyCode() == 25) { redo(); return true; }
         return false;
     }
 

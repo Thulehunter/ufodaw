@@ -299,6 +299,10 @@ public:
     }
 
     DrumRackPanel& getPanel() { return *panel; }
+
+    // Ctrl+Z / Ctrl+Y work in this window too: the owner decides (it undoes the project)
+    std::function<bool (const juce::KeyPress&)> onKey;
+    bool keyPressed (const juce::KeyPress& k) override { return (onKey && onKey (k)) || juce::DocumentWindow::keyPressed (k); }
     void closeButtonPressed() override { if (closed) closed(); }
 
 private:

@@ -328,6 +328,27 @@ public:
         hint.setBounds (r.removeFromTop (22));
     }
 
+    // After an undo / redo: every control shows the sampler's values again
+    void refresh()
+    {
+        auto& p = sampler.params;
+        modeBox.setSelectedId (p.mode.load() + 1, juce::dontSendNotification);
+        rootBox.setSelectedId (p.rootNote.load() + 1, juce::dontSendNotification);
+        tune.setValue (p.tuneCents, juce::dontSendNotification);
+        volume.setValue (p.volume, juce::dontSendNotification);
+        velocity.setValue (p.velocitySens, juce::dontSendNotification);
+        filter.setValue (p.cutoff, juce::dontSendNotification);
+        attack.setValue (p.attack, juce::dontSendNotification);
+        decay.setValue (p.decay, juce::dontSendNotification);
+        sustain.setValue (p.sustain, juce::dontSendNotification);
+        release.setValue (p.release, juce::dontSendNotification);
+        slices.setValue (p.slices, juce::dontSendNotification);
+        loopToggle.setToggleState (p.loop, juce::dontSendNotification);
+        reverseToggle.setToggleState (p.reverse, juce::dontSendNotification);
+        refreshVisibility();
+        refreshName();   // (the name, the stretch and the waveform)
+    }
+
     void refreshName()
     {
         stretch.setValue (sampler.getStretch(), juce::dontSendNotification);
@@ -459,6 +480,14 @@ class SamplerWindow : public juce::DocumentWindow
 {
 public:
     SamplerPanel& getPanel() { return *panel; }
+
+    // Ctrl+Z / Ctrl+Y work in this window too: the owner decides (it undoes the project)
+    std::function<bool (const juce::KeyPress&)> onKey;
+    bool keyPressed (const juce::KeyPress& k) override
+    {
+        return (onKey && onKey (k)) || juce::DocumentWindow::keyPressed (k);
+    }
+
     SamplerWindow (const juce::String& title, Sampler& s, std::function<bool (const juce::File&)> loadFile, std::function<void()> onChanged,
                    std::function<void (bool)> onPlay, std::function<void()> onClosed, bool allowSlice = true,
                    std::function<void (double, std::function<void (bool)>)> stretchFile = nullptr)

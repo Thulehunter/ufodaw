@@ -258,6 +258,11 @@ private:
     void sampleClip (Track&, int clipId);                    // an audio clip's audio becomes the sample of a new sampler track
     void startSamplerStretch (std::shared_ptr<Sampler>, double ratio, std::function<void (bool)> done);   // in the background, with a progress window
     std::unique_ptr<SamplerWindow> samplerWindow;
+    Track* samplerWindowTrack = nullptr;       // (which track / pad the tool windows belong to, to open them again after an undo)
+    Track* padWindowTrack = nullptr;
+    int padWindowPad = -1;
+    Track* rackWindowTrack = nullptr;
+    bool handleUndoKey (const juce::KeyPress&);   // Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z in a tool window
 public:
     void openDrumRack (Track&, int selectPad = -1);          // the drum rack: 4 x 4 pads, level / pan / choke per pad, each pad a Simpler
 private:
