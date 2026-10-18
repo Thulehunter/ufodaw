@@ -445,6 +445,7 @@ private:
     double playStartSeconds = 0.0;
     double recStartSeconds = 0.0;
     juce::Rectangle<int> transportPill;
+    int statusCompact = 0;
     juce::TextButton fileButton { "File" }, stopAllButton { "STOP ALL" };
     RailButton railFile { RailButton::Icon::Menu, "File: new project, open, save, export" },
                railAdd { RailButton::Icon::Add, "Add a track", true },

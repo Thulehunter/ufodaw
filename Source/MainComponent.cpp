@@ -1973,6 +1973,7 @@ MainComponent::MainComponent (int slot) : tabSlot (slot)
     deviceManager.addMidiInputDeviceCallback ({}, &midiForwarder);   // all enabled MIDI inputs
     midiListConnection = juce::MidiDeviceListConnection::make ([this] { enableAllMidiInputs(); });   // hot-plugging
     statusLabel.setFont (juce::FontOptions (11.0f));
+    statusLabel.setMinimumHorizontalScale (0.75f);   // (squeezed a little before it wraps)
     statusLabel.setColour (juce::Label::textColourId, Theme::text.withAlpha (0.6f));
     addAndMakeVisible (statusLabel);
 
@@ -2346,8 +2347,8 @@ void MainComponent::updateArmedTrack()
     refreshLiveTargets();
 
     statusLabel.setText (audioInfoText + "\n"
-                             + "MIDI in: " + (midiInputText.isEmpty() ? juce::String ("none") : midiInputText)
-                             + "    Armed: " + (t != nullptr ? t->name : juce::String ("none (select a MIDI clip)")),
+                             + (statusLabel.getWidth() < 300 ? "MIDI " : statusLabel.getWidth() < 460 ? "MIDI: " : "MIDI in: ") + (midiInputText.isEmpty() ? juce::String ("none") : midiInputText)
+                             + "    Armed: " + (t != nullptr ? t->name : juce::String (statusLabel.getWidth() < 460 ? "none" : "none (select a MIDI clip)")),
                          juce::dontSendNotification);
 }
 
@@ -2444,9 +2445,10 @@ void MainComponent::updateAudioInfo()
         const int buffer = device->getCurrentBufferSizeSamples();
         // MIDI to hardware leaves this much later, so the analog synth plays in time with what is heard from the speakers
         engine.setOutputLatencyMs ((double) device->getOutputLatencyInSamples() * 1000.0 / juce::jmax (1.0, rate));
-        audioInfoText = "Audio: " + device->getTypeName() + " - " + device->getName() + "  |  "
-                        + juce::String (rate / 1000.0, 1) + " kHz, " + juce::String (buffer) + " smp ("
-                        + juce::String (buffer * 1000.0 / juce::jmax (1.0, rate), 1) + " ms), "
+        const bool compact = statusLabel.getWidth() < 460, tiny = statusLabel.getWidth() < 300;   // a narrow window: the device name, then the driver, is left out
+        audioInfoText = (tiny ? juce::String() : "Audio: " + device->getTypeName() + (compact ? juce::String() : " - " + device->getName()) + "  |  ")
+                        + juce::String (rate / 1000.0, 1) + " kHz, " + (compact ? juce::String() : juce::String (buffer) + " smp (")
+                        + juce::String (buffer * 1000.0 / juce::jmax (1.0, rate), 1) + (compact ? " ms  |  " : " ms), ")
                         + juce::String (device->getActiveInputChannels().countNumberOfSetBits()) + " in/"
                         + juce::String (device->getActiveOutputChannels().countNumberOfSetBits()) + " out"
                         + "  |  CPU " + juce::String (juce::jmax (0, cpuPercentShown)) + " %";
@@ -3502,6 +3504,12 @@ void MainComponent::resized()
     const int by = barTop + (bottomBarHeight - tb) / 2;
     transportPill = { bx - 16, by - 6, groupW + 32, tb + 12 };
     statusLabel.setBounds (R + 10, barTop + 4, juce::jmax (100, transportPill.getX() - R - 22), bottomBarHeight - 8);
+    const int statusLevel = statusLabel.getWidth() < 300 ? 2 : statusLabel.getWidth() < 460 ? 1 : 0;
+    if (statusLevel != statusCompact)   // the status text has shorter forms for narrow windows
+    {
+        statusCompact = statusLevel;
+        updateAudioInfo();
+    }
     for (auto* b : std::initializer_list<juce::Component*> { &rewindButton, &playButton, &pauseButton, &stopButton, &recordButton })
     {
         b->setBounds (bx, by, tb, tb);
