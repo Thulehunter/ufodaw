@@ -67,6 +67,22 @@ private:
             name.setFont (juce::FontOptions (13.0f, juce::Font::bold));
             name.setColour (juce::Label::textColourId, master ? Theme::yellow : Theme::text);
             name.setText (master ? juce::String ("MASTER") : t.name, juce::dontSendNotification);
+            if (! master)
+            {
+                name.setEditable (false, true, true);   // double-click renames the track
+                name.setTooltip ("Double-click to rename");
+                name.onTextChange = [this]
+                {
+                    auto text = name.getText().trim();
+                    if (text.isEmpty() || text == track->name)
+                    {
+                        name.setText (track->name, juce::dontSendNotification);
+                        return;
+                    }
+                    owner.beginEdit();
+                    track->name = text;
+                };
+            }
             addAndMakeVisible (name);
 
             fader.setSliderStyle (juce::Slider::LinearVertical);
@@ -182,7 +198,7 @@ private:
                     mute.setToggleState (track->mute.load(), juce::dontSendNotification);
                 if (solo.getToggleState() != track->solo.load())
                     solo.setToggleState (track->solo.load(), juce::dontSendNotification);
-                if (name.getText() != track->name)
+                if (! name.isBeingEdited() && name.getText() != track->name)
                     name.setText (track->name, juce::dontSendNotification);
             }
             repaint();

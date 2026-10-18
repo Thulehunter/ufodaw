@@ -31,8 +31,9 @@ A small digital audio workstation for Windows, written in C++17 with [JUCE](http
   yellow start/end markers in its window, and pick the mode: *Classic* (pitched by the key from the root note, with loop, ADSR and a low-pass
   filter), *One-shot* (plays out whatever the key does) or *Slice* (the region cut into equal slices, one key each). *Detect pitch* sets the root
   note and tuning from the sample itself. Right-click an audio clip > *Sample this clip* turns it into a sampler track with one note.
-  Double-click the track name (or *Sampler window* in the piano roll) to open it again.
+  Open it again with the track's instrument button (*Sampler: ...*) or *Sampler window* in the piano roll.
 - **Stretchable patterns** - drag the right edge of a MIDI or drum clip: longer repeats the pattern to fill the clip, shorter cuts it off. Hold **Shift** to stretch the pattern instead (half as long = twice as fast, longer = slower); hold **Alt** to switch snapping off.
+- **Rename tracks** - double-click a track's name (in the track header or in the mixer) and type a new one; Enter keeps it, Esc cancels, and it is one undo step.
 - **Quick tour** - on the first start (and from File > Quick tour) a short tour lights up the rail, the Add button, the clock and tempo, the track headers, the arrangement, the transport and STOP ALL, with a card that explains each. Esc skips it, Enter and the arrow keys step through.
 - **Undo for the sampler and the drum rack** - sample loads, markers, sliders, pad level / pan / mute / solo / choke and stretches are undo steps. Stretching a sample runs in the background behind a progress window with a Cancel button.
 - **Comping loop recordings** - right-click a take > *Comp takes*: every take of the recording gets a row; swipe across a row to play that take there (the takes are split at the swipe, with short fades at the joins). Right-click to leave. Undo works on each swipe.

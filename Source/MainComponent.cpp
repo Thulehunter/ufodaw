@@ -103,7 +103,19 @@ public:
         addChildComponent (monitorButton);
         monitorButton.setVisible (audioTrack);
 
-        nameLabel.setInterceptsMouseClicks (false, false);   // so double-clicking the name reaches the header
+        nameLabel.setInterceptsMouseClicks (false, false);   // so double-clicking the name reaches the header (which renames the track)
+        nameLabel.setEditable (false, false, true);          // (the editor is opened by that double-click; leaving it keeps what was typed)
+        nameLabel.onTextChange = [this]
+        {
+            auto text = nameLabel.getText().trim();
+            if (text.isEmpty() || text == track.name)
+            {
+                nameLabel.setText (track.name, juce::dontSendNotification);
+                return;
+            }
+            beginEdit();   // (one undo step; the track still has its old name here)
+            track.name = text;
+        };
         nameLabel.setText (track.name, juce::dontSendNotification);
         nameLabel.setFont (juce::FontOptions (14.0f, juce::Font::bold));
         addAndMakeVisible (nameLabel);
@@ -192,8 +204,8 @@ public:
 
     void mouseDoubleClick (const juce::MouseEvent& e) override
     {
-        if (e.y < 30)   // the name row
-            openEditor (track);
+        if (e.y < 30 && ! isMaster)   // the name row: rename the track (the instrument opens from the button below the sliders)
+            nameLabel.showEditor();
     }
 
     void paint (juce::Graphics& g) override
@@ -313,6 +325,8 @@ public:
 
     void tick()
     {
+        if (! isMaster && ! nameLabel.isBeingEdited() && nameLabel.getText() != track.name)   // (renamed somewhere else, e.g. in the mixer)
+            nameLabel.setText (track.name, juce::dontSendNotification);
         const bool armedAudio = track.type == Track::Type::Audio && ! track.bus && track.recordArmed;
         const float l = juce::jmax (track.level.load(), armedAudio ? track.inputLevel.load() : 0.0f);   // an armed track shows its input
         shown = l > shown ? l : shown * 0.85f;
