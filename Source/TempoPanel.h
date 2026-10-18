@@ -12,12 +12,13 @@ public:
     TempoPanel (const TempoMap& current, std::function<void()> beginEdit, std::function<void (const TempoMap&)> apply)
         : sections (current.getSections()), begin (std::move (beginEdit)), applyMap (std::move (apply))
     {
-        for (juce::Label* l : { &barHeader, &bpmHeader, &meterHeader })
+        for (juce::Label* l : { &nameHeader, &barHeader, &bpmHeader, &meterHeader })
         {
             l->setColour (juce::Label::textColourId, Theme::textDim);
             l->setFont (juce::FontOptions (12.0f));
             addAndMakeVisible (l);
         }
+        nameHeader.setText ("Name", juce::dontSendNotification);
         barHeader.setText ("From bar", juce::dontSendNotification);
         bpmHeader.setText ("Tempo (BPM)", juce::dontSendNotification);
         meterHeader.setText ("Time signature", juce::dontSendNotification);
@@ -28,6 +29,7 @@ public:
             changed();
             TempoSection s = sections.back();
             s.bar = sections.back().bar + 4;
+            s.name = "Section " + std::to_string (sections.size() + 1);
             sections.push_back (s);
             push();
             rebuild();
@@ -50,6 +52,7 @@ public:
     {
         auto r = getLocalBounds().reduced (12, 10);
         auto head = r.removeFromTop (18);
+        nameHeader.setBounds (head.removeFromLeft (124));
         barHeader.setBounds (head.removeFromLeft (92));
         bpmHeader.setBounds (head.removeFromLeft (110));
         meterHeader.setBounds (head.removeFromLeft (140));
@@ -57,6 +60,8 @@ public:
         for (auto& row : rows)
         {
             auto line = r.removeFromTop (28);
+            row->name.setBounds (line.removeFromLeft (120).reduced (0, 2));
+            line.removeFromLeft (4);
             row->bar.setBounds (line.removeFromLeft (88));
             line.removeFromLeft (4);
             row->bpm.setBounds (line.removeFromLeft (106));
@@ -84,6 +89,7 @@ public:
 private:
     struct Row
     {
+        juce::TextEditor name;
         juce::Slider bar, bpm;
         juce::ComboBox num, den;
         juce::TextButton remove { "x" };
@@ -114,6 +120,16 @@ private:
         {
             auto row = std::make_unique<Row>();
             auto* r = row.get();
+
+            r->name.setText (juce::String (sections[i].name), false);
+            r->name.setTextToShowWhenEmpty ("Name (verse, chorus...)", Theme::textFaint);
+            r->name.setFont (juce::FontOptions (14.0f));
+            r->name.setColour (juce::TextEditor::backgroundColourId, Theme::panelRaised);
+            r->name.setColour (juce::TextEditor::textColourId, Theme::text);
+            r->name.setColour (juce::TextEditor::outlineColourId, Theme::border);
+            r->name.setTooltip ("What this section is called; shown on the ruler");
+            r->name.onTextChange = [this, i, r] { changed(); sections[i].name = r->name.getText().trim().toStdString(); push(); };
+            addAndMakeVisible (r->name);
 
             r->bar.setSliderStyle (juce::Slider::IncDecButtons);
             r->bar.setIncDecButtonsMode (juce::Slider::incDecButtonsDraggable_Horizontal);
@@ -172,7 +188,7 @@ private:
             rows.push_back (std::move (row));
         }
 
-        setSize (400, 10 + 18 + 4 + (int) rows.size() * 32 + 26 + 6 + 34 + 10);
+        setSize (528, 10 + 18 + 4 + (int) rows.size() * 32 + 26 + 6 + 34 + 10);
     }
 
     std::vector<TempoSection> sections;
@@ -180,6 +196,6 @@ private:
     std::function<void (const TempoMap&)> applyMap;
     bool began = false;
     std::vector<std::unique_ptr<Row>> rows;
-    juce::Label barHeader, bpmHeader, meterHeader, hint;
+    juce::Label nameHeader, barHeader, bpmHeader, meterHeader, hint;
     juce::TextButton addButton { "+ Add section" };
 };

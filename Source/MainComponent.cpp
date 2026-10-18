@@ -369,15 +369,15 @@ public:
 
     void tick()
     {
-        const bool wantSubToggle = ! isMaster && track.type == Track::Type::Midi && ! track.subLanes.empty();
+        const bool wantSubToggle = ! isMaster && track.type == Track::Type::Midi;
         if (wantSubToggle != subToggleShown)
         {
             subToggleShown = wantSubToggle;
             subToggle.setVisible (wantSubToggle);
             resized();
         }
-        if (wantSubToggle && subToggle.getButtonText() != (track.subLanesOpen ? "-" : "+"))
-            subToggle.setButtonText (track.subLanesOpen ? "-" : "+");
+        if (wantSubToggle && subToggle.getButtonText() != (track.subLanesOpen && ! track.subLanes.empty() ? "-" : "+"))
+            subToggle.setButtonText (track.subLanesOpen && ! track.subLanes.empty() ? "-" : "+");
         if (! isMaster && ! nameLabel.isBeingEdited() && nameLabel.getText() != track.name)   // (renamed somewhere else, e.g. in the mixer)
             nameLabel.setText (track.name, juce::dontSendNotification);
         const bool armedAudio = track.type == Track::Type::Audio && ! track.bus && track.recordArmed;
@@ -622,18 +622,24 @@ public:
 
         // where the tempo or the time signature changes
         const auto& sections = map.getSections();
-        for (size_t i = 1; i < sections.size(); ++i)
+        for (size_t i = 0; i < sections.size(); ++i)
         {
             const int x = (int) (map.barStartSeconds (sections[i].bar) * pps - scroll);
-            if (x < -80 || x > getWidth())
+            if (x < -200 || x > getWidth())
                 continue;
-            juce::String text = juce::String ((int) std::round (sections[i].bpm));
-            if (sections[i].numerator != sections[i - 1].numerator || sections[i].denominator != sections[i - 1].denominator)
+            const auto name = juce::String (sections[i].name);
+            if (i == 0 && name.isEmpty())
+                continue;   // (the start of the song is only marked when it has a name)
+            juce::String text = i > 0 ? juce::String ((int) std::round (sections[i].bpm)) : juce::String();
+            if (i > 0 && (sections[i].numerator != sections[i - 1].numerator || sections[i].denominator != sections[i - 1].denominator))
                 text += "  " + juce::String (sections[i].numerator) + "/" + juce::String (sections[i].denominator);
+            if (name.isNotEmpty())
+                text = name + (text.isNotEmpty() ? "  " + text : juce::String());
             g.setColour (Theme::yellow);
-            g.fillRect (x, 0, 2, getHeight());
+            if (i > 0)
+                g.fillRect (x, 0, 2, getHeight());
             g.setFont (juce::FontOptions (10.5f, juce::Font::bold));
-            g.drawText (text, x + 4, getHeight() - 14, 70, 13, juce::Justification::left);
+            g.drawText (text, x + 4, getHeight() - 14, 190, 13, juce::Justification::left);
         }
         g.setColour (Theme::border);
         g.drawHorizontalLine (getHeight() - 1, 0.0f, (float) getWidth());
@@ -2262,6 +2268,18 @@ public:
         name.setFont (juce::FontOptions (13.0f, juce::Font::bold));
         name.setColour (juce::Label::textColourId, Theme::text);
         name.setInterceptsMouseClicks (false, false);
+        name.setEditable (false, false, true);   // (the editor is opened by the double-click on the header)
+        name.onTextChange = [this]
+        {
+            const auto text = name.getText().trim();
+            if (text.isEmpty() || main.getEngine().indexOfTrack (track) < 0 || ! juce::isPositiveAndBelow (sub, (int) track->subLanes.size())
+                || text == track->subLanes[(size_t) sub].name)
+            {
+                refresh();
+                return;
+            }
+            main.renameSubLane (*track, sub, text);   // (later: the header is rebuilt with the new name)
+        };
         addAndMakeVisible (name);
         pitchLabel.setFont (juce::FontOptions (11.0f));
         pitchLabel.setColour (juce::Label::textColourId, Theme::textFaint);
@@ -2337,7 +2355,14 @@ public:
             main.showSubLaneMenu (*track, sub);
     }
 
-    void mouseDoubleClick (const juce::MouseEvent&) override { main.showSubLaneMenu (*track, sub); }
+    // double-click the name: rename it right there; anywhere else on the header: the sub-track menu
+    void mouseDoubleClick (const juce::MouseEvent& e) override
+    {
+        if (e.y < getHeight() / 2 + 2 && e.x < name.getRight())
+            name.showEditor();
+        else
+            main.showSubLaneMenu (*track, sub);
+    }
 
 private:
     void refresh()
@@ -2345,7 +2370,8 @@ private:
         if (main.getEngine().indexOfTrack (track) < 0 || ! juce::isPositiveAndBelow (sub, (int) track->subLanes.size()))
             return;
         const auto& lane = track->subLanes[(size_t) sub];
-        name.setText (lane.name, juce::dontSendNotification);
+        if (! name.isBeingEdited())
+            name.setText (lane.name, juce::dontSendNotification);
         const auto noteName = [] (int p) { return juce::MidiMessage::getMidiNoteName (p, true, true, 3) + " (" + juce::String (p) + ")"; };
         pitchLabel.setText (lane.pitchLo == lane.pitchHi ? noteName (lane.pitchLo) : noteName (lane.pitchLo) + " - " + noteName (lane.pitchHi),
                             juce::dontSendNotification);
@@ -2386,6 +2412,58 @@ private:
     juce::Label name, pitchLabel;
     juce::Slider volume;
     juce::TextButton muteButton { "M" }, soloButton { "S" };
+};
+
+// Under the sub-tracks of a track: how many there are, with - and + to take one away or add one.
+class SubLaneFooter : public juce::Component, private juce::Timer
+{
+public:
+    SubLaneFooter (MainComponent& m, Track& t) : main (m), track (&t)
+    {
+        info.setFont (juce::FontOptions (12.0f));
+        info.setColour (juce::Label::textColourId, Theme::textDim);
+        info.setInterceptsMouseClicks (false, false);
+        addAndMakeVisible (info);
+        minus.setTooltip ("Remove the last sub-track, with its notes");
+        plus.setTooltip ("Add a sub-track (the next pitch up; right-click a sub-track to change its pitch, double-click its name to rename it)");
+        minus.onClick = [this] { main.changeSubLaneCount (*track, -1); };
+        plus.onClick = [this] { main.changeSubLaneCount (*track, 1); };
+        addAndMakeVisible (minus);
+        addAndMakeVisible (plus);
+        refresh();
+        startTimerHz (4);
+    }
+
+    Track* getTrack() const { return track; }
+
+    void paint (juce::Graphics& g) override { g.fillAll (Theme::background); }
+
+    void resized() override
+    {
+        auto r = getLocalBounds().reduced (14, 3);
+        r.removeFromRight (14);
+        plus.setBounds (r.removeFromRight (34));
+        r.removeFromRight (4);
+        minus.setBounds (r.removeFromRight (34));
+        info.setBounds (r);
+    }
+
+private:
+    void refresh()
+    {
+        if (main.getEngine().indexOfTrack (track) < 0)
+            return;
+        const int n = (int) track->subLanes.size();
+        info.setText (juce::String (n) + (n == 1 ? " sub-track" : " sub-tracks"), juce::dontSendNotification);
+        minus.setEnabled (n > 0);
+    }
+
+    void timerCallback() override { refresh(); }
+
+    MainComponent& main;
+    Track* track;
+    juce::Label info;
+    juce::TextButton minus { "-" }, plus { "+" };
 };
 
 //==============================================================================
@@ -3263,7 +3341,7 @@ Track* MainComponent::trackAtY (int y) const
     {
         int height = stripHeight;
         if (auto& t = lanes[i]->getTrack(); t.subLanesOpen)
-            height += subLaneHeight * (int) t.subLanes.size();   // (a track's sub-tracks belong to it)
+            height += subLaneHeight * (int) t.subLanes.size() + (t.subLanes.empty() ? 0 : subFooterHeight);   // (a track's sub-tracks belong to it)
         if (y >= trackTops[(size_t) i] && y < trackTops[(size_t) i] + height)
             return &lanes[i]->getTrack();
     }
@@ -4014,6 +4092,7 @@ void MainComponent::restoreSnapshot (const ProjectState& state)
     lanes.clear();
     subRows.clear();
     subHeaders.clear();
+    subFooters.clear();
     subSignature = {};
 
     if (mixerWindow != nullptr)
@@ -4183,12 +4262,14 @@ void MainComponent::rebuildTrackUI()
     subSignature = {};   // (the sub-track rows are made again too)
     subRows.clear();
     subHeaders.clear();
+    subFooters.clear();
     if (mixerWindow != nullptr)
         mixerWindow->getPanel().detach();
     headers.clear();
     lanes.clear();
     subRows.clear();
     subHeaders.clear();
+    subFooters.clear();
     subSignature = {};
     for (int i = 0; i < engine.getNumTracks(); ++i)
         addTrackUI (*engine.getTrack (i));
@@ -4328,6 +4409,7 @@ void MainComponent::clearTracksUI()
     lanes.clear();
     subRows.clear();
     subHeaders.clear();
+    subFooters.clear();
     subSignature = {};
     engine.removeAllTracks();
     layoutContent();
@@ -4366,7 +4448,7 @@ void MainComponent::layoutContent()
 
     // the rows from the top: a track, then its sub-tracks (when they are shown), then the next track
     trackTops.assign ((size_t) lanes.size(), 0);
-    int y = 0, subIndex = 0;
+    int y = 0, subIndex = 0, footerIndex = 0;
     for (int i = 0; i < lanes.size(); ++i)
     {
         trackTops[(size_t) i] = y;
@@ -4379,6 +4461,13 @@ void MainComponent::layoutContent()
             subHeaders[subIndex]->setBounds (0, y, controlsWidth, subLaneHeight);
             y += subLaneHeight;
             ++subIndex;
+        }
+        if (auto& t = lanes[i]->getTrack(); t.type == Track::Type::Midi && t.subLanesOpen && ! t.subLanes.empty() && footerIndex < subFooters.size()
+                                            && subFooters[footerIndex]->getTrack() == &t)
+        {
+            subFooters[footerIndex]->setBounds (0, y, controlsWidth, subFooterHeight);
+            y += subFooterHeight;
+            ++footerIndex;
         }
     }
     trackRowsEnd = y;   // (the bottom of the last track, with its sub-tracks)
@@ -6016,6 +6105,8 @@ void MainComponent::saveProject (const juce::File& file, SaveKind kind)
             so->setProperty ("bpm", s.bpm);
             so->setProperty ("numerator", s.numerator);
             so->setProperty ("denominator", s.denominator);
+            if (! s.name.empty())
+                so->setProperty ("name", juce::String (s.name));
             sectionList.add (juce::var (so));
         }
         root->setProperty ("tempoSections", sectionList);
@@ -6518,6 +6609,7 @@ void MainComponent::loadProject (const juce::File& file)
                 s.bpm = sv.getProperty ("bpm", 120.0);
                 s.numerator = sv.getProperty ("numerator", 4);
                 s.denominator = sv.getProperty ("denominator", 4);
+                s.name = sv.getProperty ("name", "").toString().toStdString();
                 sections.push_back (s);
             }
         if (sections.empty())
@@ -7148,6 +7240,29 @@ namespace
         { 41, "Low tom" }, { 45, "Mid tom" }, { 48, "High tom" }, { 49, "Crash" }, { 51, "Ride" }, { 53, "Ride bell" }, { 56, "Cowbell" },
     };
 
+    // The notes of a sub-track that is taken away go with it (the pitches another remaining sub-track still covers are kept).
+    void removeLaneNotes (Engine& engine, Track& track, const SubLane& gone, const std::vector<SubLane>& remaining)
+    {
+        for (auto& clip : engine.getMidiClips (track))
+        {
+            auto notes = clip.notes;
+            const auto end = std::remove_if (notes.begin(), notes.end(), [&] (const Note& n)
+            {
+                if (! gone.covers (n.pitch))
+                    return false;
+                for (auto& other : remaining)
+                    if (other.covers (n.pitch))
+                        return false;
+                return true;
+            });
+            if (end != notes.end())
+            {
+                notes.erase (end, notes.end());
+                engine.setMidiNotes (track, clip.id, std::move (notes));
+            }
+        }
+    }
+
     juce::String laneNameForPitch (int pitch)
     {
         for (auto& d : gmDrumLanes)
@@ -7182,6 +7297,7 @@ void MainComponent::syncSubLaneUI()
 
     subRows.clear();
     subHeaders.clear();
+    subFooters.clear();
     for (int i = 0; i < engine.getNumTracks(); ++i)
         if (auto* t = engine.getTrack (i); t->type == Track::Type::Midi && t->subLanesOpen)
             for (int s = 0; s < (int) t->subLanes.size(); ++s)
@@ -7191,6 +7307,9 @@ void MainComponent::syncSubLaneUI()
                 auto* header = subHeaders.add (new SubLaneHeader (*this, *t, s));
                 headerHolder.addAndMakeVisible (header);
             }
+    for (int i = 0; i < engine.getNumTracks(); ++i)
+        if (auto* t = engine.getTrack (i); t->type == Track::Type::Midi && t->subLanesOpen && ! t->subLanes.empty())
+            headerHolder.addAndMakeVisible (subFooters.add (new SubLaneFooter (*this, *t)));
 }
 
 // Right-click on a sub-track (or double-click its header): rename, the pitch it stands for, remove.
@@ -7205,7 +7324,7 @@ void MainComponent::showSubLaneMenu (Track& t, int sub)
     menu.addItem (1, "Rename...");
     menu.addItem (2, "Pitch...");
     menu.addItem (3, "Remove notes of this sub-track", true);
-    menu.addItem (4, "Remove this sub-track");
+    menu.addItem (4, "Remove this sub-track (and its notes)");
     menu.showMenuAsync (juce::PopupMenu::Options().withTargetScreenArea (juce::Rectangle<int> (1, 1).withCentre (juce::Desktop::getMousePosition())),
                         [safe, ref, sub] (int result)
     {
@@ -7264,11 +7383,12 @@ void MainComponent::showSubLaneMenu (Track& t, int sub)
             }
             self.clipsChanged();
         }
-        else if (result == 4)
+        else if (result == 4)   // the sub-track goes, and its notes with it
         {
             self.beginEdit();
             auto lanes = track.subLanes;
             lanes.erase (lanes.begin() + sub);
+            removeLaneNotes (self.engine, track, lane, lanes);
             self.engine.setSubLanes (track, std::move (lanes), true);
             self.clipsChanged();
         }
@@ -7323,6 +7443,18 @@ void MainComponent::applySubLaneChoice (Track& t, int choice)
     {
         lanes.clear();
     }
+    else if (choice == 6)   // take the last sub-track away, with its notes
+    {
+        if (lanes.empty())
+            return;
+        const auto gone = lanes.back();
+        lanes.pop_back();
+        beginEdit();
+        removeLaneNotes (engine, t, gone, lanes);
+        engine.setSubLanes (t, std::move (lanes), open);
+        clipsChanged();
+        return;
+    }
 
     beginEdit();
     engine.setSubLanes (t, std::move (lanes), open);
@@ -7333,11 +7465,49 @@ void MainComponent::applySubLaneChoice (Track& t, int choice)
 // The + / - button of a track header: show or hide its sub-tracks.
 void MainComponent::toggleSubLanes (Track& t)
 {
-    if (t.subLanes.empty() || engine.indexOfTrack (&t) < 0)
+    if (engine.indexOfTrack (&t) < 0)
         return;
+    if (t.subLanes.empty())   // nothing to show yet: the + makes the first sub-track
+    {
+        changeSubLaneCount (t, 1);
+        return;
+    }
     beginEdit();
     engine.setSubLanes (t, t.subLanes, ! t.subLanesOpen);
     clipsChanged();
+}
+
+void MainComponent::changeSubLaneCount (Track& t, int delta)
+{
+    // Deferred: this is called from a button of the row that is rebuilt by the change.
+    const TrackRef ref (&t);
+    juce::Component::SafePointer<MainComponent> safe (this);
+    juce::MessageManager::callAsync ([safe, ref, delta]
+    {
+        if (safe == nullptr || safe->engine.indexOfTrack (ref) < 0)
+            return;
+        if (delta > 0)
+            safe->applySubLaneChoice (*ref, 4);
+        else if (! ref->subLanes.empty())
+            safe->applySubLaneChoice (*ref, 6);
+    });
+}
+
+// Renamed from the header of the sub-track (done after the label's own callback has finished: the header is rebuilt).
+void MainComponent::renameSubLane (Track& t, int sub, const juce::String& name)
+{
+    const TrackRef ref (&t);
+    juce::Component::SafePointer<MainComponent> safe (this);
+    juce::MessageManager::callAsync ([safe, ref, sub, name]
+    {
+        if (safe == nullptr || safe->engine.indexOfTrack (ref) < 0 || ! juce::isPositiveAndBelow (sub, (int) ref->subLanes.size()))
+            return;
+        auto lanes = ref->subLanes;
+        lanes[(size_t) sub].name = name;
+        safe->beginEdit();
+        safe->engine.setSubLanes (*ref, std::move (lanes), true);
+        safe->clipsChanged();
+    });
 }
 
 // A MIDI track whose instrument is a drum plugin (EZdrummer, Superior Drummer, Addictive Drums, BFD...) gets the drum sub-tracks by itself,

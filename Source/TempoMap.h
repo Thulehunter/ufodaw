@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <string>
 #include <vector>
 
 // The tempo and time signature of the project: a list of sections, each starting at a bar and lasting until the next one.
@@ -14,6 +15,7 @@ struct TempoSection
     double bpm = 120.0;
     int numerator = 4;         // beats per bar, counted in units of 1/denominator
     int denominator = 4;
+    std::string name;          // what the section is called (verse, chorus...); may be empty
 
     double beatsPerBar() const { return numerator * 4.0 / denominator; }   // in quarter notes
     double beatUnit() const { return 4.0 / denominator; }                  // length of one counted beat in quarter notes

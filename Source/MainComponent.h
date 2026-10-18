@@ -87,6 +87,7 @@ class TrackHeader;
 class TrackLane;
 class SubLaneRow;
 class SubLaneHeader;
+class SubLaneFooter;
 class TimeRuler;
 class PianoRoll;
 class DrumSequencer;
@@ -275,6 +276,9 @@ private:
     void showTrackMenu (Track&);                          // right-click on a track header
 public:
     static constexpr int subLaneHeight = 46;
+    static constexpr int subFooterHeight = 28;             // the row under a track's sub-tracks: how many, with - and +
+    void changeSubLaneCount (Track&, int delta);        // + adds a sub-track (the next pitch up), - takes the last one away
+    void renameSubLane (Track&, int sub, const juce::String& name);
     void showSubLaneMenu (Track&, int sub);              // right-click on a sub-track: rename, pitch, remove
     void applySubLaneChoice (Track&, int choice);       // 1 show / hide, 2 from the notes, 3 drum preset, 4 add one, 5 remove all
     void toggleSubLanes (Track&);                       // the + / - button of a track header
@@ -531,6 +535,7 @@ private:
     juce::OwnedArray<TrackLane> lanes;
     juce::OwnedArray<SubLaneRow> subRows;          // the sub-tracks shown under MIDI tracks (see Engine.h: SubLane), in arrangement order
     juce::OwnedArray<SubLaneHeader> subHeaders;
+    juce::OwnedArray<SubLaneFooter> subFooters;
     juce::String subSignature;                      // what they were built for: they are made again when this changes
     struct DropLine : juce::Component
     {

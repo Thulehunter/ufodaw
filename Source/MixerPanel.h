@@ -4,14 +4,19 @@
 #include "Engine.h"
 #include "Theme.h"
 
-// The mixer: one channel strip per track (name, level meter, volume fader, pan, mute, solo) and the master on the right. It works on
-// the same values as the track headers, so the two always agree; every change is one undo step.
+// The mixer: one channel strip per track (name, output, sends, level meter, volume fader, pan, mute, solo) and the master on the right.
+// It works on the same values as the track headers, so the two always agree; every change is one undo step.
+// Output = where the track plays (the master or a bus); Sends = how much of it also goes to each bus (reverb, delay...). Pre-fader sends
+// are set in the track header's Out button.
 class MixerPanel : public juce::Component, private juce::Timer
 {
 public:
     static constexpr int stripWidth = 86, stripHeight = 392, masterWidth = 96;
+    static constexpr int maxSendRows = 4, sendRowHeight = 32;
 
-    MixerPanel (Engine& e, std::function<void()> onBeginEdit) : engine (e), beginEdit (std::move (onBeginEdit))
+    MixerPanel (Engine& e, std::function<void()> onBeginEdit,
+                std::function<void (Track&, juce::Component&)> onFullRouting = nullptr)
+        : engine (e), beginEdit (std::move (onBeginEdit)), fullRouting (std::move (onFullRouting))
     {
         rebuild();
         startTimerHz (30);
@@ -24,18 +29,24 @@ public:
     {
         strips.clear();
         shownTracks.clear();
+        buses = engine.getBuses();
         for (int i = 0; i < engine.getNumTracks(); ++i)
             addStrip (*engine.getTrack (i), false);
         addStrip (engine.getMaster(), true);
         for (auto& s : strips)
             shownTracks.push_back (s->track);
-        setSize (juce::jmax (stripWidth * 2, (int) strips.size() * stripWidth + (masterWidth - stripWidth) + 16), stripHeight);
+        busSignature = busNames();
+        const int nShown = juce::jmin (maxSendRows, (int) buses.size());
+        routingHeight = buses.empty() ? 0 : 28 + 4 + nShown * sendRowHeight + ((int) buses.size() > maxSendRows ? 26 : 0);
+        setSize (juce::jmax (stripWidth * 2, (int) strips.size() * stripWidth + (masterWidth - stripWidth) + 16), stripHeight + routingHeight);
         resized();
         repaint();
     }
 
     // Forget the tracks (they are about to be replaced)
     void detach() { strips.clear(); shownTracks.clear(); }
+
+    void openFullRouting (Track& t, juce::Component& anchor) { if (fullRouting) fullRouting (t, anchor); }
 
     void paint (juce::Graphics& g) override { g.fillAll (Theme::background); }
 
@@ -63,6 +74,8 @@ private:
     {
         Strip (Track& t, bool master, MixerPanel& o) : track (&t), isMaster (master), owner (o)
         {
+            if (! master && ! o.buses.empty())
+                buildRouting();
             name.setJustificationType (juce::Justification::centred);
             name.setFont (juce::FontOptions (13.0f, juce::Font::bold));
             name.setColour (juce::Label::textColourId, master ? Theme::yellow : Theme::text);
@@ -142,6 +155,20 @@ private:
         {
             auto r = getLocalBounds().reduced (4, 4);
             name.setBounds (r.removeFromTop (22));
+            if (! isMaster && outBox.isVisible())
+            {
+                r.removeFromTop (4);
+                outBox.setBounds (r.removeFromTop (24));
+                for (auto& row : sendRows)
+                {
+                    auto line = r.removeFromTop (sendRowHeight);
+                    row->name.setBounds (line.removeFromTop (14));
+                    row->level.setBounds (line.reduced (0, 1));
+                }
+                if (moreButton.isVisible())
+                    moreButton.setBounds (r.removeFromTop (24).reduced (0, 1));
+                r.removeFromTop (4);
+            }
             if (! isMaster)
             {
                 auto buttons = r.removeFromBottom (26);
@@ -183,9 +210,94 @@ private:
             g.drawText (gain < 0.001 ? juce::String ("-inf dB") : juce::String (20.0 * std::log10 (gain), 1) + " dB", dbLabel, juce::Justification::centred);
         }
 
+        // Output and sends: a box for where the track plays and a small slider per bus (up to four; "More sends..." opens the full panel)
+        void buildRouting()
+        {
+            for (auto* b : owner.buses)
+                if (b != track)
+                    outs.push_back (b);
+
+            outBox.addItem ("Master", 1);   // (short names: the strip is narrow)
+            for (size_t i = 0; i < outs.size(); ++i)
+                outBox.addItem (outs[i]->name, (int) i + 2);
+            outBox.setTooltip ("Output: where this track plays - the master, or a bus (a group, or an effects return)");
+            outBox.onChange = [this]
+            {
+                const int id = outBox.getSelectedId();
+                Track* wanted = id >= 2 && (size_t) id - 2 < outs.size() ? outs[(size_t) id - 2] : nullptr;
+                if (wanted == track->output)
+                    return;
+                owner.beginEdit();
+                owner.engine.setTrackOutput (*track, wanted);
+            };
+            addAndMakeVisible (outBox);
+
+            for (size_t i = 0; i < outs.size() && (int) i < maxSendRows; ++i)
+            {
+                auto row = std::make_unique<SendRow>();
+                row->bus = outs[i];
+                row->name.setText ("Send " + outs[i]->name, juce::dontSendNotification);
+                row->name.setFont (juce::FontOptions (10.5f));
+                row->name.setColour (juce::Label::textColourId, Theme::textDim);
+                row->name.setMinimumHorizontalScale (0.7f);
+                row->name.setInterceptsMouseClicks (false, false);
+                addAndMakeVisible (row->name);
+
+                row->level.setSliderStyle (juce::Slider::LinearHorizontal);
+                row->level.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
+                row->level.setRange (0.0, 1.5, 0.01);
+                row->level.setDoubleClickReturnValue (true, 0.0);
+                row->level.setPopupDisplayEnabled (true, true, nullptr);
+                row->level.textFromValueFunction = [] (double v) { return v < 0.005 ? juce::String ("off") : juce::String (20.0 * std::log10 (v), 1) + " dB"; };
+                row->level.setTooltip ("How much of this track also goes to the bus (double-click: off)");
+                auto* r = row.get();
+                float level = 0.0f;
+                bool pre = false;
+                owner.engine.getSend (*track, *r->bus, level, pre);
+                row->level.setValue (level, juce::dontSendNotification);
+                row->level.onDragStart = [this] { owner.beginEdit(); };
+                row->level.onValueChange = [this, r]
+                {
+                    if (! r->level.isMouseButtonDown())
+                        owner.beginEdit();
+                    float lv = 0.0f;
+                    bool pr = false;
+                    owner.engine.getSend (*track, *r->bus, lv, pr);   // (the pre / post choice stays as set in the track header)
+                    owner.engine.setSend (*track, *r->bus, (float) r->level.getValue(), pr);
+                };
+                addAndMakeVisible (row->level);
+                sendRows.push_back (std::move (row));
+            }
+
+            if ((int) outs.size() > maxSendRows)
+            {
+                moreButton.setButtonText ("More sends...");
+                moreButton.onClick = [this] { owner.openFullRouting (*track, moreButton); };
+                addAndMakeVisible (moreButton);
+            }
+        }
+
         // Message thread, ~30 times a second: the meter falls smoothly, the controls follow the track
         void tick()
         {
+            if (outBox.isVisible())   // (undo, or the track header, changed the routing)
+            {
+                int id = 1;
+                for (size_t i = 0; i < outs.size(); ++i)
+                    if (track->output == outs[i])
+                        id = (int) i + 2;
+                if (outBox.getSelectedId() != id)
+                    outBox.setSelectedId (id, juce::dontSendNotification);
+                for (auto& row : sendRows)
+                    if (! row->level.isMouseButtonDown())
+                    {
+                        float lv = 0.0f;
+                        bool pr = false;
+                        owner.engine.getSend (*track, *row->bus, lv, pr);
+                        if (std::abs (row->level.getValue() - (double) lv) > 0.004)
+                            row->level.setValue (lv, juce::dontSendNotification);
+                    }
+            }
             const float l = track->level.load();
             shown = l > shown ? l : shown * 0.85f;
             if (! fader.isMouseButtonDown() && std::abs (fader.getValue() - (double) track->gain.load()) > 0.0005)
@@ -204,9 +316,20 @@ private:
             repaint();
         }
 
+        struct SendRow
+        {
+            Track* bus = nullptr;
+            juce::Label name;
+            juce::Slider level;
+        };
+
         Track* track;
         bool isMaster;
         MixerPanel& owner;
+        std::vector<Track*> outs;   // the buses this track can play into (not itself)
+        juce::ComboBox outBox;
+        std::vector<std::unique_ptr<SendRow>> sendRows;
+        juce::TextButton moreButton;
         juce::Label name;
         juce::Slider fader;
         PanSlider pan;
@@ -225,7 +348,7 @@ private:
     void timerCallback() override
     {
         // the strips follow the tracks: added, removed or replaced tracks rebuild them (compared by address only)
-        bool same = shownTracks.size() == (size_t) engine.getNumTracks() + 1;
+        bool same = shownTracks.size() == (size_t) engine.getNumTracks() + 1 && busSignature == busNames();
         for (int i = 0; same && i < engine.getNumTracks(); ++i)
             same = shownTracks[(size_t) i] == engine.getTrack (i);
         if (! same)
@@ -237,27 +360,40 @@ private:
             s->tick();
     }
 
+    juce::String busNames() const
+    {
+        juce::String s;
+        for (auto* b : engine.getBuses())
+            s << b->name << "|";
+        return s;
+    }
+
     Engine& engine;
     std::function<void()> beginEdit;
+    std::vector<Track*> buses;
+    juce::String busSignature;
+    int routingHeight = 0;
     std::vector<std::unique_ptr<Strip>> strips;
     std::vector<Track*> shownTracks;
+    std::function<void (Track&, juce::Component&)> fullRouting;
 };
 
 class MixerWindow : public juce::DocumentWindow
 {
 public:
-    MixerWindow (Engine& e, std::function<void()> onBeginEdit, std::function<void()> onClosed)
+    MixerWindow (Engine& e, std::function<void()> onBeginEdit, std::function<void()> onClosed,
+                 std::function<void (Track&, juce::Component&)> onFullRouting = nullptr)
         : juce::DocumentWindow ("Mixer", Theme::background, juce::DocumentWindow::closeButton | juce::DocumentWindow::minimiseButton),
           closed (std::move (onClosed))
     {
         setUsingNativeTitleBar (true);
-        panel = new MixerPanel (e, std::move (onBeginEdit));
+        panel = new MixerPanel (e, std::move (onBeginEdit), std::move (onFullRouting));
         viewport.setViewedComponent (panel, false);
-        viewport.setScrollBarsShown (false, true);
+        viewport.setScrollBarsShown (true, true);
         setContentNonOwned (&viewport, true);
         setResizable (true, true);
         setResizeLimits (260, MixerPanel::stripHeight + 60, 4000, 1400);
-        centreWithSize (juce::jmin (panel->getWidth() + 24, 1200), MixerPanel::stripHeight + 70);
+        centreWithSize (juce::jmin (panel->getWidth() + 24, 1200), juce::jmin (panel->getHeight() + 70, 900));
         setVisible (true);
     }
 
