@@ -3983,6 +3983,7 @@ bool MainComponent::keyPressed (const juce::KeyPress& k)
         if (ch == 'o' || k.getKeyCode() == 'O') { openButton.triggerClick(); return true; }
         if (k.getKeyCode() == 'N')              { newProject(); return true; }
         if (k.getKeyCode() == 'W' && requestCloseTab) { requestCloseTab(); return true; }
+        if (k.getKeyCode() == juce::KeyPress::tabKey && requestSwitchTab) { requestSwitchTab (mods.isShiftDown() ? -1 : 1); return true; }
         if (k.getKeyCode() == juce::KeyPress::spaceKey && mods.isShiftDown()) { stopAllButton.triggerClick(); return true; }
         if (k.getKeyCode() == 'D')              { duplicateSelected(); return true; }
         if (k.getKeyCode() == 'X')              { copySelected (true); return true; }

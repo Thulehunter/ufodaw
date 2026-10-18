@@ -98,6 +98,14 @@ public:
         {
             juce::MessageManager::callAsync ([safe, raw] { if (safe != nullptr) safe->closeTab (safe->indexOf (raw)); });
         };
+        raw->requestSwitchTab = [safe = juce::Component::SafePointer<ProjectTabs> (this)] (int delta)
+        {
+            juce::MessageManager::callAsync ([safe, delta]
+            {
+                if (safe != nullptr && ! safe->tabs.empty())
+                    safe->setActive ((safe->active + delta + (int) safe->tabs.size()) % (int) safe->tabs.size());
+            });
+        };
         raw->onTitleChanged = [this] { refreshTitle(); repaint(); };
 
         if (tabs.empty())

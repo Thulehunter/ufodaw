@@ -203,6 +203,7 @@ public:
     bool isEmptyUntitled() const { return currentProject == juce::File() && engine.getNumTracks() == 0 && ! isDirty(); }
     bool saveForClose();     // true when saved (or nothing to save); an untitled project opens the Save As dialog and returns false
     std::function<void()> requestNewTab, requestCloseTab, onTitleChanged;
+    std::function<void (int)> requestSwitchTab;   // Ctrl+Tab / Ctrl+Shift+Tab: +1 or -1
     std::function<void (const juce::File&)> requestOpenInTab;
     void openFileHere (const juce::File& f) { loadProject (f); }
     void openInstrumentEditor (Track&);   // the plugin window of the track's instrument (or first effect); the VST panel if none
