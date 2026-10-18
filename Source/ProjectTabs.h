@@ -14,6 +14,8 @@ public:
 
     ProjectTabs()
     {
+        devices = std::make_shared<juce::AudioDeviceManager>();   // one audio device for all tabs: switching tabs only moves the callback
+        MainComponent::initialiseDevices (*devices);
         newTab();
         if (auto* first = getActive())
             setSize (juce::jmax (800, preferredW), juce::jmax (500, preferredH) + barHeight);
@@ -84,7 +86,7 @@ public:
             current->setVisible (false);
         }
 
-        auto tab = std::make_unique<MainComponent> (slot);
+        auto tab = std::make_unique<MainComponent> (slot, devices);
         auto* raw = tab.get();
         raw->requestNewTab = [safe = juce::Component::SafePointer<ProjectTabs> (this)]
         {
@@ -318,6 +320,7 @@ private:
 
     void timerCallback() override { refreshTitle(); repaint (0, 0, getWidth(), barHeight); }
 
+    std::shared_ptr<juce::AudioDeviceManager> devices;   // (declared before the tabs: it outlives them)
     std::vector<std::unique_ptr<MainComponent>> tabs;
     int active = 0;
     int preferredW = 1400, preferredH = 760;

@@ -2171,7 +2171,9 @@ private:
 };
 
 //==============================================================================
-MainComponent::MainComponent (int slot) : tabSlot (slot)
+MainComponent::MainComponent (int slot, std::shared_ptr<juce::AudioDeviceManager> devices)
+    : sharedDevices (devices != nullptr ? std::move (devices) : std::make_shared<juce::AudioDeviceManager>()),
+      deviceManager (*sharedDevices), tabSlot (slot)
 {
     // These must exist before setSize() triggers resized()
     ruler = std::make_unique<TimeRuler> (*this);
@@ -2187,12 +2189,9 @@ MainComponent::MainComponent (int slot) : tabSlot (slot)
     engine.beforeRecordedTake = [this] { beginEdit(); };   // a recorded ride can be undone
 
     // Start with the audio setup of the last run (driver, device, rate, buffer, channels); fall back to the default device.
-    {
-        const std::unique_ptr<juce::XmlElement> saved = juce::XmlDocument::parse (audioSettingsFile());
-        const auto error = deviceManager.initialise (2, 2, saved.get(), true);
-        if (error.isNotEmpty())
-            juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Audio device", error);
-    }
+    // (With project tabs the shared device manager is already open.)
+    if (deviceManager.getCurrentAudioDeviceType().isEmpty())
+        initialiseDevices (deviceManager);
     deviceManager.addChangeListener (this);
     player.setSource (&engine);
     deviceManager.addAudioCallback (&player);
@@ -6312,15 +6311,10 @@ void MainComponent::suspendAudio()
     deviceManager.removeChangeListener (this);
     deviceManager.removeMidiInputDeviceCallback ({}, &midiForwarder);
     deviceManager.removeAudioCallback (&player);
-    deviceManager.closeAudioDevice();
 }
 
 void MainComponent::resumeAudio()
 {
-    const std::unique_ptr<juce::XmlElement> saved = juce::XmlDocument::parse (audioSettingsFile());   // (the last setup, from whichever tab changed it)
-    const auto error = deviceManager.initialise (2, 2, saved.get(), true);
-    if (error.isNotEmpty())
-        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Audio device", error);
     deviceManager.addChangeListener (this);
     deviceManager.addAudioCallback (&player);
     deviceManager.addMidiInputDeviceCallback ({}, &midiForwarder);
@@ -6354,4 +6348,12 @@ void MainComponent::followPlayhead (double seconds)
     const int x = (int) (seconds * pixelsPerSecond);
     if (visibleW > 100 && (x > viewX + visibleW - 40 || x < viewX))
         laneViewport.setViewPosition (juce::jmax (0, x - visibleW / 10), laneViewport.getViewPositionY());
+}
+
+void MainComponent::initialiseDevices (juce::AudioDeviceManager& manager)
+{
+    const std::unique_ptr<juce::XmlElement> saved = juce::XmlDocument::parse (audioSettingsFile());
+    const auto error = manager.initialise (2, 2, saved.get(), true);
+    if (error.isNotEmpty())
+        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Audio device", error);
 }

@@ -163,7 +163,10 @@ class MainComponent : public juce::Component,
 {
     friend class CollectJob;   // reports back when the audio has been copied
 public:
-    explicit MainComponent (int tabSlot = 0);   // each open project is one MainComponent (see ProjectTabs.h); the slot names its recovery file
+    // Each open project is one MainComponent (see ProjectTabs.h); the slot names its recovery file. `devices` is the one audio device manager
+    // that all tabs share (only the shown tab is attached to it); without it the component makes and opens its own.
+    explicit MainComponent (int tabSlot = 0, std::shared_ptr<juce::AudioDeviceManager> devices = nullptr);
+    static void initialiseDevices (juce::AudioDeviceManager&);   // the audio setup of the last run (driver, device, rate, buffer, channels)
     ~MainComponent() override;
 
     void paint (juce::Graphics&) override;
@@ -384,7 +387,8 @@ private:
     };
 
     PluginHost pluginHost;   // declared before the engine so it outlives the plugins the engine holds
-    juce::AudioDeviceManager deviceManager;
+    std::shared_ptr<juce::AudioDeviceManager> sharedDevices;   // one audio device for all project tabs
+    juce::AudioDeviceManager& deviceManager;
     juce::AudioSourcePlayer player;
     Engine engine;
     MidiForwarder midiForwarder { *this };
