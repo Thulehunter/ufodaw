@@ -39,6 +39,7 @@ public:
             return;
         }
         getActive()->offerRecovery();
+        getActive()->maybeStartTour();   // the first start: a quick tour of the window
         for (int slot = 1; slot < maxTabs; ++slot)
         {
             const auto recovery = juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory).getChildFile ("UFODAW")

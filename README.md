@@ -33,6 +33,7 @@ A small digital audio workstation for Windows, written in C++17 with [JUCE](http
   note and tuning from the sample itself. Right-click an audio clip > *Sample this clip* turns it into a sampler track with one note.
   Double-click the track name (or *Sampler window* in the piano roll) to open it again.
 - **Stretchable patterns** - drag the right edge of a MIDI or drum clip: longer repeats the pattern to fill the clip, shorter cuts it off. Hold **Shift** to stretch the pattern instead (half as long = twice as fast, longer = slower); hold **Alt** to switch snapping off.
+- **Quick tour** - on the first start (and from File > Quick tour) a short tour lights up the rail, the Add button, the clock and tempo, the track headers, the arrangement, the transport and STOP ALL, with a card that explains each. Esc skips it, Enter and the arrow keys step through.
 - **Undo for the sampler and the drum rack** - sample loads, markers, sliders, pad level / pan / mute / solo / choke and stretches are undo steps. Stretching a sample runs in the background behind a progress window with a Cancel button.
 - **Comping loop recordings** - right-click a take > *Comp takes*: every take of the recording gets a row; swipe across a row to play that take there (the takes are split at the swipe, with short fades at the joins). Right-click to leave. Undo works on each swipe.
 - **Follow** - the *Follow* button in the top bar makes the arrangement turn a page when the playhead reaches the right edge while playing.

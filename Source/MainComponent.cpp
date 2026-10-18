@@ -2607,6 +2607,7 @@ void MainComponent::loadUiSettings()
         UiSettings::panSnap = xml->getBoolAttribute ("panSnap", true);
         UiSettings::countInBars = juce::jlimit (0, 4, xml->getIntAttribute ("countInBars", 0));
         UiSettings::follow = xml->getBoolAttribute ("follow", true);
+        UiSettings::tourDone = xml->getBoolAttribute ("tourDone", true);   // (settings from before the tour existed: no tour)
         UiSettings::latencyMode = juce::jlimit (0, 2, xml->getIntAttribute ("latencyMode", 0));
         UiSettings::latencyMeasuredMs = xml->getDoubleAttribute ("latencyMeasuredMs", 0.0);
         UiSettings::latencyExtraMs = xml->getDoubleAttribute ("latencyExtraMs", 0.0);
@@ -2626,6 +2627,7 @@ void MainComponent::saveUiSettings()
     xml.setAttribute ("panSnap", UiSettings::panSnap);
     xml.setAttribute ("countInBars", UiSettings::countInBars);
     xml.setAttribute ("follow", UiSettings::follow);
+    xml.setAttribute ("tourDone", UiSettings::tourDone);
     xml.setAttribute ("latencyMode", UiSettings::latencyMode);
     xml.setAttribute ("latencyMeasuredMs", UiSettings::latencyMeasuredMs);
     xml.setAttribute ("latencyExtraMs", UiSettings::latencyExtraMs);
@@ -3895,6 +3897,8 @@ void MainComponent::resized()
     corner.removeFromRight (4);
     zoomOutButton.setBounds (corner.removeFromRight (30));
 
+    if (tour != nullptr)
+        tour->setBounds (getLocalBounds());
     layoutContent();
 }
 
@@ -3932,6 +3936,8 @@ void MainComponent::paint (juce::Graphics& g)
 
 void MainComponent::paintOverChildren (juce::Graphics& g)
 {
+    if (tour != nullptr)
+        return;   // (the quick tour is on top: its dimming should cover everything)
     // loop region, as a faint wash over the lanes
     if (engine.loopEnabled && engine.loopEnd > engine.loopStart)
     {
@@ -5777,6 +5783,8 @@ void MainComponent::fileMenu()
     menu.addSeparator();
     menu.addItem (8, "Export WAV...");
     menu.addItem (9, "Export stems...");
+    menu.addSeparator();
+    menu.addItem (10, "Quick tour...");
     menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&railFile), [this, recent] (int result)
     {
         if (result == 1) newProject();
@@ -5788,6 +5796,7 @@ void MainComponent::fileMenu()
         else if (result == 7) backupFolder (currentProject).revealToUser();
         else if (result == 8) exportDialog();
         else if (result == 9) exportStemsDialog();
+        else if (result == 10) startTour();
         else if (result >= 100 && result - 100 < recent.size())
         {
             const juce::File chosen (recent[result - 100]);
@@ -6356,4 +6365,90 @@ void MainComponent::initialiseDevices (juce::AudioDeviceManager& manager)
     const auto error = manager.initialise (2, 2, saved.get(), true);
     if (error.isNotEmpty())
         juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Audio device", error);
+}
+
+//==============================================================================
+// The quick tour
+
+void MainComponent::maybeStartTour()
+{
+    if (UiSettings::tourDone || tour != nullptr)
+        return;
+    // Wait for the window, and for a dialog that may be open first (a recovery question, an audio device error): look again every
+    // second for a while.
+    juce::Component::SafePointer<MainComponent> safe (this);
+    auto attempt = std::make_shared<std::function<void (int)>>();
+    *attempt = [safe, attempt] (int triesLeft)
+    {
+        if (safe == nullptr || UiSettings::tourDone || safe->tour != nullptr)
+            return;
+        if (safe->isShowing() && juce::ModalComponentManager::getInstance()->getNumModalComponents() == 0)
+        {
+            safe->startTour();
+            return;
+        }
+        if (triesLeft > 0)
+            juce::Timer::callAfterDelay (1000, [attempt, triesLeft] { (*attempt) (triesLeft - 1); });
+    };
+    juce::Timer::callAfterDelay (900, [attempt] { (*attempt) (60); });
+}
+
+void MainComponent::startTour()
+{
+    if (tour != nullptr)
+        return;
+
+    using Step = TourOverlay::Step;
+    std::vector<Step> steps;
+    auto mine = [this] (juce::Component& c) { return getLocalArea (c.getParentComponent(), c.getBounds()); };
+    juce::ignoreUnused (mine);
+
+    steps.push_back ({ "Welcome to UFODAW",
+                       "A DAW for recording and writing music: audio, MIDI, drums, a sampler and VST plugins. This short tour shows where things are. "
+                       "You can run it again from File > Quick tour.", nullptr });
+    steps.push_back ({ "The rail",
+                       "File (new, open, save, export), Add a track, Plugins, Tuner and Mixer are on the left. Audio settings (driver, interface, "
+                       "buffer size) are at the bottom.",
+                       [this] { return railFile.getBounds().getUnion (railMixer.getBounds()); } });
+    steps.push_back ({ "Add a track",
+                       "Audio tracks, MIDI tracks (built-in synth or VST), drums, a sampler or a bus. You can also drop audio files on the window "
+                       "to make tracks from them.",
+                       [this] { return railAdd.getBounds(); } });
+    steps.push_back ({ "Time and tempo",
+                       "The clock, the tempo (Tempo opens tempo and time-signature changes), the count-in for recording, and Follow, which scrolls "
+                       "the arrangement along with the playhead.",
+                       [this] { return timeLabel.getBounds().getUnion (followButton.getBounds()); } });
+    steps.push_back ({ "Your tracks",
+                       "The dot arms a track for recording. A automates volume, pan and effects (and can record your fader rides as takes), "
+                       "VST holds plugins, FX the built-in effects, M and S mute and solo. A drum track opens the drum rack.",
+                       [this] { return headerViewport.getBounds(); } });
+    steps.push_back ({ "The arrangement",
+                       "Drag clips to move them, S splits at the playhead, right-click a clip for more (takes, comping, reverse, stretch). "
+                       "Drag the right edge of a MIDI clip to repeat the pattern; with Shift it stretches.",
+                       [this] { return laneViewport.getBounds(); } });
+    steps.push_back ({ "Transport",
+                       "Space plays and pauses, R records. Loop, Punch and Click (the metronome) sit next to the buttons.",
+                       [this] { return transportPill; } });
+    steps.push_back ({ "STOP ALL",
+                       "One big button that stops playback and recording and cuts every sound, plugins and MIDI hardware included "
+                       "(Ctrl+Shift+Space).",
+                       [this] { return stopAllButton.getBounds(); } });
+    steps.push_back ({ "That's it",
+                       "Tabs along the top hold several projects (Ctrl+Tab switches). Ctrl+Z undoes almost everything, also inside the sampler "
+                       "and drum rack. The README explains everything else. Have fun!", nullptr });
+
+    juce::Component::SafePointer<MainComponent> safe (this);
+    tour = std::make_unique<TourOverlay> (std::move (steps), [safe] (bool)
+    {
+        if (safe == nullptr)
+            return;
+        safe->tour.reset();
+        UiSettings::tourDone = true;
+        safe->saveUiSettings();
+        safe->grabKeyboardFocus();
+    });
+    addAndMakeVisible (*tour);
+    tour->setBounds (getLocalBounds());
+    tour->toFront (true);
+    tour->grabKeyboardFocus();
 }

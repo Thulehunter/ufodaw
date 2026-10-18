@@ -7,6 +7,7 @@
 #include "Theme.h"
 #include "Tuner.h"
 #include "RailButton.h"
+#include "TourOverlay.h"
 #include <map>
 
 class SamplerWindow;   // (SamplerPanel.h)
@@ -19,6 +20,7 @@ namespace UiSettings
     inline bool panSnap = true;        // pan sliders and pan envelopes snap to panStep (Alt while dragging flips it)
     inline int countInBars = 0;        // bars of metronome clicks before a recording starts (0 = none)
     inline bool follow = true;         // the arrangement scrolls along with the playhead while playing
+    inline bool tourDone = false;      // the first-run tour was shown (or skipped); not shown again for people who already had settings
 
     // Recorded audio is placed this much earlier, to undo the round trip through the interface: 0 = the latency the driver
     // reports, 1 = what the latency test measured, 2 = none. Plus a manual extra offset.
@@ -263,6 +265,11 @@ private:
     void startSamplerStretch (std::shared_ptr<Sampler>, double ratio, std::function<void (bool)> done);   // in the background, with a progress window
     std::unique_ptr<MixerWindow> mixerWindow;
     void openMixer();                                      // channel strips of every track and the master
+public:
+    void startTour();          // the quick tour of the window (first start, and File > Quick tour)
+    void maybeStartTour();     // ...only if it was not shown before
+private:
+    std::unique_ptr<TourOverlay> tour;
     std::unique_ptr<SamplerWindow> samplerWindow;
     // A track as the tool windows know it: after an undo the tracks are rebuilt, and the windows that stay open are pointed at the new ones.
     struct TrackRef
