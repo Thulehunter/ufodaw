@@ -1,4 +1,4 @@
-; Inno Setup script (https://jrsoftware.org/isinfo.php) - builds a normal Windows installer.
+﻿; Inno Setup script (https://jrsoftware.org/isinfo.php) - builds a normal Windows installer.
 ; 1. Build Release first:  powershell -File scripts\package.ps1
 ; 2. Compile this file with Inno Setup (ISCC.exe installer\UFODAW.iss, or open it in the Inno Setup IDE).
 ; The installer is written to dist\UFODAW-<version>-setup.exe.
@@ -7,7 +7,7 @@
 #define AppVersion "0.1.0"
 
 [Setup]
-SetupIconFile=..Resourcesicon.ico
+SetupIconFile=..\Resources\icon.ico
 AppName={#AppName}
 AppVersion={#AppVersion}
 DefaultDirName={autopf}\{#AppName}
