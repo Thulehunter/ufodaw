@@ -413,6 +413,10 @@ private:
     // Autosave: every two minutes, when something changed, the project goes to a recovery file. A normal save (or a normal exit
     // without unsaved changes) removes it; if the program dies, or is closed with unsaved changes, it is offered at the next start.
     void openVersionHistory();                        // File > Version history...
+    struct PluginOpen { juce::MemoryBlock before; size_t undoSize = 0; };
+    std::map<PluginSlot*, PluginOpen> pluginOpen;     // plugin windows that are open: the state they had when they opened
+    void pluginEditorOpened (PluginSlot&);            // (what is done inside a plugin's window is part of undo)
+    void pluginEditorClosed (PluginSlot&);
     std::vector<Command> commands;                    // everything the program can do (the palette and the shortcuts come from it)
     std::unique_ptr<CommandPalette> palette;
     std::unique_ptr<ShortcutsWindow> shortcutsWindow;

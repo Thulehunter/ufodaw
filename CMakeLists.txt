@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.22)
 # Link the C++ runtime statically so UFODAW.exe runs on a PC without the Visual C++ Redistributable.
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
-project(UFODAW VERSION 0.8.7.2 LANGUAGES C CXX)
+project(UFODAW VERSION 0.8.7.3 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -74,6 +74,9 @@ target_compile_definitions(UFODAW PRIVATE
     JUCE_PLUGINHOST_VST3=1
     JUCE_APPLICATION_NAME_STRING="$<TARGET_PROPERTY:UFODAW,JUCE_PRODUCT_NAME>"
     JUCE_APPLICATION_VERSION_STRING="$<TARGET_PROPERTY:UFODAW,JUCE_VERSION>")
+if(APPLE)   # on a Mac the Audio Units that are installed can be hosted, next to VST3
+    target_compile_definitions(UFODAW PRIVATE JUCE_PLUGINHOST_AU=1)
+endif()
 
 # ASIO drivers need Steinberg's ASIO SDK, which can't be bundled with the sources. Either unzip it into
 # third_party/ (e.g. third_party/asiosdk_2.3.3_2019-06-14), or point ASIO_SDK_DIR (cmake -D or environment

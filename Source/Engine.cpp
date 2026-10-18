@@ -6,16 +6,18 @@
 
 namespace
 {
-    // Room for half a second of plugin delay compensation per track
+    // Room for two seconds of plugin delay compensation per track
     void sizeDelayBuffers (Track& t, double rate)
     {
-        const size_t size = (size_t) (rate * 0.5) + 2;
+        const size_t size = (size_t) (rate * 2.0) + 2;
         if (t.pdcL.size() != size)
         {
             t.pdcL.assign (size, 0.0f);
             t.pdcR.assign (size, 0.0f);
             t.pdcPos = 0;
             t.pdcDelay = 0;
+            t.pdcOldDelay = 0;
+            t.pdcFade = 0;
         }
     }
 }
@@ -2023,10 +2025,41 @@ void Engine::applyTrackState (Track& t, const TrackState& ts)
         t.kit->applyState (ts.padStates);
 }
 
-ProjectState Engine::captureState() const
+std::shared_ptr<PluginSlot> Engine::findPluginSlot (const PluginSlot* slot) const
 {
     const juce::ScopedLock sl (lock);
+    auto look = [slot] (const Track& t) -> std::shared_ptr<PluginSlot>
+    {
+        if (t.instrument != nullptr && t.instrument.get() == slot)
+            return t.instrument;
+        for (auto& p : t.inserts)
+            if (p.get() == slot)
+                return p;
+        for (auto& p : t.midiFx)
+            if (p.get() == slot)
+                return p;
+        return nullptr;
+    };
+    if (auto p = look (*master))
+        return p;
+    for (auto& t : tracks)
+        if (auto p = look (*t))
+            return p;
+    return nullptr;
+}
+
+ProjectState Engine::captureState (const std::vector<std::shared_ptr<PluginSlot>>& pluginsToKeep) const
+{
     ProjectState s;
+    for (auto& slot : pluginsToKeep)   // (outside the lock: a plugin can take a moment to give its state)
+        if (slot != nullptr && slot->instance != nullptr)
+        {
+            juce::MemoryBlock state;
+            slot->instance->getStateInformation (state);
+            s.pluginStates.push_back ({ slot, std::move (state) });
+        }
+
+    const juce::ScopedLock sl (lock);
     s.sections = arrangement;
     s.tempo = tempoMap;
     s.master = captureTrack (*master);
@@ -2055,6 +2088,10 @@ ProjectState Engine::captureState() const
 
 void Engine::restoreState (const ProjectState& s)
 {
+    for (auto& [slot, state] : s.pluginStates)   // what was set inside a plugin's window goes back, too
+        if (slot != nullptr && slot->instance != nullptr && state.getSize() > 0)
+            slot->instance->setStateInformation (state.getData(), (int) state.getSize());
+
     arrangement = s.sections;
     std::vector<std::unique_ptr<Track>> fresh;
     for (auto& ts : s.tracks)
@@ -2392,10 +2429,11 @@ void Engine::getNextAudioBlock (const juce::AudioSourceChannelInfo& info)
                 releaseAllNotes (*t);
                 if (t->fx.hasTail())
                     t->fxState->reset();   // don't replay the tail of wherever we were before
-                if (t->pdcDelay != 0)
+                if (t->pdcDelay != 0 || t->pdcFade > 0)
                 {
                     std::fill (t->pdcL.begin(), t->pdcL.end(), 0.0f);
                     std::fill (t->pdcR.begin(), t->pdcR.end(), 0.0f);
+                    t->pdcFade = 0;
                 }
             }
         wasRunning = true;
@@ -2753,11 +2791,20 @@ void Engine::applyDelay (Track& t, float* l, float* r, int n, int delay)
     if (size == 0)
         return;
 
+    constexpr int fadeSamples = 480;   // about 10 ms
     delay = juce::jlimit (0, size - 1, delay);
-    if (delay != t.pdcDelay)   // a change would otherwise replay whatever is left in the buffer
+    if (delay != t.pdcDelay)
     {
-        std::fill (t.pdcL.begin(), t.pdcL.end(), 0.0f);
-        std::fill (t.pdcR.begin(), t.pdcR.end(), 0.0f);
+        if (t.pdcDelay == 0 && t.pdcFade == 0)   // the delay starts: the buffer holds nothing of this track yet (it would replay what was left in it)
+        {
+            std::fill (t.pdcL.begin(), t.pdcL.end(), 0.0f);
+            std::fill (t.pdcR.begin(), t.pdcR.end(), 0.0f);
+        }
+        else                                      // it changes while it is in use (a plugin reports another latency): crossfade, no click or gap
+        {
+            t.pdcOldDelay = t.pdcDelay;
+            t.pdcFade = fadeSamples;
+        }
         t.pdcDelay = delay;
     }
 
@@ -2769,8 +2816,19 @@ void Engine::applyDelay (Track& t, float* l, float* r, int n, int delay)
         int read = pos - delay;
         if (read < 0)
             read += size;
-        l[i] = t.pdcL[(size_t) read];
-        r[i] = t.pdcR[(size_t) read];
+        float outL = t.pdcL[(size_t) read], outR = t.pdcR[(size_t) read];
+        if (t.pdcFade > 0)
+        {
+            int oldRead = pos - t.pdcOldDelay;
+            if (oldRead < 0)
+                oldRead += size;
+            const float old = (float) t.pdcFade / (float) fadeSamples;   // 1 -> 0: from the old delay to the new one
+            outL = outL * (1.0f - old) + t.pdcL[(size_t) oldRead] * old;
+            outR = outR * (1.0f - old) + t.pdcR[(size_t) oldRead] * old;
+            --t.pdcFade;
+        }
+        l[i] = outL;
+        r[i] = outR;
         if (++pos >= size)
             pos = 0;
     }
@@ -3247,7 +3305,7 @@ void Engine::mixBlock (float* outL, float* outR, int n, juce::int64 pos, bool wi
 
         // plugin delay compensation: tracks without (or with less) plugin latency wait for the slowest one
         const int delay = maxLatency - trackLatency (*t);
-        if (! t->bus && (delay > 0 || t->pdcDelay != 0))
+        if (! t->bus && (delay > 0 || t->pdcDelay != 0 || t->pdcFade > 0))
             applyDelay (*t, bufL, bufR, nn, delay);
 
         if (t->sidechainTapped.load() && (int) t->scL.size() >= nn)   // what the compressors that listen to this track hear

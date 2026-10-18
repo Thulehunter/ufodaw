@@ -2887,6 +2887,8 @@ MainComponent::MainComponent (int slot, std::shared_ptr<juce::AudioDeviceManager
     addAndMakeVisible (headerViewport);
     addAndMakeVisible (*ruler);
 
+    pluginHost.onEditorOpened = [this] (PluginSlot& s) { pluginEditorOpened (s); };
+    pluginHost.onEditorClosed = [this] (PluginSlot& s) { pluginEditorClosed (s); };
     buildCommands();
     setSize (1400, 640);   // last: resized() touches all the children above
     startTimerHz (30);
@@ -2958,6 +2960,8 @@ static void readSamplerParams (const juce::var& sv, Sampler::Params& sp)
 
 MainComponent::~MainComponent()
 {
+    pluginHost.onEditorOpened = nullptr;   // (the editor windows close below, with the project half gone)
+    pluginHost.onEditorClosed = nullptr;
     mixerWindow.reset();
     meterWindow.reset();
     shortcutsWindow.reset();
@@ -4268,13 +4272,22 @@ void MainComponent::updateUndoButtons()
     redoButton.setEnabled (! redoStack.empty());
 }
 
+// The plugins whose state a snapshot holds: going to it, the state they have now is kept for the way back
+static std::vector<std::shared_ptr<PluginSlot>> pluginsOf (const ProjectState& state)
+{
+    std::vector<std::shared_ptr<PluginSlot>> slots;
+    for (auto& p : state.pluginStates)
+        slots.push_back (p.first);
+    return slots;
+}
+
 void MainComponent::undo()
 {
     if (undoStack.empty())
         return;
-    redoStack.push_back (engine.captureState());
     auto state = std::move (undoStack.back());
     undoStack.pop_back();
+    redoStack.push_back (engine.captureState (pluginsOf (state)));
     restoreSnapshot (state);
 }
 
@@ -4282,10 +4295,44 @@ void MainComponent::redo()
 {
     if (redoStack.empty())
         return;
-    undoStack.push_back (engine.captureState());
     auto state = std::move (redoStack.back());
     redoStack.pop_back();
+    undoStack.push_back (engine.captureState (pluginsOf (state)));
     restoreSnapshot (state);
+}
+
+// What is done inside a plugin's own window is part of undo: opening the window takes an undo step that holds the plugin's state of that
+// moment (Ctrl+Z puts it back); when the window closes with nothing changed and nothing else done, that step is dropped again.
+void MainComponent::pluginEditorOpened (PluginSlot& slot)
+{
+    auto shared = engine.findPluginSlot (&slot);
+    if (shared == nullptr || slot.instance == nullptr)
+        return;
+    PluginOpen info;
+    slot.instance->getStateInformation (info.before);
+    ++editCounter;
+    undoStack.push_back (engine.captureState ({ shared }));
+    if (undoStack.size() > 100)
+        undoStack.erase (undoStack.begin());
+    redoStack.clear();
+    updateUndoButtons();
+    info.undoSize = undoStack.size();
+    pluginOpen[&slot] = std::move (info);
+}
+
+void MainComponent::pluginEditorClosed (PluginSlot& slot)
+{
+    auto it = pluginOpen.find (&slot);
+    if (it == pluginOpen.end())
+        return;
+    const auto info = std::move (it->second);
+    pluginOpen.erase (it);
+    if (slot.instance == nullptr)
+        return;
+    juce::MemoryBlock after;
+    slot.instance->getStateInformation (after);
+    if (after == info.before && undoStack.size() == info.undoSize)   // looked, did not touch: no undo step
+        cancelEdit();
 }
 
 // Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z in the sampler and drum rack windows undo the project, like in the main window.

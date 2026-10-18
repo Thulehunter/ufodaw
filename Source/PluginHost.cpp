@@ -31,9 +31,16 @@ public:
         setResizable (editor->isResizable(), false);
         centreWithSize (getWidth(), getHeight());
         setVisible (true);
+        if (host.onEditorOpened)
+            host.onEditorOpened (s);
     }
 
-    ~EditorWindow() override { slot->editorOpen = false; }
+    ~EditorWindow() override
+    {
+        slot->editorOpen = false;
+        if (host.onEditorClosed)
+            host.onEditorClosed (*slot);
+    }
 
     const PluginSlot* getSlot() const { return slot; }
 

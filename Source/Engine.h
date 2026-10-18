@@ -278,8 +278,9 @@ struct Track
     std::vector<std::shared_ptr<PluginSlot>> midiFx;
 
     // Plugin delay compensation: this track is delayed so it lines up with tracks whose plugins add latency
-    std::vector<float> pdcL, pdcR;   // sized by Engine::sizeDelayBuffers (half a second)
+    std::vector<float> pdcL, pdcR;   // sized by Engine::sizeDelayBuffers (two seconds)
     int pdcPos = 0, pdcDelay = 0;
+    int pdcOldDelay = 0, pdcFade = 0;   // a change of the delay while it is in use crossfades from the old delay to the new one (audio thread)
 
     std::atomic<float> gain { 0.8f };
     std::atomic<float> pan { 0.0f };
@@ -391,6 +392,8 @@ struct RangeBundle
 
 struct ProjectState
 {
+    // The state of some plugins at that moment (only those whose own window was opened: what is done inside it is part of undo this way)
+    std::vector<std::pair<std::shared_ptr<PluginSlot>, juce::MemoryBlock>> pluginStates;
     std::vector<ArrSection> sections;
     std::vector<TrackState> tracks;
     TempoMap tempo;
@@ -605,7 +608,8 @@ public:
 
     // Undo/redo support. restoreState() replaces every Track object, so any Track* held
     // elsewhere is invalid afterwards (clip ids are kept).
-    ProjectState captureState() const;
+    ProjectState captureState (const std::vector<std::shared_ptr<PluginSlot>>& pluginsToKeep = {}) const;
+    std::shared_ptr<PluginSlot> findPluginSlot (const PluginSlot*) const;
     void restoreState (const ProjectState&);
 
     // Audition a note on a MIDI track's synth (works while the transport is stopped).

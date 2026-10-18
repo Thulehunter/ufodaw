@@ -304,10 +304,10 @@ The audio thread never blocks: the UI edits the project under a lock that the au
 
 ## Known limitations
 
-- Delay compensation covers audio plugins (instrument and effect inserts) up to 0.5 s; plugins that change their latency while playing may cause a short glitch.
-- Changes made inside a plugin's own window are not part of undo.
+- Delay compensation covers audio plugins (instrument and effect inserts) up to 2 s; when a plugin reports another latency while playing, the compensation crossfades over about 10 ms (no click).
+- What is done inside a plugin's own window is part of undo as one step (opening the window takes it; Ctrl+Z puts the plugin back as it was). Plugins that keep their state outside what they save (a sample they loaded by hand, for example) may not go back completely.
 - Automation of effect and plugin parameters is applied every 64 samples (volume and pan are ramped); synth parameters are applied once per audio block. While a parameter is automated its slider can still be moved but the envelope wins during playback.
-- VST3 only (no VST2, CLAP or AU).
+- VST3 only on Windows. VST2 cannot be hosted (Steinberg no longer licenses it) and CLAP is not supported by the plugin-hosting code UFODAW is built on. The macOS build also hosts Audio Units (untested: it needs a Mac).
 - Windows only so far.
 
 ## License

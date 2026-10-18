@@ -21,8 +21,9 @@ public:
     juce::var slotToVar (const PluginSlot&) const;
     std::shared_ptr<PluginSlot> slotFromVar (const juce::var&, Engine&, juce::String& error);
 
-    // Plugin windows
+    // Plugin windows. The owner hears when an editor opens and closes (to make undo steps of what is done inside the plugin's own window).
     void showEditor (PluginSlot&);
+    std::function<void (PluginSlot&)> onEditorOpened, onEditorClosed;
     void closeEditorsFor (const PluginSlot*);
     void closeAllEditors();
 
