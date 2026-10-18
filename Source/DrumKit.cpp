@@ -149,7 +149,7 @@ void DrumKit::setupSampler (int pad)
     sp.rootNote = pads[(size_t) pad].note;   // so the pad's own note plays the sample at its original pitch
     sp.attack = 0.0005f;
     sp.release = 0.08f;
-    sp.volume = 0.9f;
+    sp.volume = 0.7f;   // (headroom: kick + snare + hat together stay below full scale)
     sp.velocitySens = 0.85f;
 }
 

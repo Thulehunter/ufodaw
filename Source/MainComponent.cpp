@@ -2067,6 +2067,15 @@ MainComponent::MainComponent (int slot) : tabSlot (slot)
     countInButton.setTooltip ("Count-in: this many bars of metronome clicks play before a recording starts (in the tempo and time signature "
                               "at the playhead, also when the metronome is off). Nothing is recorded during the count-in.");
     addAndMakeVisible (countInButton);
+
+    followButton.setClickingTogglesState (true);
+    followButton.setToggleState (UiSettings::follow, juce::dontSendNotification);
+    followButton.setColour (juce::TextButton::buttonOnColourId, Theme::orangeDim);
+    followButton.setWantsKeyboardFocus (false);
+    followButton.setTooltip ("The arrangement scrolls along with the playhead while playing");
+    followButton.onClick = [this] { UiSettings::follow = followButton.getToggleState(); saveUiSettings(); };
+    followButton.getProperties().set ("pill", true);
+    addAndMakeVisible (followButton);
     snapButton.setToggleState (true, juce::dontSendNotification);
 
     loadUiSettings();
@@ -2368,6 +2377,7 @@ void MainComponent::loadUiSettings()
     {
         UiSettings::panSnap = xml->getBoolAttribute ("panSnap", true);
         UiSettings::countInBars = juce::jlimit (0, 4, xml->getIntAttribute ("countInBars", 0));
+        UiSettings::follow = xml->getBoolAttribute ("follow", true);
         UiSettings::latencyMode = juce::jlimit (0, 2, xml->getIntAttribute ("latencyMode", 0));
         UiSettings::latencyMeasuredMs = xml->getDoubleAttribute ("latencyMeasuredMs", 0.0);
         UiSettings::latencyExtraMs = xml->getDoubleAttribute ("latencyExtraMs", 0.0);
@@ -2386,6 +2396,7 @@ void MainComponent::saveUiSettings()
     juce::XmlElement xml ("UISETTINGS");
     xml.setAttribute ("panSnap", UiSettings::panSnap);
     xml.setAttribute ("countInBars", UiSettings::countInBars);
+    xml.setAttribute ("follow", UiSettings::follow);
     xml.setAttribute ("latencyMode", UiSettings::latencyMode);
     xml.setAttribute ("latencyMeasuredMs", UiSettings::latencyMeasuredMs);
     xml.setAttribute ("latencyExtraMs", UiSettings::latencyExtraMs);
@@ -3486,6 +3497,8 @@ void MainComponent::resized()
     tempoButton.setBounds (top.removeFromLeft (62));
     top.removeFromLeft (8);
     countInButton.setBounds (top.removeFromLeft (128));
+    top.removeFromLeft (8);
+    followButton.setBounds (top.removeFromLeft (70));
     top.removeFromLeft (20);
     undoButton.setBounds (top.removeFromLeft (56));
     top.removeFromLeft (6);
@@ -4056,6 +4069,7 @@ void MainComponent::timerCallback()
                     lane->repaint();
     }
     const double p = engine.getPositionSeconds();
+    followPlayhead (p);
     const int mins = (int) (p / 60.0);
     refreshLiveTargets();   // picks up red-dot arming and input choices made anywhere
     updateClipLamp();
@@ -5897,4 +5911,16 @@ bool MainComponent::saveForClose()
     }
     saveProject (currentProject);
     return ! isDirty();
+}
+
+// While playing, the arrangement turns a page when the playhead reaches the right edge (and finds it again after a loop or a jump).
+void MainComponent::followPlayhead (double seconds)
+{
+    if (! UiSettings::follow || ! engine.isPlaying() || juce::ModifierKeys::currentModifiers.isAnyMouseButtonDown())
+        return;
+    const int viewX = laneViewport.getViewPositionX();
+    const int visibleW = laneViewport.getMaximumVisibleWidth();
+    const int x = (int) (seconds * pixelsPerSecond);
+    if (visibleW > 100 && (x > viewX + visibleW - 40 || x < viewX))
+        laneViewport.setViewPosition (juce::jmax (0, x - visibleW / 10), laneViewport.getViewPositionY());
 }

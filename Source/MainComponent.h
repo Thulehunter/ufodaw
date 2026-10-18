@@ -17,6 +17,7 @@ namespace UiSettings
 {
     inline bool panSnap = true;        // pan sliders and pan envelopes snap to panStep (Alt while dragging flips it)
     inline int countInBars = 0;        // bars of metronome clicks before a recording starts (0 = none)
+    inline bool follow = true;         // the arrangement scrolls along with the playhead while playing
 
     // Recorded audio is placed this much earlier, to undo the round trip through the interface: 0 = the latency the driver
     // reports, 1 = what the latency test measured, 2 = none. Plus a manual extra offset.
@@ -446,7 +447,8 @@ private:
     double recStartSeconds = 0.0;
     juce::Rectangle<int> transportPill;
     int statusCompact = 0;
-    juce::TextButton fileButton { "File" }, stopAllButton { "STOP ALL" };
+    juce::TextButton fileButton { "File" }, stopAllButton { "STOP ALL" }, followButton { "Follow" };
+    void followPlayhead (double seconds);
     RailButton railFile { RailButton::Icon::Menu, "File: new project, open, save, export" },
                railAdd { RailButton::Icon::Add, "Add a track", true },
                railPlugins { RailButton::Icon::Plugins, "Plugins: scan and manage VST3 plugins" },
