@@ -60,6 +60,32 @@ private:
         }
 
         void closeButtonPressed() override { juce::JUCEApplication::getInstance()->systemRequestedQuit(); }
+
+        // When no component has the keyboard focus (right after the start, or after a dialog or a popup closed) the keys come to the window itself:
+        // they go to the open project, so the shortcuts (Ctrl+K, Space, R...) work without clicking in the project first.
+        bool keyPressed (const juce::KeyPress& k) override
+        {
+            if (auto* tab = activeTab())
+                if (tab->keyPressed (k))
+                    return true;
+            return DocumentWindow::keyPressed (k);
+        }
+
+        void activeWindowStatusChanged() override
+        {
+            DocumentWindow::activeWindowStatusChanged();
+            if (isActiveWindow() && juce::Component::getCurrentlyFocusedComponent() == nullptr)
+                if (auto* tab = activeTab())
+                    tab->grabKeyboardFocus();
+        }
+
+    private:
+        MainComponent* activeTab() const
+        {
+            if (auto* tabs = dynamic_cast<ProjectTabs*> (getContentComponent()))
+                return tabs->getActive();
+            return nullptr;
+        }
     };
 
     std::unique_ptr<MainWindow> window;
