@@ -12,6 +12,7 @@
 #include "ExternalMidi.h"
 #include "TempoMap.h"
 #include "Sampler.h"
+#include "AudioExport.h"
 
 // A breakpoint envelope: linear between points, flat before the first and after the last.
 // (Automation lanes use seconds on the timeline; a clip's volume curve uses seconds from the start of the clip.)
@@ -503,6 +504,7 @@ public:
     {
         bool withMetronome = false;
         int bits = 24;                                  // 16, 24 or 32 (32 = floating point: never clips)
+        int formatChoice = -1;                          // an index into AudioExport::choices() (WAV, FLAC, AIFF, MP3, Ogg); -1 = WAV with `bits`
         const Track* onlyTrack = nullptr;               // set: render just this track (a stem)
         bool masterProcessing = true;                   // false: no master volume / limiter (stems)
         std::function<bool()> shouldCancel;             // polled between blocks; true stops the render

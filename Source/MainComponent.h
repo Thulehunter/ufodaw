@@ -21,6 +21,7 @@ namespace UiSettings
     inline int countInBars = 0;        // bars of metronome clicks before a recording starts (0 = none)
     inline bool follow = true;         // the arrangement scrolls along with the playhead while playing
     inline bool tourDone = false;      // the first-run tour was shown (or skipped); not shown again for people who already had settings
+    inline int exportChoice = 0;       // the last audio format chosen for an export (an index into AudioExport::choices())
 
     // Recorded audio is placed this much earlier, to undo the round trip through the interface: 0 = the latency the driver
     // reports, 1 = what the latency test measured, 2 = none. Plus a manual extra offset.

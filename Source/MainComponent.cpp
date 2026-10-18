@@ -9,6 +9,7 @@
 #include "SyncPanels.h"
 #include "ClipPanel.h"
 #include "Stretch.h"
+#include "AudioExport.h"
 #include "SamplerPanel.h"
 #include "DrumRackPanel.h"
 #include "MixerPanel.h"
@@ -2120,10 +2121,10 @@ class StemExportJob : public juce::ThreadWithProgressWindow
 public:
     struct Item { Track* track; juce::File file; };
 
-    StemExportJob (Engine& e, std::vector<Item> itemsToRender, double lengthSeconds, int bitDepth, bool withMaster,
+    StemExportJob (Engine& e, std::vector<Item> itemsToRender, double lengthSeconds, int formatChoiceIndex, bool withMaster,
                    juce::File targetFolder, juce::StringArray skippedTracks, juce::Component* centreAround)
         : juce::ThreadWithProgressWindow ("Exporting stems", true, true, 5000, "Cancel", centreAround),
-          engine (e), items (std::move (itemsToRender)), seconds (lengthSeconds), bits (bitDepth), master (withMaster),
+          engine (e), items (std::move (itemsToRender)), seconds (lengthSeconds), formatChoice (formatChoiceIndex), master (withMaster),
           folder (std::move (targetFolder)), skipped (std::move (skippedTracks))
     {
     }
@@ -2137,7 +2138,7 @@ public:
 
             Engine::RenderOptions options;
             options.onlyTrack = items[i].track;
-            options.bits = bits;
+            options.formatChoice = formatChoice;
             options.masterProcessing = master;
             options.shouldCancel = [this] { return threadShouldExit(); };
             options.onProgress = [this, i] (double f) { setProgress (((double) i + f) / (double) items.size()); };
@@ -2178,7 +2179,7 @@ private:
     Engine& engine;
     std::vector<Item> items;
     double seconds;
-    int bits;
+    int formatChoice;
     bool master;
     juce::File folder;
     juce::StringArray skipped, done, failed;
@@ -2621,6 +2622,7 @@ void MainComponent::loadUiSettings()
         UiSettings::panSnap = xml->getBoolAttribute ("panSnap", true);
         UiSettings::countInBars = juce::jlimit (0, 4, xml->getIntAttribute ("countInBars", 0));
         UiSettings::follow = xml->getBoolAttribute ("follow", true);
+        UiSettings::exportChoice = juce::jlimit (0, (int) AudioExport::choices().size() - 1, xml->getIntAttribute ("exportChoice", 0));
         UiSettings::tourDone = xml->getBoolAttribute ("tourDone", true);   // (settings from before the tour existed: no tour)
         UiSettings::latencyMode = juce::jlimit (0, 2, xml->getIntAttribute ("latencyMode", 0));
         UiSettings::latencyMeasuredMs = xml->getDoubleAttribute ("latencyMeasuredMs", 0.0);
@@ -2641,6 +2643,7 @@ void MainComponent::saveUiSettings()
     xml.setAttribute ("panSnap", UiSettings::panSnap);
     xml.setAttribute ("countInBars", UiSettings::countInBars);
     xml.setAttribute ("follow", UiSettings::follow);
+    xml.setAttribute ("exportChoice", UiSettings::exportChoice);
     xml.setAttribute ("tourDone", UiSettings::tourDone);
     xml.setAttribute ("latencyMode", UiSettings::latencyMode);
     xml.setAttribute ("latencyMeasuredMs", UiSettings::latencyMeasuredMs);
@@ -5795,7 +5798,7 @@ void MainComponent::fileMenu()
     menu.addItem (6, "Save with all audio in one folder...");
     menu.addItem (7, "Show the backups folder", currentProject != juce::File() && backupFolder (currentProject).isDirectory());
     menu.addSeparator();
-    menu.addItem (8, "Export WAV...");
+    menu.addItem (8, "Export audio (WAV, FLAC, MP3...)...");
     menu.addItem (9, "Export stems...");
     menu.addSeparator();
     menu.addItem (10, "Quick tour...");
@@ -6254,10 +6257,13 @@ void MainComponent::exportStemsDialog()
                                                                          + "Each track is rendered on its own, after its effects, volume and pan. "
                                                                            "Existing files with the same name are replaced.",
                                                                      juce::MessageBoxIconType::QuestionIcon);
-                              options->addComboBox ("format", { "24-bit WAV", "32-bit float WAV (can never clip)", "16-bit WAV" }, "Format");
+                              juce::StringArray formatNames;
+                              for (auto& choice : AudioExport::choices())
+                                  formatNames.add (choice.label);
+                              options->addComboBox ("format", formatNames, "Format");
                               options->addComboBox ("master", { "Without master volume and limiter (stems add up to the mix)",
                                                                 "With master volume and limiter on every stem" }, "Master");
-                              options->getComboBoxComponent ("format")->setSelectedItemIndex (0);
+                              options->getComboBoxComponent ("format")->setSelectedItemIndex (UiSettings::exportChoice);
                               options->getComboBoxComponent ("master")->setSelectedItemIndex (0);
                               options->addButton ("Export", 1, juce::KeyPress (juce::KeyPress::returnKey));
                               options->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
@@ -6268,22 +6274,70 @@ void MainComponent::exportStemsDialog()
                                       if (result != 1)
                                           return;
 
-                                      const int formatIndex = options->getComboBoxComponent ("format")->getSelectedItemIndex();
-                                      const int bits = formatIndex == 1 ? 32 : formatIndex == 2 ? 16 : 24;
+                                      const int formatIndex = juce::jlimit (0, (int) AudioExport::choices().size() - 1,
+                                                                            options->getComboBoxComponent ("format")->getSelectedItemIndex());
+                                      UiSettings::exportChoice = formatIndex;
+                                      saveUiSettings();
+                                      const auto extension = AudioExport::extensionOf (AudioExport::choices()[(size_t) formatIndex].format);
                                       const bool withMaster = options->getComboBoxComponent ("master")->getSelectedItemIndex() == 1;
 
                                       auto fullItems = items;
                                       for (auto& item : fullItems)
-                                          item.file = folder.getChildFile (item.file.getFileName());
+                                          item.file = folder.getChildFile (item.file.getFileNameWithoutExtension() + "." + extension);
 
                                       auto* job = new StemExportJob (engine, std::move (fullItems),
                                                                      engine.getTotalLengthSeconds() + engine.getRenderTailSeconds(),
-                                                                     bits, withMaster, folder, skipped, this);
+                                                                     formatIndex, withMaster, folder, skipped, this);
                                       job->launchThread();   // deletes itself when it is done
                                   }),
                                   true);
                           });
 }
+
+// The mix is rendered on a background thread behind a progress window (with a cancel button), in the format that was chosen.
+class MixExportJob : public juce::ThreadWithProgressWindow
+{
+public:
+    MixExportJob (Engine& e, juce::File target, double lengthSeconds, int formatChoiceIndex, juce::Component* centreAround)
+        : juce::ThreadWithProgressWindow ("Exporting the mix", true, true, 5000, "Cancel", centreAround),
+          engine (e), file (std::move (target)), seconds (lengthSeconds), formatChoice (formatChoiceIndex)
+    {
+    }
+
+    void run() override
+    {
+        Engine::RenderOptions options;
+        options.formatChoice = formatChoice;
+        options.shouldCancel = [this] { return threadShouldExit(); };
+        options.onProgress = [this] (double f) { setProgress (f); };
+        ok = engine.renderToFile (file, seconds, options);
+    }
+
+    // Message thread, when it is done or cancelled (this object deletes itself here, like the stem export).
+    void threadComplete (bool userPressedCancel) override
+    {
+        if (userPressedCancel)
+        {
+            file.deleteFile();   // (half a file helps nobody)
+            juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::InfoIcon, "Export cancelled", "Nothing was written.");
+        }
+        else
+        {
+            if (! ok)
+                file.deleteFile();
+            juce::AlertWindow::showMessageBoxAsync (ok ? juce::MessageBoxIconType::InfoIcon : juce::MessageBoxIconType::WarningIcon,
+                                                    ok ? "Export finished" : "Export failed", file.getFullPathName());
+        }
+        delete this;
+    }
+
+private:
+    Engine& engine;
+    juce::File file;
+    double seconds;
+    int formatChoice;
+    bool ok = false;
+};
 
 void MainComponent::exportDialog()
 {
@@ -6294,24 +6348,42 @@ void MainComponent::exportDialog()
         return;
     }
 
-    chooser = std::make_unique<juce::FileChooser> ("Export WAV", currentProject.withFileExtension ("wav"), "*.wav");
-    chooser->launchAsync (juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles
-                              | juce::FileBrowserComponent::warnAboutOverwriting,
-                          [this] (const juce::FileChooser& fc)
-                          {
-                              auto f = fc.getResult();
-                              if (f == juce::File())
-                                  return;
+    // first the format (WAV, FLAC, AIFF, MP3, Ogg Vorbis), then where to save it
+    auto* options = new juce::AlertWindow ("Export the mix", "Choose the file format. WAV, FLAC and AIFF keep the sound exactly; MP3 and "
+                                                             "Ogg Vorbis are smaller, with some loss.", juce::MessageBoxIconType::QuestionIcon);
+    juce::StringArray formatNames;
+    for (auto& choice : AudioExport::choices())
+        formatNames.add (choice.label);
+    options->addComboBox ("format", formatNames, "Format");
+    options->getComboBoxComponent ("format")->setSelectedItemIndex (UiSettings::exportChoice);
+    options->addButton ("Next...", 1, juce::KeyPress (juce::KeyPress::returnKey));
+    options->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+    options->enterModalState (true, juce::ModalCallbackFunction::create ([this, options] (int result)
+    {
+        if (result != 1)
+            return;
+        const int formatIndex = juce::jlimit (0, (int) AudioExport::choices().size() - 1,
+                                              options->getComboBoxComponent ("format")->getSelectedItemIndex());
+        UiSettings::exportChoice = formatIndex;
+        saveUiSettings();
+        const auto extension = AudioExport::extensionOf (AudioExport::choices()[(size_t) formatIndex].format);
 
-                              finishRecording();
-                              engine.stop();
-                              f = f.withFileExtension ("wav");
-                              const bool ok = engine.renderToFile (f, engine.getTotalLengthSeconds() + engine.getRenderTailSeconds(), false);
-                              juce::AlertWindow::showMessageBoxAsync (ok ? juce::MessageBoxIconType::InfoIcon
-                                                                         : juce::MessageBoxIconType::WarningIcon,
-                                                                      ok ? "Export finished" : "Export failed",
-                                                                      f.getFullPathName());
-                          });
+        chooser = std::make_unique<juce::FileChooser> ("Export the mix", currentProject.withFileExtension (extension), "*." + extension);
+        chooser->launchAsync (juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles
+                                  | juce::FileBrowserComponent::warnAboutOverwriting,
+                              [this, formatIndex, extension] (const juce::FileChooser& fc)
+                              {
+                                  auto f = fc.getResult();
+                                  if (f == juce::File())
+                                      return;
+
+                                  finishRecording();
+                                  engine.stop();
+                                  f = f.withFileExtension (extension);
+                                  auto* job = new MixExportJob (engine, f, engine.getTotalLengthSeconds() + engine.getRenderTailSeconds(), formatIndex, this);
+                                  job->launchThread();   // deletes itself when it is done
+                              });
+    }), true);
 }
 
 //==============================================================================

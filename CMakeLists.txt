@@ -23,6 +23,18 @@ FetchContent_Declare(rubberband
     GIT_SHALLOW ON)
 FetchContent_MakeAvailable(rubberband)
 
+# Shine: a small fixed-point MP3 encoder (LGPL), compiled into the program for "Export > MP3". (It has no CMake build of its own: its
+# C sources are added below.)
+FetchContent_Declare(shine
+    GIT_REPOSITORY https://github.com/toots/shine.git
+    GIT_TAG ab5e3526b64af1a2eaa43aa6f441a7312e013519
+    GIT_SHALLOW OFF)
+FetchContent_MakeAvailable(shine)
+set(SHINE_SOURCES
+    "${shine_SOURCE_DIR}/src/lib/bitstream.c" "${shine_SOURCE_DIR}/src/lib/huffman.c" "${shine_SOURCE_DIR}/src/lib/l3bitstream.c"
+    "${shine_SOURCE_DIR}/src/lib/l3loop.c" "${shine_SOURCE_DIR}/src/lib/l3mdct.c" "${shine_SOURCE_DIR}/src/lib/l3subband.c"
+    "${shine_SOURCE_DIR}/src/lib/layer3.c" "${shine_SOURCE_DIR}/src/lib/reservoir.c" "${shine_SOURCE_DIR}/src/lib/tables.c")
+
 juce_add_gui_app(UFODAW PRODUCT_NAME "UFODAW"
     BUNDLE_ID "io.github.thulehunter.ufodaw"
     MICROPHONE_PERMISSION_ENABLED TRUE
@@ -45,9 +57,14 @@ target_sources(UFODAW PRIVATE
     Source/PianoRoll.cpp
     Source/Stretch.cpp
     Source/Sampler.cpp
+    Source/AudioExport.cpp
+    ${SHINE_SOURCES}
     Source/MainComponent.cpp
     "${rubberband_SOURCE_DIR}/single/RubberBandSingle.cpp")
-target_include_directories(UFODAW PRIVATE "${rubberband_SOURCE_DIR}")
+target_include_directories(UFODAW PRIVATE "${rubberband_SOURCE_DIR}" "${shine_SOURCE_DIR}/src/lib")
+if(MSVC)   # (the C sources of Shine use GCC's __attribute__: a forced include takes it away)
+    set_source_files_properties(${SHINE_SOURCES} PROPERTIES COMPILE_FLAGS "/FI\"${CMAKE_SOURCE_DIR}/Source/ShineCompat.h\"")
+endif()
 # (Windows' min/max macros would break std::numeric_limits<...>::max() in Rubber Band)
 set_source_files_properties("${rubberband_SOURCE_DIR}/single/RubberBandSingle.cpp" PROPERTIES COMPILE_DEFINITIONS "NOMINMAX")
 

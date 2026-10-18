@@ -3185,11 +3185,13 @@ bool Engine::renderToFile (const juce::File& file, double seconds, const RenderO
     if (stream == nullptr)
         return false;
 
-    juce::WavAudioFormat wav;
-    std::unique_ptr<juce::AudioFormatWriter> writer (wav.createWriterFor (stream.get(), sampleRate, 2, options.bits, {}, 0));
+    const auto& list = AudioExport::choices();
+    const AudioExport::Choice choice = juce::isPositiveAndBelow (options.formatChoice, (int) list.size())
+                                           ? list[(size_t) options.formatChoice]
+                                           : AudioExport::Choice { "WAV", AudioExport::Format::Wav, options.bits, 0 };
+    std::unique_ptr<juce::AudioFormatWriter> writer = AudioExport::createWriter (stream, choice, sampleRate, 2);
     if (writer == nullptr)
-        return false;
-    stream.release(); // the writer owns the stream now
+        return false;   // (the stream goes away with `stream`)
 
     struct Offline   // marks the engine as busy for the whole render, whatever way it ends
     {
