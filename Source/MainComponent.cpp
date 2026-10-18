@@ -652,13 +652,15 @@ public:
         });
 
         // clips
+        if (track.audioCompView)
+            paintAudioComp (g, pps);
         const auto clips = main.getEngine().getClips (track);
         for (auto it = cache.begin(); it != cache.end();)
             it = std::any_of (clips.begin(), clips.end(), [&] (auto& c) { return c.id == it->first; }) ? std::next (it) : cache.erase (it);
 
         for (auto& c : clips)
         {
-            if (! c.audible())
+            if (track.audioCompView || ! c.audible())   // (the comp view draws the takes itself)
                 continue;
             const auto r = clipRect (c, pps);
             if (! r.intersects (area))
@@ -828,6 +830,11 @@ public:
     void mouseDown (const juce::MouseEvent& e) override
     {
         main.grabKeyboardFocus();
+        if (track.audioCompView)
+        {
+            audioCompMouseDown (e);
+            return;
+        }
         if (track.autoEditId.isNotEmpty())
         {
             autoMouseDown (e);
@@ -1002,6 +1009,11 @@ public:
 
     void mouseDrag (const juce::MouseEvent& e) override
     {
+        if (track.audioCompView)
+        {
+            audioCompMouseDrag (e);
+            return;
+        }
         if (track.autoEditId.isNotEmpty())
         {
             autoMouseDrag (e);
@@ -1174,7 +1186,10 @@ public:
         dragId = -1;
         autoDrag = -1;
         rangeDragging = false;
-        compMouseUp();
+        if (track.audioCompView)
+            audioCompMouseUp();
+        else
+            compMouseUp();
     }
 
     void mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& w) override
@@ -1463,6 +1478,133 @@ private:
             main.beginEdit();
             main.getEngine().useAutomationTake (track, track.autoEditId, data.takes[(size_t) compRow].id, a, b);
             main.clipsChanged();
+        }
+        repaint();
+    }
+
+    // ---- comp view of a loop recording's takes: a row per take; swipe across a row to play that take there
+
+    int audioCompRows() const
+    {
+        int rows = 0;
+        for (auto& c : main.getEngine().getClips (track))
+            if (c.takeGroup != 0 && c.end() > track.compFrom - 0.01 && c.start < track.compTo + 0.01)
+                rows = juce::jmax (rows, c.takeIndex);
+        return rows;
+    }
+
+    juce::Rectangle<int> audioCompRowRect (int takeIndex, int rows) const
+    {
+        const int rowH = rows > 0 ? (getHeight() - 6) / rows : 0;
+        return { 0, 3 + (takeIndex - 1) * rowH, getWidth(), rowH };
+    }
+
+    void paintAudioComp (juce::Graphics& g, double pps)
+    {
+        const auto clips = main.getEngine().getClips (track);
+        const int rows = audioCompRows();
+        for (int k = 1; k <= rows; ++k)
+        {
+            const auto row = audioCompRowRect (k, rows);
+            g.setColour (Theme::background.withAlpha (k % 2 == 0 ? 0.35f : 0.2f));
+            g.fillRect (row);
+            const auto colour = takeColour (k - 1);
+
+            for (auto& c : clips)
+            {
+                if (c.takeGroup == 0 || c.takeIndex != k || c.end() < track.compFrom - 0.01 || c.start > track.compTo + 0.01)
+                    continue;
+                const juce::Rectangle<int> r ((int) std::round (c.start * pps), row.getY() + 1, juce::jmax (2, (int) std::round (c.length * pps)), row.getHeight() - 2);
+                g.setColour (c.takeActive ? colour.withAlpha (0.85f) : Theme::audioClip.withAlpha (0.3f));
+                g.fillRoundedRectangle (r.toFloat(), 3.0f);
+
+                const auto& peaks = peaksFor (c, pps);
+                const float mid = (float) r.getCentreY(), half = (float) r.getHeight() * 0.5f - 2.0f;
+                g.setColour (c.takeActive ? Theme::background.withAlpha (0.8f) : Theme::audioWave.withAlpha (0.55f));
+                for (int x = juce::jmax (r.getX(), g.getClipBounds().getX()); x < juce::jmin (r.getRight(), g.getClipBounds().getRight()); ++x)
+                {
+                    const int idx = c.reverse ? r.getWidth() - 1 - (x - r.getX()) : x - r.getX();
+                    if (idx >= 0 && idx < (int) peaks.size())
+                    {
+                        const float p = juce::jmin (1.0f, peaks[(size_t) idx] * c.gain);
+                        g.drawVerticalLine (x, mid - p * half, mid + p * half);
+                    }
+                }
+                if (c.takeActive)
+                {
+                    g.setColour (colour);
+                    g.drawRoundedRectangle (r.toFloat(), 3.0f, 1.5f);
+                }
+            }
+
+            g.setColour (colour);
+            g.setFont (juce::FontOptions (11.0f, juce::Font::bold));
+            g.drawText ("Take " + juce::String (k), (int) (track.compFrom * pps) + 6, row.getY() + 2, 70, 13, juce::Justification::left);
+            g.setColour (Theme::gridLineStrong);
+            g.drawHorizontalLine (row.getBottom() - 1, 0.0f, (float) getWidth());
+
+            if (compDragging && compRow == k && compA != compB)   // the swipe in progress
+            {
+                g.setColour (Theme::text.withAlpha (0.3f));
+                g.fillRect (juce::Rectangle<float> ((float) (juce::jmin (compA, compB) * pps), (float) row.getY(),
+                                                    (float) (std::abs (compB - compA) * pps), (float) row.getHeight()));
+            }
+        }
+        g.setColour (Theme::textDim);
+        g.setFont (11.0f);
+        g.drawText ("Comp: swipe across a take to play it there. Right-click to leave.", 8, getHeight() - 15, 420, 13, juce::Justification::left);
+    }
+
+    void audioCompMouseDown (const juce::MouseEvent& e)
+    {
+        if (e.mods.isPopupMenu())
+        {
+            juce::PopupMenu m;
+            m.addItem (1, "Leave comp view");
+            m.showMenuAsync ({}, [this] (int r)
+            {
+                if (r == 1)
+                {
+                    track.audioCompView = false;
+                    main.clipsChanged();
+                    repaint();
+                }
+            });
+            return;
+        }
+        const int rows = audioCompRows();
+        compRow = -2;
+        for (int k = 1; k <= rows; ++k)
+            if (audioCompRowRect (k, rows).contains (juce::Point<int> (1, e.y)))
+                compRow = k;
+        if (compRow < 0)
+            return;
+        compDragging = true;
+        compA = compB = autoTime (e);
+        repaint();
+    }
+
+    void audioCompMouseDrag (const juce::MouseEvent& e)
+    {
+        if (! compDragging)
+            return;
+        compB = autoTime (e);
+        repaint();
+    }
+
+    void audioCompMouseUp()
+    {
+        if (! compDragging)
+            return;
+        compDragging = false;
+        const double a = juce::jmin (compA, compB), b = juce::jmax (compA, compB);
+        if (b - a > 0.02 && compRow >= 1)
+        {
+            main.beginEdit();
+            if (main.getEngine().compTakes (track, compRow, a, b))
+                main.clipsChanged();
+            else
+                main.cancelEdit();
         }
         repaint();
     }
@@ -3829,6 +3971,7 @@ void MainComponent::showClipMenu (Track& track, int clipId, double at, juce::Com
         for (size_t i = 0; i < takes.size(); ++i)
             takeMenu.addItem (100 + (int) i, "Take " + juce::String (takes[i].takeIndex), true, takes[i].takeActive);
         m.addSubMenu ("Choose take", takeMenu);
+        m.addItem (30, "Comp takes (swipe over a take to play it there)");
         m.addItem (7, "Keep this take, drop the others");
         m.addItem (8, "Delete only this take");
     }
@@ -3884,6 +4027,22 @@ void MainComponent::showClipMenu (Track& track, int clipId, double at, juce::Com
             case 5: self.duplicateSelected(); break;
             case 6: self.deleteSelected(); break;
             case 9: self.openQuantize (*tr, clipId); break;
+            case 30:
+            {
+                double spanFrom = 1.0e12, spanTo = 0.0;   // the stretch the takes of this group cover
+                for (auto& tk : takes)
+                {
+                    spanFrom = juce::jmin (spanFrom, tk.start);
+                    spanTo = juce::jmax (spanTo, tk.end());
+                }
+                tr->audioCompView = true;
+                tr->compFrom = spanFrom;
+                tr->compTo = spanTo;
+                self.clipsChanged();
+                for (auto* lane : self.lanes)
+                    lane->repaint();
+                break;
+            }
             case 10:
             {
                 Clip c;

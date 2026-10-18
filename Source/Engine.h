@@ -258,6 +258,8 @@ struct Track
     std::atomic<float> effGain { 0.8f }, effPan { 0.0f }; // what the mixer last used (differs from gain/pan when automated)
     juce::String autoEditId;                              // UI only: id of the envelope the lane is editing ("" = none)
     bool autoCompView = false;                            // UI only: the lane shows every take in its own row (swipe to comp)
+    bool audioCompView = false;                           // UI only: the lane shows the takes of a loop recording in rows (swipe to comp)
+    double compFrom = 0.0, compTo = 0.0;                  // ...and the stretch of the timeline they cover
 
     // Buses and sends. A bus track has no clips of its own: it mixes what other tracks send or route to it, runs that through its
     // own effects, inserts, fader and pan, and plays it into the master (a group channel / effect return).
@@ -392,6 +394,7 @@ public:
     bool deleteTake (Track&, int clipId);                          // removes only this take
     bool flattenTakes (Track&, int clipId);                        // keeps this take as an ordinary clip, drops the others
     void setClipTake (Track&, int clipId, int group, int index, bool active);   // project loading
+    bool compTakes (Track&, int takeIndex, double from, double to);   // swipe comping: take number `takeIndex` plays between the two times (the takes are split there)
 
     // ---- Message thread: MIDI clips
     int addMidiClip (Track&, double startSeconds, double lengthSeconds);

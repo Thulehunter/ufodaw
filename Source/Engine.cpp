@@ -3569,3 +3569,56 @@ void Engine::automationRecordTick()
         r.haveLast = true;
     }
 }
+
+// Swipe comping of a loop recording: from `a` to `b` the take with this number plays. Every take group that spans a cut is split
+// there (splitClip does the whole group), then in every stretch inside the range that take is made the active one. The joins get
+// a short fade on both sides so the cut does not click.
+bool Engine::compTakes (Track& t, int takeIndex, double a, double b)
+{
+    constexpr double eps = 0.002, fade = 0.01;
+    if (b - a < 0.02)
+        return false;
+    const juce::ScopedLock sl (lock);
+
+    auto cutAt = [&] (double at)
+    {
+        std::vector<int> toSplit;
+        std::vector<int> groupsSeen;
+        for (auto& c : t.clips)
+            if (c.takeGroup != 0 && c.start < at - eps && c.end() > at + eps
+                && std::find (groupsSeen.begin(), groupsSeen.end(), c.takeGroup) == groupsSeen.end())
+            {
+                groupsSeen.push_back (c.takeGroup);
+                toSplit.push_back (c.id);
+            }
+        for (int id : toSplit)
+            splitClip (t, id, at);
+    };
+    cutAt (a);
+    cutAt (b);
+
+    bool changed = false;
+    std::vector<int> groupsDone;
+    for (auto& c : t.clips)
+        if (c.takeGroup != 0 && c.takeIndex == takeIndex && c.start >= a - eps && c.end() <= b + eps
+            && std::find (groupsDone.begin(), groupsDone.end(), c.takeGroup) == groupsDone.end())
+        {
+            groupsDone.push_back (c.takeGroup);
+            const int group = c.takeGroup, chosen = c.id;
+            for (auto& other : t.clips)
+                if (other.takeGroup == group)
+                    other.takeActive = other.id == chosen;
+            changed = true;
+        }
+
+    if (changed)   // short fades at the two joins, on the clips that play there
+        for (auto& c : t.clips)
+            if (c.audible())
+            {
+                if (std::abs (c.end() - a) < eps)   c.fadeOut = juce::jmax (c.fadeOut, juce::jmin (fade, c.length));
+                if (std::abs (c.start - b) < eps)   c.fadeIn = juce::jmax (c.fadeIn, juce::jmin (fade, c.length));
+                if (std::abs (c.start - a) < eps && c.takeGroup != 0)   c.fadeIn = juce::jmax (c.fadeIn, juce::jmin (fade, c.length));
+                if (std::abs (c.end() - b) < eps && c.takeGroup != 0)   c.fadeOut = juce::jmax (c.fadeOut, juce::jmin (fade, c.length));
+            }
+    return changed;
+}
