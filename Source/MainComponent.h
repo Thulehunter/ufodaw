@@ -274,6 +274,11 @@ public:
     static constexpr int subLaneHeight = 46;
     void showSubLaneMenu (Track&, int sub);              // right-click on a sub-track: rename, pitch, remove
     void applySubLaneChoice (Track&, int choice);       // 1 show / hide, 2 from the notes, 3 drum preset, 4 add one, 5 remove all
+    void toggleSubLanes (Track&);                       // the + / - button of a track header
+private:
+    void autoSubLanes();                                // a drum plugin as the instrument: its sub-tracks appear by themselves
+    int subAutoTicks = 0;
+public:
     void syncSubLaneUI();                                // builds / removes the sub-track rows to match the tracks
 private:
     void rebuildTrackUI();                                 // headers and lanes again, in the engine's order

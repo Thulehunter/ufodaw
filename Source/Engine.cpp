@@ -1693,6 +1693,7 @@ TrackState Engine::captureTrack (const Track& t) const
     TrackState ts;
     ts.subLanes = t.subLanes;
     ts.subLanesOpen = t.subLanesOpen;
+    ts.subAutoDone = t.subAutoDone;
     if (t.sampler != nullptr)
     {
         ts.hasSampler = true;
@@ -1746,6 +1747,7 @@ void Engine::applyTrackState (Track& t, const TrackState& ts)
     t.name = ts.name;
     t.subLanes = ts.subLanes;
     t.subLanesOpen = ts.subLanesOpen;
+    t.subAutoDone = ts.subAutoDone;
     updateSubLaneMask (t);
     t.bus = ts.bus;
     t.clips = ts.clips;

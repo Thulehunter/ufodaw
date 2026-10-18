@@ -51,11 +51,12 @@ public:
                  std::function<void (Track&, juce::Component&)> onOpenInput,
                  std::function<void (Track&, juce::Component&)> onOpenRouting,
                  std::function<void (Track&)> onContextMenu,
+                 std::function<void (Track&)> onToggleSubLanes,
                  bool masterStrip = false)
         : track (t), remove (std::move (onRemove)), beginEdit (std::move (onBeginEdit)), openPlugins (std::move (onOpenPlugins)),
           openAutomation (std::move (onOpenAutomation)), position (std::move (onPosition)), openEditor (std::move (onOpenEditor)),
           toggleArm (std::move (onToggleArm)), openInput (std::move (onOpenInput)), openRouting (std::move (onOpenRouting)),
-          contextMenu (std::move (onContextMenu)), isMaster (masterStrip)
+          contextMenu (std::move (onContextMenu)), toggleSubLanes (std::move (onToggleSubLanes)), isMaster (masterStrip)
     {
         const bool audioTrack = track.type == Track::Type::Audio && ! track.bus;   // (a bus has no input to record)
 
@@ -161,6 +162,10 @@ public:
         soloButton.onClick = [this] { beginEdit(); track.solo = soloButton.getToggleState(); };
         addAndMakeVisible (soloButton);
 
+        subToggle.setTooltip ("Show or hide the sub-tracks of this track (a lane per pitch)");
+        subToggle.setWantsKeyboardFocus (false);
+        subToggle.onClick = [this] { if (toggleSubLanes) toggleSubLanes (track); };
+        addChildComponent (subToggle);
         deleteButton.onClick = [this] { remove (&track); };
         addAndMakeVisible (deleteButton);
 
@@ -300,6 +305,11 @@ public:
         vstButton.setBounds (top.removeFromRight (38));
         top.removeFromRight (4);
         autoButton.setBounds (top.removeFromRight (26));
+        if (subToggle.isVisible())   // the + / - of a track that has sub-tracks
+        {
+            top.removeFromRight (4);
+            subToggle.setBounds (top.removeFromRight (24));
+        }
         if (armButton.isVisible())
         {
             armButton.setBounds (top.removeFromLeft (22));
@@ -334,6 +344,15 @@ public:
 
     void tick()
     {
+        const bool wantSubToggle = ! isMaster && track.type == Track::Type::Midi && ! track.subLanes.empty();
+        if (wantSubToggle != subToggleShown)
+        {
+            subToggleShown = wantSubToggle;
+            subToggle.setVisible (wantSubToggle);
+            resized();
+        }
+        if (wantSubToggle && subToggle.getButtonText() != (track.subLanesOpen ? "-" : "+"))
+            subToggle.setButtonText (track.subLanesOpen ? "-" : "+");
         if (! isMaster && ! nameLabel.isBeingEdited() && nameLabel.getText() != track.name)   // (renamed somewhere else, e.g. in the mixer)
             nameLabel.setText (track.name, juce::dontSendNotification);
         const bool armedAudio = track.type == Track::Type::Audio && ! track.bus && track.recordArmed;
@@ -491,6 +510,9 @@ private:
     std::function<void (Track&, juce::Component&)> openInput;
     std::function<void (Track&, juce::Component&)> openRouting;
     std::function<void (Track&)> contextMenu;   // right-click on the header: rename, duplicate, delete, move...
+    std::function<void (Track&)> toggleSubLanes;   // the + / - button: show or hide the sub-tracks
+    juce::TextButton subToggle { "+" };
+    bool subToggleShown = false;
     juce::TextButton rowButton, monitorButton { "Mon" }, routeButton, monoButton { "Mono" };
     juce::String rowShown, routeShown;
     bool monitorShown = false;
@@ -4099,6 +4121,7 @@ std::unique_ptr<TrackHeader> MainComponent::makeHeader (Track& t, bool master)
        [this] (Track& tr, juce::Component& anchor) { openInputMenu (tr, anchor); },
        [this] (Track& tr, juce::Component& anchor) { openRouting (tr, anchor); },
        [this] (Track& tr) { showTrackMenu (tr); },
+       [this] (Track& tr) { toggleSubLanes (tr); },
        master);
 }
 
@@ -4830,6 +4853,8 @@ bool MainComponent::keyPressed (const juce::KeyPress& k)
 
 void MainComponent::timerCallback()
 {
+    if (++subAutoTicks % 20 == 0)
+        autoSubLanes();   // about once a second: a drum plugin may just have been loaded
     {
         const int takesBefore = engine.recordedTakeCounter;
         engine.automationRecordTick();   // rides of armed automation lanes become takes
@@ -5710,6 +5735,8 @@ void MainComponent::saveProject (const juce::File& file, SaveKind kind)
                 midiList.add (juce::var (mo));
             }
             o->setProperty ("midiClips", midiList);
+            if (t->subAutoDone)
+                o->setProperty ("subAuto", true);   // (the instrument was looked at: not again)
             if (! t->subLanes.empty())   // the sub-tracks (a lane per pitch) and whether they are shown
             {
                 juce::Array<juce::var> lanesList;
@@ -6481,6 +6508,8 @@ void MainComponent::loadProject (const juce::File& file)
             t->synth.release = (float) (double) s.getProperty ("release", 0.25);
             t->synth.cutoff = (float) (double) s.getProperty ("cutoff", 8000.0);
 
+            if ((bool) item.getProperty ("subAuto", false))
+                t->subAutoDone = true;
             if (auto* lanesArray = item["subLanes"].getArray())   // the sub-tracks
             {
                 std::vector<SubLane> loaded;
@@ -6495,6 +6524,7 @@ void MainComponent::loadProject (const juce::File& file)
                     loaded.push_back (sl);
                 }
                 engine.setSubLanes (*t, std::move (loaded), (bool) item.getProperty ("subLanesOpen", true));
+                t->subAutoDone = true;
             }
 
             if (auto* midiArray = item["midiClips"].getArray())
@@ -7146,3 +7176,41 @@ void MainComponent::applySubLaneChoice (Track& t, int choice)
     clipsChanged();
 }
 
+
+// The + / - button of a track header: show or hide its sub-tracks.
+void MainComponent::toggleSubLanes (Track& t)
+{
+    if (t.subLanes.empty() || engine.indexOfTrack (&t) < 0)
+        return;
+    beginEdit();
+    engine.setSubLanes (t, t.subLanes, ! t.subLanesOpen);
+    clipsChanged();
+}
+
+// A MIDI track whose instrument is a drum plugin (EZdrummer, Superior Drummer, Addictive Drums, BFD...) gets the drum sub-tracks by itself,
+// once: kick, snare, hats... shown under the track, a lane per sound. (Each track is looked at once; remove them and they stay away.)
+void MainComponent::autoSubLanes()
+{
+    for (int i = 0; i < engine.getNumTracks(); ++i)
+    {
+        auto* t = engine.getTrack (i);
+        if (t == nullptr || t->type != Track::Type::Midi || t->subAutoDone || t->instrument == nullptr)
+            continue;
+        t->subAutoDone = true;
+        if (! t->subLanes.empty())
+            continue;
+
+        const auto text = (t->instrument->description.name + " " + t->instrument->description.manufacturerName).toLowerCase();
+        const bool isDrumPlugin = text.contains ("drummer") || text.contains ("drums") || text.contains ("drum kit") || text.contains ("drumkit")
+                                  || text.contains ("bfd") || text.contains ("drum");
+        if (! isDrumPlugin)
+            continue;
+
+        std::vector<SubLane> lanes;
+        for (auto& d : gmDrumLanes)
+            lanes.push_back ({ d.name, d.pitch, d.pitch, false, false });
+        beginEdit();   // (one undo step takes them away again)
+        engine.setSubLanes (*t, std::move (lanes), true);
+        clipsChanged();
+    }
+}

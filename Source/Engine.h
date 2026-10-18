@@ -219,6 +219,7 @@ struct Track
     std::vector<MidiClip> midiClips;    // MIDI tracks, guarded by Engine::lock
     std::vector<SubLane> subLanes;      // MIDI tracks: sub-tracks by pitch (message thread; changed under Engine::lock)
     bool subLanesOpen = false;          // UI: the sub-tracks are shown under the track
+    bool subAutoDone = false;           // the program already looked at this track's instrument (a drum plugin gets its sub-tracks once, by itself)
     std::atomic<std::uint64_t> audibleLo { ~0ull }, audibleHi { ~0ull };   // bit p set = notes of pitch p play (sub-track mute / solo)
     bool pitchAudible (int p) const { return p < 0 || p > 127 || (((p < 64 ? audibleLo.load() : audibleHi.load()) >> (p & 63)) & 1ull) != 0; }
 
@@ -301,6 +302,7 @@ struct TrackState
     std::vector<MidiClip> midiClips;
     std::vector<SubLane> subLanes;
     bool subLanesOpen = false;
+    bool subAutoDone = false;
     float gain = 0.8f, pan = 0.0f;
     bool mute = false, solo = false;
     int waveform = 0;
