@@ -158,7 +158,55 @@ void DrumKit::setupSampler (int pad)
 void DrumKit::prepare (double outputRate)
 {
     for (auto& p : pads)
+    {
         p.sampler.prepare (outputRate);
+        for (auto& l : p.layers)
+            l.sampler.prepare (outputRate);
+    }
+    outRate = outputRate;
+}
+
+void DrumKit::setLayer (int pad, int layer, std::shared_ptr<const juce::AudioBuffer<float>> buffer, double rate, const juce::File& file)
+{
+    if (! juce::isPositiveAndBelow (pad, numPads) || ! juce::isPositiveAndBelow (layer, maxLayers))
+        return;
+    auto& p = pads[(size_t) pad];
+    auto& l = p.layers[(size_t) layer];
+    if (! l.used.load())   // a new layer starts with the pad's own settings (envelope, filter, level...)
+    {
+        l.sampler.applyState (p.sampler.captureState());
+        l.sampler.prepare (outRate);
+    }
+    l.sample = buffer;
+    l.sampleRate = rate;
+    l.file = file;
+    l.sampler.setSample (std::move (buffer), rate, file, file.getFileNameWithoutExtension());
+    l.sampler.params.start = 0.0f;
+    l.sampler.params.end = 1.0f;
+    l.sampler.params.mode = Sampler::OneShot;
+    l.sampler.params.rootNote = p.note;
+    l.used = true;
+}
+
+void DrumKit::clearLayer (int pad, int layer)
+{
+    if (! juce::isPositiveAndBelow (pad, numPads) || ! juce::isPositiveAndBelow (layer, maxLayers))
+        return;
+    auto& l = pads[(size_t) pad].layers[(size_t) layer];
+    l.used = false;
+    l.sampler.reset();
+    l.sample = nullptr;
+    l.file = juce::File();
+    l.velLo = 0.0f;
+    l.velHi = 1.0f;
+}
+
+int DrumKit::layerCount (int pad) const
+{
+    int n = 0;
+    for (auto& l : pads[(size_t) pad].layers)
+        n += l.used.load() ? 1 : 0;
+    return n;
 }
 
 void DrumKit::setSample (int pad, std::shared_ptr<const juce::AudioBuffer<float>> buffer, double rate, const juce::File& file)
@@ -198,35 +246,68 @@ void DrumKit::noteOn (int note, float velocity)
     if (group > 0)
         for (int i = 0; i < numPads; ++i)
             if (i != pad && pads[(size_t) i].chokeGroup.load() == group)
-                pads[(size_t) i].sampler.choke();
+                chokePad (pads[(size_t) i]);
 
-    pads[(size_t) pad].sampler.noteOn (note, velocity);
+    // which of the pad's samples play: the ones whose velocity range holds this hit; when there are several, they take turns
+    auto& p = pads[(size_t) pad];
+    Sampler* matching[maxLayers + 1];
+    int n = 0;
+    if (velocity >= p.velLo.load() - 1.0e-4f && velocity <= p.velHi.load() + 1.0e-4f)
+        matching[n++] = &p.sampler;
+    for (auto& l : p.layers)
+        if (l.used.load() && l.sampler.hasSample() && velocity >= l.velLo.load() - 1.0e-4f && velocity <= l.velHi.load() + 1.0e-4f)
+            matching[n++] = &l.sampler;
+    if (n == 0)   // no range fits (the ranges leave a gap): the pad's own sample
+        matching[n++] = &p.sampler;
+
+    p.roundRobin = (p.roundRobin + 1) % 1000000;
+    matching[p.roundRobin % n]->noteOn (note, velocity);
 }
 
 void DrumKit::noteOff (int note)
 {
     const int pad = padForNote (note);
-    if (pad >= 0)
-        pads[(size_t) pad].sampler.noteOff (note);   // (one-shot pads ignore it; a pad set to Classic releases)
+    if (pad < 0)
+        return;
+    auto& p = pads[(size_t) pad];
+    p.sampler.noteOff (note);   // (one-shot pads ignore it; a pad set to Classic releases)
+    for (auto& l : p.layers)
+        l.sampler.noteOff (note);
+}
+
+void DrumKit::chokePad (Pad& p)
+{
+    p.sampler.choke();
+    for (auto& l : p.layers)
+        l.sampler.choke();
 }
 
 void DrumKit::stopAll()
 {
     for (auto& p : pads)
-        p.sampler.choke();
+        chokePad (p);
 }
 
 void DrumKit::reset()
 {
     for (auto& p : pads)
+    {
         p.sampler.reset();
+        for (auto& l : p.layers)
+            l.sampler.reset();
+    }
 }
 
 bool DrumKit::isActive() const
 {
     for (auto& p : pads)
+    {
         if (p.sampler.isActive())
             return true;
+        for (auto& l : p.layers)
+            if (l.sampler.isActive())
+                return true;
+    }
     return false;
 }
 
@@ -253,12 +334,18 @@ void DrumKit::render (float* outL, float* outR, int numSamples)
 
         for (auto& p : pads)
         {
-            if (! p.sampler.isActive())
+            bool padActive = p.sampler.isActive();
+            for (auto& l : p.layers)
+                padActive = padActive || l.sampler.isActive();
+            if (! padActive)
                 continue;
 
             std::fill (scratchL.begin(), scratchL.begin() + n, 0.0f);
             std::fill (scratchR.begin(), scratchR.begin() + n, 0.0f);
             p.sampler.render (scratchL.data(), scratchR.data(), n);   // (the pad keeps running when it is muted: unmuting is seamless)
+            for (auto& l : p.layers)
+                if (l.sampler.isActive())
+                    l.sampler.render (scratchL.data(), scratchR.data(), n);
 
             const bool audible = ! p.mute.load() && (! anySolo || p.solo.load());
             if (! audible)
@@ -299,6 +386,20 @@ std::vector<DrumKit::PadState> DrumKit::captureState() const
         s.sampleRate = p.sampleRate;
         s.file = p.file;
         s.sampler = p.sampler.captureState();
+        s.velLo = p.velLo;
+        s.velHi = p.velHi;
+        for (size_t i = 0; i < p.layers.size(); ++i)
+        {
+            auto& l = p.layers[i];
+            auto& ls = s.layers[i];
+            ls.used = l.used.load();
+            ls.velLo = l.velLo;
+            ls.velHi = l.velHi;
+            ls.sample = l.sample;
+            ls.sampleRate = l.sampleRate;
+            ls.file = l.file;
+            ls.sampler = l.sampler.captureState();
+        }
         out.push_back (std::move (s));
     }
     return out;
@@ -319,5 +420,21 @@ void DrumKit::applyState (const std::vector<PadState>& states)
         p.sampleRate = s.sampleRate;
         p.file = s.file;
         p.sampler.applyState (s.sampler);
+        p.velLo = s.velLo;
+        p.velHi = s.velHi;
+        for (size_t k = 0; k < p.layers.size(); ++k)
+        {
+            auto& l = p.layers[k];
+            const auto& ls = s.layers[k];
+            l.used = false;   // (silent while it is rewritten)
+            l.velLo = ls.velLo;
+            l.velHi = ls.velHi;
+            l.sample = ls.sample;
+            l.sampleRate = ls.sampleRate;
+            l.file = ls.file;
+            l.sampler.applyState (ls.sampler);
+            l.sampler.prepare (outRate);
+            l.used = ls.used;
+        }
     }
 }

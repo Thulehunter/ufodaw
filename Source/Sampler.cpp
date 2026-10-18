@@ -76,13 +76,24 @@ void Sampler::start (int note, float velocity)
 
     if (mode == Slice)
     {
-        const int count = juce::jlimit (1, 64, params.slices.load());
+        const int marked = params.markCount.load();
+        const int count = marked > 0 ? marked : juce::jlimit (1, 64, params.slices.load());
         const int index = note - params.sliceNote.load();
         if (index < 0 || index >= count)
             return;
-        const double length = (to - from) / (double) count;
-        regionStart = from + length * (double) index;
-        regionEnd = regionStart + length;
+        if (marked > 0)   // slices that follow the hits
+        {
+            regionStart = juce::jlimit (from, to, (double) params.marks[index].load() * (double) total);
+            regionEnd = index + 1 < marked ? juce::jlimit (from, to, (double) params.marks[index + 1].load() * (double) total) : to;
+            if (regionEnd - regionStart < 2.0)
+                return;
+        }
+        else
+        {
+            const double length = (to - from) / (double) count;
+            regionStart = from + length * (double) index;
+            regionEnd = regionStart + length;
+        }
     }
     else
     {
@@ -216,9 +227,45 @@ void Sampler::choke()
         }
 }
 
+void Sampler::setMarks (const std::vector<float>& starts)
+{
+    const int n = juce::jmin ((int) starts.size(), Params::maxMarks);
+    params.markCount = 0;   // (the audio thread sees either the old list or none while it is rewritten)
+    for (int i = 0; i < n; ++i)
+        params.marks[i].store (starts[(size_t) i]);
+    params.markCount = n;
+    if (n > 0)
+        params.slices = n;
+}
+
+std::vector<std::pair<double, double>> Sampler::sliceTimes() const
+{
+    std::vector<std::pair<double, double>> out;
+    if (sample == nullptr || sampleRate <= 0.0)
+        return out;
+    const double total = (double) sample->getNumSamples();
+    const double from = juce::jmin (params.start.load(), params.end.load()) * total, to = juce::jmax (params.start.load(), params.end.load()) * total;
+    const int marked = params.markCount.load();
+    const int count = marked > 0 ? marked : juce::jlimit (1, 64, params.slices.load());
+    std::vector<double> starts;
+    for (int i = 0; i < count; ++i)
+        starts.push_back (marked > 0 ? juce::jlimit (from, to, (double) params.marks[i].load() * total) : from + (to - from) * i / count);
+    for (int i = 0; i < count; ++i)
+    {
+        const double end = i + 1 < count ? starts[(size_t) i + 1] : to;
+        if (end - starts[(size_t) i] >= 2.0)
+            out.push_back ({ (starts[(size_t) i] - starts.front()) / sampleRate, (end - starts[(size_t) i]) / sampleRate });
+        else
+            out.push_back ({ (starts[(size_t) i] - starts.front()) / sampleRate, 0.0 });
+    }
+    return out;
+}
+
 Sampler::State Sampler::captureState() const
 {
     State s;
+    for (int i = 0, n = params.markCount.load(); i < n; ++i)
+        s.marks.push_back (params.marks[i].load());
     s.mode = params.mode;            s.rootNote = params.rootNote;      s.slices = params.slices;       s.sliceNote = params.sliceNote;
     s.tuneCents = params.tuneCents;  s.start = params.start;            s.end = params.end;
     s.loopStart = params.loopStart;  s.loopEnd = params.loopEnd;        s.loop = params.loop;           s.reverse = params.reverse;
@@ -241,6 +288,11 @@ void Sampler::applyState (const State& s)
     params.loopStart = s.loopStart;  params.loopEnd = s.loopEnd;        params.loop = s.loop;           params.reverse = s.reverse;
     params.attack = s.attack;        params.decay = s.decay;            params.sustain = s.sustain;     params.release = s.release;
     params.cutoff = s.cutoff;        params.volume = s.volume;          params.velocitySens = s.velocitySens;
+    {
+        const int slicesBefore = s.slices;
+        setMarks (s.marks);
+        params.slices = slicesBefore;
+    }
     sample = s.sample;
     original = s.original;
     sampleRate = s.sampleRate;

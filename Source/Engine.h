@@ -49,10 +49,19 @@ enum class AutoRecMode { Touch, Latch, Write };
 // The envelope with the takes comped into it (what the audio thread follows).
 std::vector<AutoPoint> flattenAutomation (const AutoData&);
 
+// A warp marker: this moment of the original audio (src, seconds from the start of the processed region) plays at `dest` (seconds from the
+// start of the warped clip). Between two markers the audio is time-stretched so that it fits; the audio before the first marker is stretched
+// to reach it, and after the last one plays at its own speed.
+struct WarpMarker
+{
+    double src = 0.0, dest = 0.0;
+};
+
 // A piece of audio placed on the timeline. The sample data is immutable and shared, so
 // splitting and duplicating clips is free; only start/offset/length differ.
 struct Clip
 {
+    std::vector<WarpMarker> warps;   // sorted; when there are any, the clip's audio is the warped one (see Engine::warpClip)
     int id = 0;
     std::shared_ptr<const juce::AudioBuffer<float>> audio;
     double fileRate = 44100.0;
@@ -215,6 +224,7 @@ struct Track
     enum class Type { Audio, Midi };
 
     juce::String name;
+    juce::uint32 colour = 0;            // the colour of the track in the headers, mixer and clips (ARGB); 0 = the colour of its type
     Type type = Type::Audio;
     std::vector<Clip> clips;            // audio tracks, guarded by Engine::lock
     std::vector<MidiClip> midiClips;    // MIDI tracks, guarded by Engine::lock
@@ -303,6 +313,7 @@ struct Track
 struct TrackState
 {
     juce::String name;
+    juce::uint32 colour = 0;
     Track::Type type = Track::Type::Audio;
     std::vector<Clip> clips;
     std::vector<MidiClip> midiClips;
@@ -345,8 +356,19 @@ struct TrackState
     std::vector<std::shared_ptr<PluginSlot>> inserts;       // so undo restores which ones are present, not their settings
 };
 
+// A named part of the arrangement (verse, chorus...): from a bar, for a number of bars. Shown as a band on the ruler; sections can be looped,
+// copied and swapped with their neighbour (the clips of the section go with it).
+struct ArrSection
+{
+    std::string name;
+    int startBar = 0;          // 0-based
+    int bars = 4;
+    juce::uint32 colour = 0;   // 0 = by position
+};
+
 struct ProjectState
 {
+    std::vector<ArrSection> sections;
     std::vector<TrackState> tracks;
     TempoMap tempo;
     TrackState master;   // the master channel: volume, effects, plugins, automation
@@ -398,6 +420,8 @@ public:
     // The result of a stretch made in the background (Stretch::process on `original`); false if another sample was loaded meanwhile
     bool applySamplerStretch (Sampler&, std::shared_ptr<const juce::AudioBuffer<float>> original, std::shared_ptr<const juce::AudioBuffer<float>> result, double timeRatio);
     void resetDrumPad (Track&, int pad);
+    bool loadDrumLayer (Track&, int pad, int layer, const juce::File&);   // an extra sample of a pad (velocity layer / round-robin), layer 0..2
+    void clearDrumLayer (Track&, int pad, int layer);
 
     // ---- Message thread: audio clips (all return -1 / false when nothing was done)
     int addClipFromFile (Track&, const juce::File&, double startSeconds);   // new clip id
@@ -417,7 +441,14 @@ public:
     using ProgressFn = std::function<bool (double)>;
     bool processClip (Track&, int clipId, double stretch, double semitones, const ProgressFn& progress);
     // Loading a project: processes the saved region of the clip's (just loaded, unprocessed) audio; the caller then sets offset and length.
-    bool restoreProcessedClip (Track&, int clipId, double stretch, double semitones, double sourceStart, double sourceLength, const ProgressFn& progress);
+    bool restoreProcessedClip (Track&, int clipId, double stretch, double semitones, double sourceStart, double sourceLength, const ProgressFn& progress,
+                               const std::vector<WarpMarker>& warps = {});
+    // Warps the clip: every marker pins a moment of the original audio to a place in the clip, the audio in between is time-stretched
+    // (pitch kept). No markers put the original back. Like processClip this works on the clip's current region (or the region that was
+    // processed before) of the original audio, and `progress` can cancel.
+    bool warpClip (Track&, int clipId, std::vector<WarpMarker> markers, const ProgressFn& progress);
+    // The original audio of a clip with the region that is warped / processed now: (audio, region start, region length in seconds)
+    bool getWarpSource (const Track&, int clipId, std::shared_ptr<const juce::AudioBuffer<float>>& audio, double& regionStart, double& regionLength) const;
 
     // Fades, crossfades and reverse of audio clips.
     bool setClipFades (Track&, int clipId, double fadeIn, double fadeOut);   // clamped to the clip's length
@@ -441,6 +472,13 @@ public:
     bool setMidiNotes (Track&, int clipId, std::vector<Note> notes);
     bool setMidiCcs (Track&, int clipId, std::vector<CcEvent> ccs);   // sorted by time on the way in
     bool setMidiClipLength (Track&, int clipId, double lengthSeconds);
+
+    // ---- Message thread: the arrangement (sections, see ArrSection) and the editing of whole stretches of the timeline
+    const std::vector<ArrSection>& getSections() const { return arrangement; }
+    void setSections (std::vector<ArrSection> s) { arrangement = std::move (s); }
+    void shiftClipsFrom (double fromSeconds, double deltaSeconds);                   // every clip that starts at or after `from` moves by `delta`
+    int copyRange (double fromSeconds, double toSeconds, double destSeconds);        // copies what plays in [from, to) of every track to `dest`; the number of clips made
+    void swapRanges (double aFrom, double aTo, double bFrom, double bTo);            // adjacent stretches (a then b) change places, with their clips
 
     // ---- Message thread: editing that works on audio and MIDI clips alike
     bool moveClip (Track&, int clipId, double newStart);
@@ -751,6 +789,7 @@ private:
     std::atomic<juce::int64> recFirstSample { -1 };
     int nextTakeGroup = 1;
 
+    std::vector<ArrSection> arrangement;
     std::array<float, tunerRingSize> tunerRing {};
     std::atomic<int> tunerChannel { -1 };
     std::atomic<juce::int64> tunerWritePos { 0 };

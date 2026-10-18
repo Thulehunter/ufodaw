@@ -480,6 +480,33 @@ bool Engine::loadDrumSample (Track& t, int pad, const juce::File& file)
     return true;
 }
 
+bool Engine::loadDrumLayer (Track& t, int pad, int layer, const juce::File& file)
+{
+    if (t.kit == nullptr || ! juce::isPositiveAndBelow (pad, DrumKit::numPads) || ! juce::isPositiveAndBelow (layer, DrumKit::maxLayers))
+        return false;
+
+    std::unique_ptr<juce::AudioFormatReader> reader (formats.createReaderFor (file));
+    if (reader == nullptr || reader->lengthInSamples <= 0)
+        return false;
+
+    const int numChannels = (int) juce::jmin<juce::uint32> (reader->numChannels, 2);
+    const int length = (int) juce::jmin<juce::int64> (reader->lengthInSamples, (juce::int64) (reader->sampleRate * 30.0));
+    auto buffer = std::make_shared<juce::AudioBuffer<float>> (numChannels, length);
+    reader->read (buffer.get(), 0, length, 0, true, true);
+
+    const juce::ScopedLock sl (lock);
+    t.kit->setLayer (pad, layer, std::move (buffer), reader->sampleRate, file);
+    return true;
+}
+
+void Engine::clearDrumLayer (Track& t, int pad, int layer)
+{
+    if (t.kit == nullptr)
+        return;
+    const juce::ScopedLock sl (lock);
+    t.kit->clearLayer (pad, layer);
+}
+
 void Engine::resetDrumPad (Track& t, int pad)
 {
     if (t.kit == nullptr || ! juce::isPositiveAndBelow (pad, DrumKit::numPads))
@@ -781,6 +808,140 @@ std::shared_ptr<juce::AudioBuffer<float>> Engine::processedAudio (const Clip& c,
     return result;
 }
 
+// The warped audio of a region of `src`: a piece per pair of markers, each time-stretched to the length between them (pitch kept), laid end
+// to end. `markers` are sorted, with src inside the region and dest increasing. The first and the last piece end at the region's edges: the
+// audio after the last marker plays at its own speed. `total` gets the length (seconds) of the result.
+static std::shared_ptr<juce::AudioBuffer<float>> warpedAudio (const juce::AudioBuffer<float>& src, double rate, double regionStart, double regionLength,
+                                                              const std::vector<WarpMarker>& markers, double& total, const Engine::ProgressFn& progress)
+{
+    const int channels = juce::jlimit (1, 2, src.getNumChannels());
+    const int base = juce::jlimit (0, src.getNumSamples(), (int) std::llround (regionStart * rate));
+    const int regionSamples = juce::jlimit (0, src.getNumSamples() - base, (int) std::llround (regionLength * rate));
+
+    std::vector<std::pair<double, double>> anchors { { 0.0, 0.0 } };   // (src seconds, dest seconds)
+    for (auto& m : markers)
+    {
+        const double s = juce::jlimit (anchors.back().first + 0.004, regionLength - 0.004, m.src);
+        const double d = juce::jmax (anchors.back().second + 0.004, m.dest);
+        if (s > anchors.back().first && s < regionLength)
+            anchors.push_back ({ s, d });
+    }
+    anchors.push_back ({ regionLength, anchors.back().second + (regionLength - anchors.back().first) });   // (the rest plays at its own speed)
+    total = anchors.back().second;
+
+    const int outSamples = juce::jmax (1, (int) std::llround (total * rate));
+    auto out = std::make_shared<juce::AudioBuffer<float>> (channels, outSamples);
+    out->clear();
+
+    for (size_t i = 0; i + 1 < anchors.size(); ++i)
+    {
+        const int srcFrom = juce::jlimit (0, regionSamples, (int) std::llround (anchors[i].first * rate));
+        const int srcTo = juce::jlimit (srcFrom, regionSamples, (int) std::llround (anchors[i + 1].first * rate));
+        const int destFrom = (int) std::llround (anchors[i].second * rate);
+        const int destLen = juce::jmax (0, juce::jmin (outSamples, (int) std::llround (anchors[i + 1].second * rate)) - destFrom);
+        const int srcLen = srcTo - srcFrom;
+        if (srcLen < 8 || destLen < 8)
+            continue;
+
+        const double ratio = (double) destLen / (double) srcLen;
+        const double from = (double) i / (double) (anchors.size() - 1), span = 1.0 / (double) (anchors.size() - 1);
+        std::shared_ptr<juce::AudioBuffer<float>> piece;
+        if (std::abs (ratio - 1.0) < 0.002)   // (as it is)
+        {
+            piece = std::make_shared<juce::AudioBuffer<float>> (channels, srcLen);
+            for (int ch = 0; ch < channels; ++ch)
+                piece->copyFrom (ch, 0, src, ch, base + srcFrom, srcLen);
+        }
+        else
+        {
+            piece = Stretch::process (src, base + srcFrom, srcLen, rate, ratio, 0.0,
+                                      [&] (double f) { return ! progress || progress (from + span * f); });
+            if (piece == nullptr)
+                return nullptr;   // cancelled
+        }
+
+        const int n = juce::jmin (destLen, piece->getNumSamples());
+        for (int ch = 0; ch < channels; ++ch)
+            out->copyFrom (ch, destFrom, *piece, juce::jmin (ch, piece->getNumChannels() - 1), 0, n);
+        if (i + 2 < anchors.size())   // a hair of fade at the end of a piece, so a join does not click (the next piece starts hard: it is the hit)
+            for (int ch = 0; ch < channels; ++ch)
+                out->applyGainRamp (ch, destFrom + n - juce::jmin (n, 96), juce::jmin (n, 96), 1.0f, 0.0f);
+    }
+    return out;
+}
+
+bool Engine::getWarpSource (const Track& t, int id, std::shared_ptr<const juce::AudioBuffer<float>>& audio, double& regionStart, double& regionLength) const
+{
+    const juce::ScopedLock sl (lock);
+    for (auto& c : t.clips)
+        if (c.id == id && c.audio != nullptr)
+        {
+            audio = c.processed() ? c.source : c.audio;
+            regionStart = c.processed() ? c.processedFrom : c.offset;
+            regionLength = c.processed() ? c.processedLength : c.length;
+            return true;
+        }
+    return false;
+}
+
+bool Engine::warpClip (Track& t, int id, std::vector<WarpMarker> markers, const ProgressFn& progress)
+{
+    if (markers.empty())
+        return processClip (t, id, 1.0, 0.0, progress);
+
+    Clip c;
+    {
+        const juce::ScopedLock sl (lock);
+        auto* p = findClip (t, id);
+        if (p == nullptr || p->audio == nullptr)
+            return false;
+        c = *p;
+    }
+
+    std::sort (markers.begin(), markers.end(), [] (const WarpMarker& a, const WarpMarker& b) { return a.src < b.src; });
+    const auto original = c.processed() ? c.source : c.audio;
+    const double regionStart = c.processed() ? c.processedFrom : c.offset;
+    const double regionLength = c.processed() ? c.processedLength : c.length;
+
+    double total = regionLength;
+    auto result = warpedAudio (*original, c.fileRate, regionStart, regionLength, markers, total, progress);
+    if (result == nullptr)
+        return false;   // cancelled
+
+    const juce::ScopedLock sl (lock);
+    auto* p = findClip (t, id);
+    if (p == nullptr)
+        return false;
+
+    const double stretch = total / juce::jmax (1.0e-6, regionLength);   // (the whole region's change of length: what the rest of the clip code goes by)
+    double factor;
+    if (! c.processed())
+    {
+        factor = stretch;
+        p->offset = 0.0;
+        p->length = total;
+    }
+    else
+    {
+        factor = stretch / c.stretch;
+        p->offset *= factor;
+        p->length *= factor;
+    }
+    p->fadeIn *= factor;
+    p->fadeOut *= factor;
+    for (auto& pt : p->envelope)
+        pt.time *= factor;
+
+    p->source = original;
+    p->processedFrom = regionStart;
+    p->processedLength = regionLength;
+    p->stretch = stretch;
+    p->pitch = 0.0;
+    p->warps = markers;
+    p->audio = result;
+    return true;
+}
+
 bool Engine::processClip (Track& t, int id, double stretch, double semitones, const ProgressFn& progress)
 {
     Clip c;
@@ -815,6 +976,7 @@ bool Engine::processClip (Track& t, int id, double stretch, double semitones, co
         p->processedFrom = p->processedLength = 0.0;
         p->stretch = 1.0;
         p->pitch = 0.0;
+        p->warps.clear();
         return true;
     }
 
@@ -855,12 +1017,13 @@ bool Engine::processClip (Track& t, int id, double stretch, double semitones, co
     p->processedLength = regionLength;
     p->stretch = stretch;
     p->pitch = semitones;
+    p->warps.clear();
     p->audio = result;
     return true;
 }
 
 bool Engine::restoreProcessedClip (Track& t, int id, double stretch, double semitones, double sourceStart, double sourceLength,
-                                   const ProgressFn& progress)
+                                   const ProgressFn& progress, const std::vector<WarpMarker>& warps)
 {
     Clip c;
     {
@@ -871,7 +1034,14 @@ bool Engine::restoreProcessedClip (Track& t, int id, double stretch, double semi
         c = *p;
     }
 
-    auto result = processedAudio (c, *c.audio, sourceStart, sourceLength, stretch, semitones, progress);
+    std::shared_ptr<juce::AudioBuffer<float>> result;
+    if (! warps.empty())   // a warped clip: made again from its markers
+    {
+        double total = sourceLength;
+        result = warpedAudio (*c.audio, c.fileRate, sourceStart, sourceLength, warps, total, progress);
+    }
+    else
+        result = processedAudio (c, *c.audio, sourceStart, sourceLength, stretch, semitones, progress);
     if (result == nullptr)
         return false;
 
@@ -879,6 +1049,7 @@ bool Engine::restoreProcessedClip (Track& t, int id, double stretch, double semi
     auto* p = findClip (t, id);
     if (p == nullptr)
         return false;
+    p->warps = warps;
     p->source = c.audio;
     p->processedFrom = sourceStart;
     p->processedLength = sourceLength;
@@ -1705,6 +1876,7 @@ TrackState Engine::captureTrack (const Track& t) const
         ts.padStates = t.kit->captureState();
     }
     ts.name = t.name;
+    ts.colour = t.colour;
     ts.type = t.type;
     ts.bus = t.bus;
     ts.clips = t.clips;
@@ -1745,6 +1917,7 @@ TrackState Engine::captureTrack (const Track& t) const
 void Engine::applyTrackState (Track& t, const TrackState& ts)
 {
     t.name = ts.name;
+    t.colour = ts.colour;
     t.subLanes = ts.subLanes;
     t.subLanesOpen = ts.subLanesOpen;
     t.subAutoDone = ts.subAutoDone;
@@ -1822,6 +1995,7 @@ ProjectState Engine::captureState() const
 {
     const juce::ScopedLock sl (lock);
     ProjectState s;
+    s.sections = arrangement;
     s.tempo = tempoMap;
     s.master = captureTrack (*master);
 
@@ -1847,6 +2021,7 @@ ProjectState Engine::captureState() const
 
 void Engine::restoreState (const ProjectState& s)
 {
+    arrangement = s.sections;
     std::vector<std::unique_ptr<Track>> fresh;
     for (auto& ts : s.tracks)
     {
@@ -3766,6 +3941,115 @@ int Engine::duplicateAutomationTake (Track& t, const juce::String& id, int takeI
 
 //==============================================================================
 // Copying and ordering tracks
+
+//==============================================================================
+// Whole stretches of the timeline (the sections of the arrangement)
+
+void Engine::shiftClipsFrom (double fromSeconds, double deltaSeconds)
+{
+    const juce::ScopedLock sl (lock);
+    for (auto& t : tracks)
+    {
+        for (auto& c : t->clips)
+            if (c.start >= fromSeconds - 1.0e-6)
+                c.start = juce::jmax (0.0, c.start + deltaSeconds);
+        for (auto& m : t->midiClips)
+            if (m.start >= fromSeconds - 1.0e-6)
+                m.start = juce::jmax (0.0, m.start + deltaSeconds);
+    }
+}
+
+int Engine::copyRange (double from, double to, double dest)
+{
+    const juce::ScopedLock sl (lock);
+    int made = 0;
+    for (auto& tp : tracks)
+    {
+        auto& t = *tp;
+        std::vector<Clip> audio;
+        for (auto& c : t.clips)
+        {
+            const double s = juce::jmax (c.start, from), e = juce::jmin (c.end(), to);
+            if (! c.audible() || e - s < 0.002)
+                continue;
+            Clip k = c;
+            k.id = nextClipId++;
+            k.takeGroup = 0;
+            k.takeIndex = 0;
+            k.takeActive = true;
+            const double cut = s - c.start;
+            k.start = dest + (s - from);
+            k.length = e - s;
+            k.offset = c.reverse ? c.offset + (c.end() - e) : c.offset + cut;
+            if (cut > 0.001)             k.fadeIn = 0.0;
+            if (e < c.end() - 0.001)     k.fadeOut = 0.0;
+            k.envelope.clear();
+            for (auto p : c.envelope)
+                if (p.time - cut >= -1.0e-3 && p.time - cut <= k.length + 1.0e-3)
+                {
+                    p.time -= cut;
+                    k.envelope.push_back (p);
+                }
+            audio.push_back (std::move (k));
+            ++made;
+        }
+        for (auto& k : audio)
+            t.clips.push_back (std::move (k));
+
+        std::vector<MidiClip> midi;
+        for (auto& m : t.midiClips)
+        {
+            const double s = juce::jmax (m.start, from), e = juce::jmin (m.end(), to);
+            if (e - s < 0.002)
+                continue;
+            MidiClip k;
+            k.id = nextClipId++;
+            k.start = dest + (s - from);
+            k.length = e - s;
+            for (auto n : m.notes)
+            {
+                const double at = m.start + n.start;
+                if (at >= s - 1.0e-6 && at < e)
+                {
+                    n.start = at - s;
+                    k.notes.push_back (n);
+                }
+            }
+            for (auto cc : m.ccs)
+            {
+                const double at = m.start + cc.time;
+                if (at >= s - 1.0e-6 && at < e)
+                {
+                    cc.time = at - s;
+                    k.ccs.push_back (cc);
+                }
+            }
+            midi.push_back (std::move (k));
+            ++made;
+        }
+        for (auto& k : midi)
+            t.midiClips.push_back (std::move (k));
+    }
+    return made;
+}
+
+void Engine::swapRanges (double a0, double a1, double b0, double b1)
+{
+    const juce::ScopedLock sl (lock);
+    const double lenA = a1 - a0, lenB = b1 - b0;
+    auto place = [&] (double& start)
+    {
+        if (start >= a0 - 1.0e-6 && start < a1 - 1.0e-6)        start += lenB;   // (a comes after b now)
+        else if (start >= b0 - 1.0e-6 && start < b1 - 1.0e-6)   start -= lenA;
+    };
+    for (auto& t : tracks)
+    {
+        for (auto& c : t->clips)
+            place (c.start);
+        for (auto& m : t->midiClips)
+            place (m.start);
+    }
+}
 
 Track* Engine::duplicateTrack (const Track& src)
 {

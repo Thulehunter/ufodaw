@@ -188,7 +188,8 @@ private:
         {
             g.setColour (Theme::panel);
             g.fillRoundedRectangle (getLocalBounds().toFloat(), 8.0f);
-            g.setColour (isMaster ? Theme::yellow : Theme::trackColour (track->type == Track::Type::Midi, track->kit != nullptr));
+            g.setColour (isMaster ? Theme::yellow : track->colour != 0 ? juce::Colour (track->colour)
+                                                  : Theme::trackColour (track->type == Track::Type::Midi, track->kit != nullptr));
             g.fillRoundedRectangle (4.0f, 4.0f, (float) getWidth() - 8.0f, 3.0f, 1.5f);
 
             // the meter: green-less warm scale, red at the top; the bar of the loudest recent level

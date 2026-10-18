@@ -31,13 +31,25 @@ public:
         std::atomic<float> velocitySens { 0.7f };                   // how much the velocity changes the level (0 = not at all)
         std::atomic<int> slices { 8 };
         std::atomic<int> sliceNote { 36 };                          // key of the first slice (C2)
+        // Slice mode with slices that follow the hits of the sample (not equal parts): the start of every slice, as a fraction of the
+        // whole sample, ascending. markCount 0 = equal slices (`slices` of them). A slice lasts until the next mark (the last one until `end`).
+        static constexpr int maxMarks = 64;
+        std::atomic<int> markCount { 0 };
+        std::atomic<float> marks[maxMarks];
     } params;
 
-    Sampler() = default;
+    Sampler() { for (auto& m : params.marks) m.store (0.0f); }
+
+    // The slices of the region as (start seconds from the first slice, length seconds) at the original speed: what the pattern of a
+    // sliced loop needs to play them in time. Empty when there is no sample or Slice mode has no slices.
+    std::vector<std::pair<double, double>> sliceTimes() const;
+    // Sets the slice starts (fractions of the whole sample, ascending); an empty list goes back to equal slices
+    void setMarks (const std::vector<float>& starts);
     // Everything that can be edited, for undo / redo: the settings and the sample (the audio data is shared, not copied)
     struct State
     {
         int mode = Classic, rootNote = 60, slices = 8, sliceNote = 36;
+        std::vector<float> marks;   // (the slice starts, see Params::marks)
         float tuneCents = 0.0f, start = 0.0f, end = 1.0f, loopStart = 0.0f, loopEnd = 1.0f;
         float attack = 0.0f, decay = 0.0f, sustain = 0.0f, release = 0.0f, cutoff = 0.0f, volume = 0.0f, velocitySens = 0.0f;
         bool loop = false, reverse = false;

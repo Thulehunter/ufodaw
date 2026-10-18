@@ -14,6 +14,8 @@
 class SamplerWindow;   // (SamplerPanel.h)
 class DrumRackWindow;  // (DrumRackPanel.h)
 class MixerWindow;     // (MixerPanel.h)
+class WarpWindow;      // (WarpEditor.h)
+class VersionHistoryWindow;   // (VersionHistory.h)
 
 // Settings shared by the track headers and the lanes
 namespace UiSettings
@@ -224,7 +226,14 @@ public:
     const TempoMap& getTempoMap() const { return tempoMap; }   // tempo and time signature sections: grid, snapping, ruler
     void applyTempoMap (const TempoMap&);                       // also re-times MIDI, the loop and the punch region
     void openTempoPanel();
-    void setFirstTempo (double bpm);                            // the tempo of the first section (one undo step)
+    void openSectionsPanel();                                   // the sections of the arrangement (verse, chorus...)
+    void sectionGoTo (int index);
+    void sectionLoop (int index);
+    void sectionCopy (int index);
+    void sectionSwap (int index);                               // section `index` and the one after it change places
+    void openWarpEditor (Track&, int clipId);                   // markers on the hits of an audio clip, dragged to the grid
+    void slicesToMidi (Track&);                                // the sampler's slices as a MIDI pattern at the playhead
+    void setFirstTempo (double bpm);                           // the tempo of the first section (one undo step)
     double snapTime (double seconds) const;
 
     bool isLiveNoteDown (int pitch) const   // a note being played right now on a MIDI keyboard or the computer keys
@@ -313,6 +322,8 @@ public:
 private:
     void openPadSampler (Track&, int pad);
     std::unique_ptr<SamplerWindow> padSamplerWindow;
+    std::unique_ptr<WarpWindow> warpWindow;
+    std::unique_ptr<VersionHistoryWindow> historyWindow;
     std::unique_ptr<DrumRackWindow> drumRackWindow;
     void openRouting (Track&, juce::Component& anchor);      // output (master or a bus) and sends of a track
     void openQuantize (Track&, int clipId);                  // quantize / swing / humanize the notes of a MIDI clip
@@ -391,6 +402,13 @@ private:
 
     // Autosave: every two minutes, when something changed, the project goes to a recovery file. A normal save (or a normal exit
     // without unsaved changes) removes it; if the program dies, or is closed with unsaved changes, it is offered at the next start.
+    void openVersionHistory();                        // File > Version history...
+    static juce::File templatesFolder();              // track templates (one track saved as a small project file)
+    void saveTrackTemplate (Track&);
+    void addFromTemplate (const juce::File&);
+    const Track* templateOnly = nullptr;              // while a template is saved: the one track that goes into the file
+    juce::uint32 lastTimedBackupMs = juce::Time::getMillisecondCounter();
+    int backedUpEdit = -1;
     int editCounter = 0, savedEdit = 0, autosavedEdit = 0;   // bumped by every undoable edit; compared to what was saved / autosaved
     juce::uint32 lastAutosaveMs = 0;
     bool isDirty() const { return editCounter != savedEdit; }
@@ -399,7 +417,7 @@ private:
     juce::File autosaveInfoFile() const;
     void autosaveNow();
     void clearAutosave();
-    void loadProject (const juce::File&);
+    void loadProject (const juce::File&, bool asTemplate = false);
     void openProjectDialog();
     void newProject();                                // an empty project (asks first when there are unsaved changes)
     void fileMenu();                                  // the "File" button: new, open, recent, save, export
@@ -518,7 +536,7 @@ private:
     void updateCountInButton();
     double recordLatencySeconds() const;   // how much earlier a recording is placed on the timeline (the round trip through the interface)
     TempoMap tempoMap;   // the same as the engine's; only the message thread changes either, always together
-    juce::TextButton tempoButton { "Tempo" };
+    juce::TextButton tempoButton { "Tempo" }, sectionsButton { "Sections" };
     juce::Label bpmLabel { {}, "BPM" }, timeLabel;
     juce::Slider bpmSlider { juce::Slider::LinearBar, juce::Slider::TextBoxLeft };
     // The master channel strip, pinned below the tracks: controls on the left, an automation lane on the right.

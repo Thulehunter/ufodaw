@@ -4,6 +4,7 @@
 #include "Engine.h"
 #include "Theme.h"
 #include "Tuner.h"
+#include "Beat.h"
 
 // The sample with its start / end markers (yellow), loop markers (orange) and slices; drag a marker to move it. Drop an audio
 // file on it to load that sample.
@@ -60,11 +61,13 @@ public:
         const int mode = sampler.params.mode.load();
         if (mode == Sampler::Slice)
         {
-            const int count = juce::jlimit (1, 64, sampler.params.slices.load());
+            const int marked = sampler.params.markCount.load();
+            const int count = marked > 0 ? marked : juce::jlimit (1, 64, sampler.params.slices.load());
             g.setFont (juce::FontOptions (11.0f));
             for (int i = 0; i < count; ++i)
             {
-                const int x = sx + (int) ((double) (ex - sx) * i / count);
+                const int x = marked > 0 ? juce::jmax (sx, xOf (sampler.params.marks[i].load()))
+                                         : sx + (int) ((double) (ex - sx) * i / count);
                 g.setColour (Theme::redBright.withAlpha (0.8f));
                 g.drawVerticalLine (x, 0.0f, (float) h);
                 g.setColour (Theme::text.withAlpha (0.85f));
@@ -153,155 +156,6 @@ private:
 public:
     std::function<void()> onBeginEdit;
 };
-
-// Estimates the tempo of audio from where the sound jumps (BPM, 60 - 200): an onset curve made of three frequency bands (kicks, snares,
-// hats), then a comb of evenly spaced beats is slid over it at every tempo. When the region is a whole number of beats long (a loop cut
-// to the bar) that length decides the exact tempo. 0 = nothing found.
-inline double detectBpm (const juce::AudioBuffer<float>& audio, double sampleRate, int startSample, int endSample)
-{
-    constexpr int hop = 256;
-    startSample = juce::jlimit (0, audio.getNumSamples(), startSample);
-    endSample = juce::jlimit (startSample, juce::jmin (audio.getNumSamples(), startSample + (int) (sampleRate * 90.0)), endSample);
-    const int frames = (endSample - startSample) / hop;
-    if (frames < 64 || sampleRate <= 0.0)
-        return 0.0;
-    const double seconds = (double) (endSample - startSample) / sampleRate;
-
-    // three bands by one-pole filters: low (< 150 Hz), mid (to 1.5 kHz), high; the loudness of each per hop, compressed
-    const int channels = juce::jmax (1, audio.getNumChannels());
-    const double a1 = 1.0 - std::exp (-2.0 * juce::MathConstants<double>::pi * 150.0 / sampleRate);
-    const double a2 = 1.0 - std::exp (-2.0 * juce::MathConstants<double>::pi * 1500.0 / sampleRate);
-    std::vector<float> env[3];
-    for (auto& e : env)
-        e.assign ((size_t) frames, 0.0f);
-    double lp1 = 0.0, lp2 = 0.0;
-    for (int f = 0; f < frames; ++f)
-    {
-        double sum[3] = { 0.0, 0.0, 0.0 };
-        for (int i = 0; i < hop; ++i)
-        {
-            double x = 0.0;
-            for (int ch = 0; ch < channels; ++ch)
-                x += audio.getSample (juce::jmin (ch, audio.getNumChannels() - 1), startSample + f * hop + i);
-            x /= channels;
-            lp1 += a1 * (x - lp1);
-            lp2 += a2 * (x - lp2);
-            const double low = lp1, mid = lp2 - lp1, high = x - lp2;
-            sum[0] += low * low;
-            sum[1] += mid * mid;
-            sum[2] += high * high;
-        }
-        for (int b = 0; b < 3; ++b)
-            env[b][(size_t) f] = (float) std::log1p (300.0 * std::sqrt (sum[b] / hop));
-    }
-
-    std::vector<float> onset ((size_t) frames, 0.0f);
-    for (int b = 0; b < 3; ++b)
-        for (int f = 1; f < frames; ++f)
-            onset[(size_t) f] += juce::jmax (0.0f, env[b][(size_t) f] - env[b][(size_t) f - 1]);
-    double mean = 0.0;
-    for (auto o : onset)
-        mean += o;
-    mean /= frames;
-    if (mean < 1.0e-6)
-        return 0.0;
-    for (auto& o : onset)
-        o = juce::jmax (0.0f, o - (float) mean);   // (only what stands out above the average counts)
-
-    const double fps = sampleRate / hop;
-    auto at = [&] (double pos)   // the onset curve between frames
-    {
-        const int i = (int) pos;
-        if (i < 0 || i + 1 >= frames)
-            return 0.0;
-        const double fr = pos - i;
-        return (1.0 - fr) * onset[(size_t) i] + fr * onset[(size_t) i + 1];
-    };
-
-    // the comb: for each tempo, the average onset on a grid of beats, at the best offset
-    auto combScore = [&] (double bpm, bool total = false)
-    {
-        const double period = 60.0 * fps / bpm;
-        double best = 0.0;
-        for (double phase = 0.0; phase < period; phase += 1.0)
-        {
-            double s = 0.0;
-            int n = 0;
-            for (double p = phase; p < (double) frames - 1.0; p += period, ++n)
-                s += at (p);
-            if (n >= 3)
-                best = juce::jmax (best, total ? s : s / n);
-        }
-        return best;
-    };
-
-    std::vector<std::pair<double, double>> scores;   // (bpm, score)
-    double bestScore = 0.0, bestBpm = 0.0;
-    for (double bpm = 60.0; bpm <= 200.0; bpm += 0.25)
-    {
-        const double w = std::exp (-0.5 * std::pow (std::log2 (bpm / 115.0) / 0.8, 2.0));   // a preference for the usual range
-        const double score = combScore (bpm) * (0.7 + 0.3 * w);
-        scores.push_back ({ bpm, score });
-        if (score > bestScore)
-        {
-            bestScore = score;
-            bestBpm = bpm;
-        }
-    }
-    if (bestBpm <= 0.0)
-        return 0.0;
-
-    // a tempo twice as fast that is just as well supported (every beat has its own hit) is the one that is meant
-    if (bestBpm * 2.0 <= 175.0 && combScore (bestBpm * 2.0) >= 0.75 * combScore (bestBpm))
-        bestBpm *= 2.0;
-
-    // refine round the best one: the total of the onsets on the grid, in small steps (a wrong tempo drifts off the hits)
-    double refined = bestBpm, refinedScore = 0.0;
-    for (double bpm = bestBpm * 0.97; bpm <= bestBpm * 1.03; bpm += 0.02)
-    {
-        const double s = combScore (bpm, true);
-        if (s > refinedScore)
-        {
-            refinedScore = s;
-            refined = bpm;
-        }
-    }
-    // A loop cut to whole beats: of the tempos that make the region exactly 1, 2, 3... beats long, the one whose beat grid catches the most
-    // onsets wins when it is nearly as well supported as the free tempo (the free search can lock on a pattern like "every 2.5 beats").
-    auto prior = [] (double bpm) { return 0.7 + 0.3 * std::exp (-0.5 * std::pow (std::log2 (bpm / 115.0) / 0.8, 2.0)); };
-    double loopBpm = 0.0, loopTotal = 0.0;
-    for (int n = 2; n <= 256; ++n)
-    {
-        const double bpm = 60.0 * n / seconds;
-        if (bpm < 60.0 || bpm > 200.0)
-            continue;
-        const double total = combScore (bpm, true) * prior (bpm);
-        if (total > loopTotal)
-        {
-            loopTotal = total;
-            loopBpm = bpm;
-        }
-    }
-    if (loopBpm > 0.0 && loopTotal >= 0.5 * refinedScore * prior (refined))
-    {
-        // a half-speed grid that catches most of the same onsets is the slower beat (a fast tempo also catches every off-beat hat)
-        for (int guard = 0; guard < 3 && loopBpm * 0.5 >= 60.0; ++guard)
-        {
-            const double half = combScore (loopBpm * 0.5, true) * prior (loopBpm * 0.5);
-            if (half < 0.72 * loopTotal)
-                break;
-            loopBpm *= 0.5;
-            loopTotal = half;
-        }
-        return loopBpm;
-    }
-    // a region that is a whole number of beats long at (nearly) this tempo: the length gives the exact tempo
-    const int beatCount = juce::jmax (1, (int) std::lround (refined * seconds / 60.0));
-    const double fitted = 60.0 * beatCount / seconds;
-    if (std::abs (fitted - refined) / refined < 0.005 && fitted >= 55.0 && fitted <= 210.0)
-        return fitted;
-    return refined;
-}
 
 // The tempo calculator of the sampler: how many beats the part between the yellow markers lasts, and what tempo that makes. It can set the
 // project's tempo to it, or stretch the sample so that it fits the project's tempo.
@@ -536,7 +390,8 @@ public:
         addSlider (decay, decayLabel, "Decay", 0.001, 8.0, p.decay, 0.3, " s", 3, [this] (double v) { sampler.params.decay = (float) v; });
         addSlider (sustain, sustainLabel, "Sustain", 0.0, 1.0, p.sustain, 0.0, "", 2, [this] (double v) { sampler.params.sustain = (float) v; });
         addSlider (release, releaseLabel, "Release", 0.002, 8.0, p.release, 0.3, " s", 3, [this] (double v) { sampler.params.release = (float) v; });
-        addSlider (slices, slicesLabel, "Slices", 1.0, 32.0, p.slices, 0.0, "", 0, [this] (double v) { sampler.params.slices = (int) v; waveform.repaint(); });
+        addSlider (slices, slicesLabel, "Slices", 1.0, 32.0, p.slices, 0.0, "", 0,
+                   [this] (double v) { sampler.setMarks ({}); sampler.params.slices = (int) v; waveform.repaint(); });   // (equal slices again)
         addSlider (stretch, stretchLabel, "Stretch", 0.25, 4.0, sampler.getStretch(), 1.0, " x", 2, [] (double) {});
         stretch.setTooltip ("Time-stretch: 2 = twice as long, 0.5 = twice as fast. The pitch stays the same (Rubber Band, applied when you let go)");
         stretch.onValueChange = [this] { if (! stretch.isMouseButtonDown()) applyStretch(); };
@@ -544,6 +399,24 @@ public:
         stretch.onDragEnd = [this] { applyStretch(); };
         slices.setNumDecimalPlacesToDisplay (0);
         slices.setRange (1.0, 32.0, 1.0);
+
+        autoSliceButton.setTooltip ("Cuts the part between the markers at its hits (kicks, snares, hats...) instead of in equal parts. "
+                                    "Slider: how sensitive it is (more sensitive = more, quieter hits)");
+        autoSliceButton.onClick = [this] { sliceByHits(); };
+        sensitivity.setSliderStyle (juce::Slider::LinearHorizontal);
+        sensitivity.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
+        sensitivity.setRange (0.0, 1.0, 0.01);
+        sensitivity.setValue (0.3, juce::dontSendNotification);
+        sensitivity.setDoubleClickReturnValue (true, 0.3);
+        sensitivity.setTooltip ("How sensitive the hit detection is");
+        sensitivity.onValueChange = [this] { if (sampler.params.markCount.load() > 0 && ! sensitivity.isMouseButtonDown()) sliceByHits(); };
+        sensitivity.onDragEnd = [this] { if (sampler.params.markCount.load() > 0) sliceByHits(); };   // (the hits follow the slider once they were found)
+        toMidiButton.setTooltip ("Puts the slices on this sampler's track as a pattern: one note per slice (from the slice key up), in the "
+                                 "timing of the sample. Set the sample to the project's tempo first (Tempo...) so it lines up with the grid");
+        toMidiButton.onClick = [this] { if (onSlicesToMidi) onSlicesToMidi(); };
+        addAndMakeVisible (autoSliceButton);
+        addAndMakeVisible (sensitivity);
+        addAndMakeVisible (toMidiButton);
 
         loopToggle.setToggleState (p.loop, juce::dontSendNotification);
         loopToggle.onClick = [this] { beginEditFn(); sampler.params.loop = loopToggle.getToggleState(); waveform.repaint(); changedFn(); };
@@ -566,6 +439,7 @@ public:
 
     std::function<void()> onBeginEdit;   // set by the owner: called before every change (the undo snapshot)
     std::function<void()> onAbortEdit;   // set by the owner: the change did not happen after all (a cancelled stretch)
+    std::function<void()> onSlicesToMidi;             // set by the owner: the "To MIDI" button (the owner builds the pattern)
     std::function<double()> projectBpm;               // set by the owner: the project's tempo (for the tempo calculator)
     std::function<void (double)> setProjectBpm;       // set by the owner: change the project's tempo (the owner takes the undo snapshot)
 
@@ -614,12 +488,18 @@ public:
 
         r.removeFromTop (6);
         auto bottom = r.removeFromTop (28);
-        loopToggle.setBounds (bottom.removeFromLeft (150));
-        reverseToggle.setBounds (bottom.removeFromLeft (110));
-        bottom.removeFromLeft (20);
+        if (loopToggle.isVisible())
+            loopToggle.setBounds (bottom.removeFromLeft (150));
+        reverseToggle.setBounds (bottom.removeFromLeft (100));
+        bottom.removeFromLeft (8);
         tempoButton.setBounds (bottom.removeFromRight (96));
-        slicesLabel.setBounds (bottom.removeFromLeft (60));
-        slices.setBounds (bottom.removeFromLeft (260));
+        toMidiButton.setBounds (bottom.removeFromRight (84).reduced (0, 1));
+        bottom.removeFromRight (4);
+        slicesLabel.setBounds (bottom.removeFromLeft (52));
+        slices.setBounds (bottom.removeFromLeft (150));
+        bottom.removeFromLeft (6);
+        autoSliceButton.setBounds (bottom.removeFromLeft (104).reduced (0, 1));
+        sensitivity.setBounds (bottom.removeFromLeft (84).reduced (0, 3));
         r.removeFromTop (6);
         hint.setBounds (r.removeFromTop (22));
     }
@@ -656,6 +536,26 @@ public:
 private:
     void changedFn() { if (changed) changed(); }
     void beginEditFn() { if (onBeginEdit) onBeginEdit(); }   // called before a change, so that it can be undone
+
+    // Cuts the part between the markers at its hits; the slice keys follow (the first slice plays from the first marker)
+    void sliceByHits()
+    {
+        const auto sample = sampler.getSample();
+        if (sample == nullptr)
+            return;
+        const int total = sample->getNumSamples();
+        const double a = juce::jmin ((double) sampler.params.start.load(), (double) sampler.params.end.load());
+        const double b = juce::jmax ((double) sampler.params.start.load(), (double) sampler.params.end.load());
+        const auto hits = detectOnsets (*sample, sampler.getSampleRate(), (int) (a * total), (int) (b * total), (float) sensitivity.getValue());
+        std::vector<float> marks;
+        for (int h : hits)
+            marks.push_back ((float) h / (float) total);
+        beginEditFn();
+        sampler.setMarks (marks);
+        slices.setValue ((double) juce::jmin (32, (int) marks.size()), juce::dontSendNotification);
+        waveform.repaint();
+        changedFn();
+    }
 
     void openTempoCalc()
     {
@@ -716,9 +616,13 @@ private:
         const bool sliceMode = sampler.params.mode.load() == Sampler::Slice;
         slices.setVisible (sliceMode);
         slicesLabel.setVisible (sliceMode);
+        autoSliceButton.setVisible (sliceMode);
+        sensitivity.setVisible (sliceMode);
+        toMidiButton.setVisible (sliceMode);
         loopToggle.setVisible (sampler.params.mode.load() == Sampler::Classic);
         rootBox.setEnabled (! sliceMode);
         detectButton.setEnabled (! sliceMode);
+        resized();   // (the bottom row depends on what is shown)
     }
 
     void load (const juce::File& file)
@@ -800,7 +704,9 @@ private:
     std::unique_ptr<juce::FileChooser> chooser;
 
     SamplerWaveform waveform;
-    juce::TextButton loadButton { "Load..." }, detectButton { "Detect pitch" }, playButton { "Play" }, tempoButton { "Tempo..." };
+    juce::TextButton loadButton { "Load..." }, detectButton { "Detect pitch" }, playButton { "Play" }, tempoButton { "Tempo..." },
+                     autoSliceButton { "Slice by hits" }, toMidiButton { "To MIDI" };
+    juce::Slider sensitivity;
     juce::Label nameLabel, rootLabel, hint;
     juce::ComboBox modeBox, rootBox;
     juce::Label stretchLabel, tuneLabel, volumeLabel, velocityLabel, filterLabel, attackLabel, decayLabel, sustainLabel, releaseLabel, slicesLabel;

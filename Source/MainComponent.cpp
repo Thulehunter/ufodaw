@@ -9,6 +9,9 @@
 #include "SyncPanels.h"
 #include "ClipPanel.h"
 #include "Stretch.h"
+#include "WarpEditor.h"
+#include "VersionHistory.h"
+#include "SectionsPanel.h"
 #include "AudioExport.h"
 #include "SamplerPanel.h"
 #include "DrumRackPanel.h"
@@ -224,8 +227,9 @@ public:
         g.fillRoundedRectangle (card, 10.0f);
 
         // colour stripe by track type: orange = audio, red = MIDI synth, yellow = drums
-        g.setColour (isMaster ? Theme::yellow : track.bus ? Theme::yellowDim
-                                                          : Theme::trackColour (track.type == Track::Type::Midi, track.kit != nullptr));
+        g.setColour (isMaster ? Theme::yellow : track.colour != 0 ? juce::Colour (track.colour)
+                                                        : track.bus ? Theme::yellowDim
+                                                                    : Theme::trackColour (track.type == Track::Type::Midi, track.kit != nullptr));
         g.fillRoundedRectangle (card.getX() + 3.0f, card.getY() + 8.0f, isMaster ? 5.0f : 4.0f, card.getHeight() - 16.0f, 2.0f);
 
         // level meter, with a clip lamp on top: it lights red when the track (or, for an armed audio track, its input) reached full
@@ -620,6 +624,24 @@ public:
             }
         });
 
+        // the sections of the arrangement (verse, chorus...) as bands along the top
+        {
+            const auto& arrangement = main.getEngine().getSections();
+            for (size_t i = 0; i < arrangement.size(); ++i)
+            {
+                const int x0 = (int) (map.barStartSeconds (arrangement[i].startBar) * pps - scroll);
+                const int x1 = (int) (map.barStartSeconds (arrangement[i].startBar + arrangement[i].bars) * pps - scroll);
+                if (x1 < 0 || x0 > getWidth())
+                    continue;
+                const auto colour = juce::Colour (arrangement[i].colour != 0 ? arrangement[i].colour : SectionsPanel::palette()[i % SectionsPanel::palette().size()]);
+                g.setColour (colour.withAlpha (0.8f));
+                g.fillRoundedRectangle ((float) x0, 1.0f, (float) juce::jmax (2, x1 - x0 - 1), 13.0f, 3.0f);
+                g.setColour (juce::Colours::black.withAlpha (0.8f));
+                g.setFont (juce::FontOptions (10.5f, juce::Font::bold));
+                g.drawText (juce::String (arrangement[i].name), x0 + 4, 1, juce::jmax (0, x1 - x0 - 6), 13, juce::Justification::left, true);
+            }
+        }
+
         // where the tempo or the time signature changes
         const auto& sections = map.getSections();
         for (size_t i = 0; i < sections.size(); ++i)
@@ -747,7 +769,8 @@ public:
                 continue;
 
             const bool sel = main.isSelected (&track, c.id);
-            g.setColour (sel ? Theme::audioClipSel : Theme::audioClip);
+            g.setColour (track.colour != 0 ? (sel ? juce::Colour (track.colour).brighter (0.25f) : juce::Colour (track.colour).darker (0.35f))
+                                           : (sel ? Theme::audioClipSel : Theme::audioClip));
             g.fillRoundedRectangle (r.toFloat(), 4.0f);
 
             const auto& peaks = peaksFor (c, pps);
@@ -842,7 +865,8 @@ public:
 
             const bool sel = main.isSelected (&track, m.id);
             const bool drums = track.kit != nullptr;   // drum clips are yellow, synth/MIDI clips red
-            g.setColour (sel ? (drums ? Theme::drumClipSel : Theme::midiClipSel) : (drums ? Theme::drumClip : Theme::midiClip));
+            g.setColour (track.colour != 0 ? (sel ? juce::Colour (track.colour).brighter (0.25f) : juce::Colour (track.colour).darker (0.35f))
+                                           : (sel ? (drums ? Theme::drumClipSel : Theme::midiClipSel) : (drums ? Theme::drumClip : Theme::midiClip)));
             g.fillRoundedRectangle (r.toFloat(), 4.0f);
 
             int lo = 127, hi = 0;
@@ -2803,6 +2827,12 @@ MainComponent::MainComponent (int slot, std::shared_ptr<juce::AudioDeviceManager
     tempoButton.onClick = [this] { openTempoPanel(); };
     addAndMakeVisible (tempoButton);
 
+    sectionsButton.getProperties().set ("pill", true);
+    sectionsButton.setTooltip ("The sections of the arrangement (verse, chorus...): name them, loop one, copy one or swap two. They show as bands on the ruler.");
+    sectionsButton.setWantsKeyboardFocus (false);
+    sectionsButton.onClick = [this] { openSectionsPanel(); };
+    addAndMakeVisible (sectionsButton);
+
 
     timeLabel.setFont (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(), 24.0f, juce::Font::plain));
     timeLabel.setJustificationType (juce::Justification::centred);
@@ -2868,6 +2898,13 @@ static void writeSamplerParams (juce::DynamicObject& so, const Sampler::Params& 
     so.setProperty ("volume", (double) sp.volume.load());
     so.setProperty ("velocity", (double) sp.velocitySens.load());
     so.setProperty ("slices", sp.slices.load());
+    if (const int marked = sp.markCount.load(); marked > 0)   // slices that follow the hits
+    {
+        juce::Array<juce::var> list;
+        for (int i = 0; i < marked; ++i)
+            list.add ((double) sp.marks[i].load());
+        so.setProperty ("sliceMarks", list);
+    }
     if (std::abs (stretch - 1.0) > 0.001)
         so.setProperty ("stretch", stretch);   // the time-stretch ratio (applied again to the sample when the project opens)
 }
@@ -2891,11 +2928,25 @@ static void readSamplerParams (const juce::var& sv, Sampler::Params& sp)
     sp.volume = (float) (double) sv.getProperty ("volume", (double) sp.volume.load());
     sp.velocitySens = (float) (double) sv.getProperty ("velocity", (double) sp.velocitySens.load());
     sp.slices = (int) sv.getProperty ("slices", sp.slices.load());
+    if (auto* list = sv["sliceMarks"].getArray())
+    {
+        int n = 0;
+        for (auto& m : *list)
+            if (n < Sampler::Params::maxMarks)
+                sp.marks[n++].store ((float) (double) m);
+        sp.markCount = n;
+        if (n > 0)
+            sp.slices = n;
+    }
+    else
+        sp.markCount = 0;
 }
 
 MainComponent::~MainComponent()
 {
     mixerWindow.reset();
+    warpWindow.reset();
+    historyWindow.reset();
     stopTimer();
     samplerWindow.reset();   // (it points into the engine's tracks)
     padSamplerWindow.reset();
@@ -2950,6 +3001,102 @@ void MainComponent::applyTempoMap (const TempoMap& m)
 {
     tempoMap = m;
     engine.setTempoMap (m, true);
+    clipsChanged();
+}
+
+// ---- The sections of the arrangement (verse, chorus...)
+
+void MainComponent::openSectionsPanel()
+{
+    juce::Component::SafePointer<MainComponent> safe (this);
+    auto began = std::make_shared<bool> (false);
+    SectionsPanel::Hooks hooks;
+    hooks.fetch = [safe] { return safe != nullptr ? safe->engine.getSections() : std::vector<ArrSection>(); };
+    hooks.edited = [safe, began] (std::vector<ArrSection> s)   // names, bars, colours: one undo step for everything done in this panel
+    {
+        if (safe == nullptr)
+            return;
+        if (! *began)
+        {
+            *began = true;
+            safe->beginEdit();
+        }
+        safe->engine.setSections (std::move (s));
+        safe->ruler->repaint();
+    };
+    hooks.goTo = [safe] (int i) { if (safe != nullptr) safe->sectionGoTo (i); };
+    hooks.loop = [safe] (int i) { if (safe != nullptr) safe->sectionLoop (i); };
+    hooks.copy = [safe] (int i) { if (safe != nullptr) safe->sectionCopy (i); };
+    hooks.moveEarlier = [safe] (int i) { if (safe != nullptr) safe->sectionSwap (i - 1); };
+    hooks.moveLater = [safe] (int i) { if (safe != nullptr) safe->sectionSwap (i); };
+    juce::CallOutBox::launchAsynchronously (std::make_unique<SectionsPanel> (std::move (hooks)), sectionsButton.getScreenBounds(), nullptr);
+}
+
+void MainComponent::sectionGoTo (int i)
+{
+    const auto& s = engine.getSections();
+    if (! juce::isPositiveAndBelow (i, (int) s.size()))
+        return;
+    engine.setPositionSeconds (tempoMap.barBeatToSeconds (s[(size_t) i].startBar, 0.0));
+    repaint();
+}
+
+void MainComponent::sectionLoop (int i)
+{
+    const auto& s = engine.getSections();
+    if (! juce::isPositiveAndBelow (i, (int) s.size()))
+        return;
+    setLoopRegion (tempoMap.barBeatToSeconds (s[(size_t) i].startBar, 0.0), tempoMap.barBeatToSeconds (s[(size_t) i].startBar + s[(size_t) i].bars, 0.0));
+}
+
+// A copy of the section right after it, with all that plays in it; what comes later moves along (tempo changes stay where they are).
+void MainComponent::sectionCopy (int i)
+{
+    auto s = engine.getSections();
+    if (! juce::isPositiveAndBelow (i, (int) s.size()))
+        return;
+    const auto section = s[(size_t) i];
+    const int endBar = section.startBar + section.bars;
+    const double a = tempoMap.barBeatToSeconds (section.startBar, 0.0), b = tempoMap.barBeatToSeconds (endBar, 0.0);
+
+    beginEdit();
+    engine.shiftClipsFrom (b, b - a);
+    engine.copyRange (a, b, b);
+    for (auto& other : s)
+        if (other.startBar >= endBar)
+            other.startBar += section.bars;
+    ArrSection copy = section;
+    copy.startBar = endBar;
+    copy.name += " 2";
+    s.insert (s.begin() + i + 1, copy);
+    engine.setSections (std::move (s));
+    clipsChanged();
+}
+
+// Section `i` and the one after it change places (they must touch); the clips of each go with it.
+void MainComponent::sectionSwap (int i)
+{
+    auto s = engine.getSections();
+    if (i < 0 || i + 1 >= (int) s.size())
+        return;
+    auto& first = s[(size_t) i];
+    auto& second = s[(size_t) i + 1];
+    if (first.startBar + first.bars != second.startBar)
+    {
+        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::InfoIcon, "The sections do not touch",
+                                                "To swap two sections the second one must start where the first one ends. Change the bars in the list first.");
+        return;
+    }
+    const double a0 = tempoMap.barBeatToSeconds (first.startBar, 0.0), a1 = tempoMap.barBeatToSeconds (second.startBar, 0.0),
+                 b1 = tempoMap.barBeatToSeconds (second.startBar + second.bars, 0.0);
+    beginEdit();
+    engine.swapRanges (a0, a1, a1, b1);
+    const int start = first.startBar, firstBars = first.bars, secondBars = second.bars;
+    std::swap (first, second);
+    first.startBar = start;
+    second.startBar = start + secondBars;
+    juce::ignoreUnused (firstBars);
+    engine.setSections (std::move (s));
     clipsChanged();
 }
 
@@ -3379,6 +3526,40 @@ void MainComponent::addSamplerTrack()
     openSampler (*t);   // to load a sample
 }
 
+// The sampler's Slice mode as a pattern: a MIDI clip on the sampler's track at the playhead (on the grid), one note per slice from the
+// slice key up, in the timing of the sample. The clip is a whole number of bars long. One undo step.
+void MainComponent::slicesToMidi (Track& t)
+{
+    if (t.sampler == nullptr || engine.indexOfTrack (&t) < 0)
+        return;
+    const auto times = t.sampler->sliceTimes();
+    if (times.empty())
+        return;
+
+    const double start = snapTime (engine.getPositionSeconds());
+    const double span = times.back().first + juce::jmax (0.05, times.back().second);
+    const double bar = tempoMap.barSecondsAt (start);
+    const double length = juce::jmax (bar, std::ceil (span / bar - 0.02) * bar);
+
+    beginEdit();
+    const int id = engine.addMidiClip (t, start, length);
+    std::vector<Note> notes;
+    const int firstNote = t.sampler->params.sliceNote.load();
+    for (size_t i = 0; i < times.size(); ++i)
+    {
+        if (firstNote + (int) i > 127)
+            break;
+        Note n;
+        n.pitch = firstNote + (int) i;
+        n.start = times[i].first;
+        n.length = juce::jmax (0.02, times[i].second);
+        n.velocity = 0.85f;
+        notes.push_back (n);
+    }
+    engine.setMidiNotes (t, id, std::move (notes));
+    clipsChanged();
+}
+
 // The tempo of the first section (what the BPM slider shows), e.g. from the sampler's tempo calculator. One undo step.
 void MainComponent::setFirstTempo (double bpm)
 {
@@ -3418,6 +3599,7 @@ void MainComponent::openSampler (Track& t)
         });
     samplerWindow->getPanel().onBeginEdit = [safe] { if (safe != nullptr) safe->beginEdit(); };
     samplerWindow->getPanel().onAbortEdit = [safe] { if (safe != nullptr) safe->cancelEdit(); };
+    samplerWindow->getPanel().onSlicesToMidi = [safe, tr] { if (safe != nullptr && safe->engine.indexOfTrack (tr) >= 0) safe->slicesToMidi (*tr); };
     samplerWindow->getPanel().projectBpm = [safe] { return safe != nullptr ? safe->tempoMap.getSections().front().bpm : 120.0; };
     samplerWindow->getPanel().setProjectBpm = [safe] (double bpm) { if (safe != nullptr) safe->setFirstTempo (bpm); };
     samplerWindow->onKey = [safe] (const juce::KeyPress& k) { return safe != nullptr && safe->handleUndoKey (k); };
@@ -3491,6 +3673,8 @@ void MainComponent::openDrumRack (Track& t, int selectPad)
             safe->engine.previewNote (*tr, note, down, 0.9f);
     };
     hooks.load = [safe, tr] (int pad, const juce::File& f) { return safe != nullptr && safe->engine.loadDrumSample (*tr, pad, f); };
+    hooks.loadLayer = [safe, tr] (int pad, int layer, const juce::File& f) { return safe != nullptr && safe->engine.loadDrumLayer (*tr, pad, layer, f); };
+    hooks.clearLayer = [safe, tr] (int pad, int layer) { if (safe != nullptr) safe->engine.clearDrumLayer (*tr, pad, layer); };
     hooks.reset = [safe, tr] (int pad) { if (safe != nullptr) safe->engine.resetDrumPad (*tr, pad); };
     hooks.editSampler = [safe, tr] (int pad) { if (safe != nullptr) safe->openPadSampler (*tr, pad); };
     hooks.beginEdit = [safe] { if (safe != nullptr) safe->beginEdit(); };
@@ -4164,6 +4348,10 @@ void MainComponent::restoreSnapshot (const ProjectState& state)
 
 //==============================================================================
 // Right-click on a track header: the things you do to a whole track.
+// The colours a track can get (right-click the header > Colour)
+static const std::array<juce::uint32, 8> trackPalette = { 0xffd9702a, 0xffff5a47, 0xffffc933, 0xffe86a9a, 0xff9ad06a, 0xff4fb3bf, 0xff6a8cff, 0xffa07cff };
+static const std::array<const char*, 8> trackPaletteNames = { "Orange", "Red", "Yellow", "Pink", "Green", "Teal", "Blue", "Purple" };
+
 void MainComponent::showTrackMenu (Track& t)
 {
     const int index = engine.indexOfTrack (&t);
@@ -4186,6 +4374,22 @@ void MainComponent::showTrackMenu (Track& t)
         menu.addItem (8, "Arm for recording", true, t.type == Track::Type::Midi ? t.midiArmed : t.recordArmed);
     menu.addSeparator();
     menu.addItem (9, t.sampler != nullptr ? "Open the sampler" : t.kit != nullptr ? "Open the drum rack" : "Instrument and plugins...");
+    {
+        juce::PopupMenu colours;   // the colour of the track: header, mixer strip and clips
+        for (int i = 0; i < (int) trackPalette.size(); ++i)
+        {
+            juce::PopupMenu::Item item (trackPaletteNames[(size_t) i]);
+            item.itemID = 40 + i;
+            item.colour = juce::Colour (trackPalette[(size_t) i]);
+            item.isTicked = t.colour == trackPalette[(size_t) i];
+            colours.addItem (item);
+        }
+        colours.addSeparator();
+        colours.addItem (49, "Default", true, t.colour == 0);
+        menu.addSeparator();
+        menu.addSubMenu ("Colour", colours);
+        menu.addItem (30, "Save as a template...");
+    }
     if (t.type == Track::Type::Midi && ! t.bus)
     {
         juce::PopupMenu sub;
@@ -4251,7 +4455,21 @@ void MainComponent::showTrackMenu (Track& t)
             case 8: self.armTrack (track); break;
             case 9: self.openInstrumentEditor (track); break;
             case 21: case 22: case 23: case 24: case 25: self.applySubLaneChoice (track, result - 20); break;
-            default: break;
+            case 30: self.saveTrackTemplate (track); break;
+            default:
+                if (result >= 40 && result < 40 + (int) trackPalette.size())   // a colour
+                {
+                    self.beginEdit();
+                    track.colour = trackPalette[(size_t) (result - 40)];
+                    self.clipsChanged();
+                }
+                else if (result == 49)
+                {
+                    self.beginEdit();
+                    track.colour = 0;
+                    self.clipsChanged();
+                }
+                break;
         }
     });
 }
@@ -4512,6 +4730,8 @@ void MainComponent::resized()
     bpmSlider.setBounds (top.removeFromLeft (70));
     top.removeFromLeft (6);
     tempoButton.setBounds (top.removeFromLeft (62));
+    top.removeFromLeft (8);
+    sectionsButton.setBounds (top.removeFromLeft (78));
     top.removeFromLeft (8);
     countInButton.setBounds (top.removeFromLeft (128));
     top.removeFromLeft (8);
@@ -4835,6 +5055,7 @@ void MainComponent::showClipMenu (Track& track, int clipId, double at, juce::Com
         m.addSeparator();
         m.addItem (16, "Sample this clip (new sampler track)");
         m.addItem (13, "Gain, stretch and pitch...");
+        m.addItem (17, "Warp (markers on the hits, drag them to the grid)...");
         m.addItem (14, "Edit volume curve", true, envelopeClipId == clipId && envelopeTrack == &track);
         m.addItem (15, "Remove volume curve", ! audioClip.envelope.empty());
     }
@@ -4954,6 +5175,7 @@ void MainComponent::showClipMenu (Track& track, int clipId, double at, juce::Com
                 break;
             }
             case 13: self.openClipPanel (*tr, clipId); break;
+            case 17: self.openWarpEditor (*tr, clipId); break;
             case 16: self.sampleClip (*tr, clipId); break;
             case 14:
             {
@@ -5118,6 +5340,15 @@ void MainComponent::timerCallback()
     {
         lastAutosaveMs = juce::Time::getMillisecondCounter();
         autosaveNow();
+    }
+    if (juce::Time::getMillisecondCounter() - lastTimedBackupMs > 600000u)   // every ten minutes: a version of the unsaved work, in the history
+    {
+        lastTimedBackupMs = juce::Time::getMillisecondCounter();
+        if (currentProject != juce::File() && isDirty() && editCounter != backedUpEdit && ! engine.isRecording() && ! midiRecording)
+        {
+            writeBackup (currentProject);
+            backedUpEdit = editCounter;
+        }
     }
 
     if (engine.isCountingIn())
@@ -5518,8 +5749,22 @@ void MainComponent::addTrackMenu()
     menu.addItem (5, "Sampler (plays one sample)");
     menu.addSeparator();
     menu.addItem (6, "Bus (group / effects return)");
-    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&railAdd), [this] (int result)
+    const auto templates = templatesFolder().findChildFiles (juce::File::findFiles, false, "*.mdaw");
+    juce::PopupMenu templateMenu;
+    for (int i = 0; i < templates.size(); ++i)
+        templateMenu.addItem (200 + i, templates[i].getFileNameWithoutExtension());
+    menu.addSeparator();
+    menu.addSubMenu ("From a template", templateMenu, ! templates.isEmpty());
+    menu.addItem (7, "Show the templates folder (right-click a track > Save as a template)");
+    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&railAdd), [this, templates] (int result)
     {
+        if (result >= 200 && result - 200 < templates.size())
+            addFromTemplate (templates[result - 200]);
+        if (result == 7)
+        {
+            templatesFolder().createDirectory();
+            templatesFolder().revealToUser();
+        }
         if (result == 1) addEmptyAudioTrack();
         if (result == 2) addTrackDialog();
         if (result == 3) addMidiTrack (false);
@@ -5588,6 +5833,76 @@ private:
     int clipId;
     double stretch, semitones;
 };
+
+// Warping a clip (stretching the audio between its markers) runs behind a progress window too.
+class ClipWarpJob : public juce::ThreadWithProgressWindow
+{
+public:
+    ClipWarpJob (MainComponent& m, Engine& e, Track& t, int id, std::vector<WarpMarker> markers)
+        : juce::ThreadWithProgressWindow ("Warping audio", true, true, 5000, "Cancel", &m),
+          main (&m), engine (e), track (t), clipId (id), warps (std::move (markers))
+    {
+    }
+
+    void run() override
+    {
+        ok = engine.warpClip (track, clipId, warps, [this] (double fraction)
+        {
+            setProgress (fraction);
+            return ! threadShouldExit();
+        });
+    }
+
+    void threadComplete (bool) override
+    {
+        if (main != nullptr)
+        {
+            if (! ok)
+                main->cancelEdit();   // cancelled, or the clip is gone: the undo step taken before is dropped again
+            main->clipsChanged();
+        }
+        delete this;
+    }
+
+    bool ok = false;
+
+private:
+    juce::Component::SafePointer<MainComponent> main;
+    Engine& engine;
+    Track& track;
+    int clipId;
+    std::vector<WarpMarker> warps;
+};
+
+// The warp editor of an audio clip: markers on the hits, dragged to the grid; Apply stretches the audio between them.
+void MainComponent::openWarpEditor (Track& t, int clipId)
+{
+    Clip clip;
+    std::shared_ptr<const juce::AudioBuffer<float>> audio;
+    double regionStart = 0.0, regionLength = 0.0;
+    if (! engine.getClip (t, clipId, clip) || ! engine.getWarpSource (t, clipId, audio, regionStart, regionLength) || audio == nullptr)
+        return;
+
+    juce::Component::SafePointer<MainComponent> safe (this);
+    const TrackRef tr (&t);
+    auto* panel = new WarpPanel (audio, clip.fileRate, regionStart, regionLength, clip.warps, tempoMap,
+                                 clip.processed() ? clip.start - clip.offset : clip.start,
+                                 [safe, tr, clipId] (std::vector<WarpMarker> markers)
+                                 {
+                                     juce::MessageManager::callAsync ([safe, tr, clipId, markers]
+                                     {
+                                         if (safe == nullptr)
+                                             return;
+                                         safe->warpWindow.reset();
+                                         if (safe->engine.indexOfTrack (tr) < 0)
+                                             return;
+                                         safe->beginEdit();
+                                         (new ClipWarpJob (*safe, safe->engine, *tr, clipId, markers))->launchThread();   // deletes itself when done
+                                     });
+                                 },
+                                 [safe] { juce::MessageManager::callAsync ([safe] { if (safe != nullptr) safe->warpWindow.reset(); }); });
+    warpWindow = std::make_unique<WarpWindow> ("Warp - " + t.name, panel, [safe] { juce::MessageManager::callAsync ([safe] { if (safe != nullptr) safe->warpWindow.reset(); }); });
+}
 
 // A sampler's time-stretch runs in the background behind a progress window with a Cancel button (a long sample takes a while).
 class SamplerStretchJob : public juce::ThreadWithProgressWindow
@@ -5885,6 +6200,8 @@ void MainComponent::saveProject (const juce::File& file, SaveKind kind)
     for (int i = 0; i < engine.getNumTracks(); ++i)
     {
         auto* t = engine.getTrack (i);
+        if (templateOnly != nullptr && t != templateOnly)
+            continue;   // (a template holds just one track)
 
         juce::Array<juce::var> clipList;
         for (auto& c : engine.getClips (*t))
@@ -5909,6 +6226,13 @@ void MainComponent::saveProject (const juce::File& file, SaveKind kind)
                 co->setProperty ("pitch", c.pitch);
                 co->setProperty ("regionStart", c.processedFrom);
                 co->setProperty ("regionLength", c.processedLength);
+                if (! c.warps.empty())   // warp markers: [original seconds, clip seconds] pairs
+                {
+                    juce::Array<juce::var> warpList;
+                    for (auto& w : c.warps)
+                        warpList.add (juce::var (juce::Array<juce::var> { juce::var (w.src), juce::var (w.dest) }));
+                    co->setProperty ("warps", warpList);
+                }
             }
             if (c.fadeIn > 0.0)  co->setProperty ("fadeIn", c.fadeIn);
             if (c.fadeOut > 0.0) co->setProperty ("fadeOut", c.fadeOut);
@@ -5924,6 +6248,8 @@ void MainComponent::saveProject (const juce::File& file, SaveKind kind)
 
         auto* o = new juce::DynamicObject();
         o->setProperty ("name", t->name);
+        if (t->colour != 0)
+            o->setProperty ("colour", (juce::int64) t->colour);
         o->setProperty ("type", t->type == Track::Type::Midi ? "midi" : "audio");
         o->setProperty ("gain", (double) t->gain.load());
         o->setProperty ("pan", (double) t->pan.load());
@@ -6016,6 +6342,26 @@ void MainComponent::saveProject (const juce::File& file, SaveKind kind)
                     po->setProperty ("solo", pd.solo.load());
                     po->setProperty ("choke", pd.chokeGroup.load());
                     writeSamplerParams (*po, pd.sampler.params, pd.sampler.getStretch());
+                    if (pd.velLo.load() > 0.0f || pd.velHi.load() < 1.0f)
+                    {
+                        po->setProperty ("velLo", (double) pd.velLo.load());
+                        po->setProperty ("velHi", (double) pd.velHi.load());
+                    }
+                    juce::Array<juce::var> layerList;   // the extra samples (velocity layers / round-robin)
+                    for (int li = 0; li < DrumKit::maxLayers; ++li)
+                    {
+                        auto& ly = pd.layers[(size_t) li];
+                        if (! ly.used.load() || ly.file == juce::File())
+                            continue;
+                        auto* lo = new juce::DynamicObject();
+                        lo->setProperty ("slot", li);
+                        lo->setProperty ("file", projectFilePath ? projectFilePath (ly.file) : ly.file.getRelativePathFrom (baseDir));
+                        lo->setProperty ("velLo", (double) ly.velLo.load());
+                        lo->setProperty ("velHi", (double) ly.velHi.load());
+                        layerList.add (juce::var (lo));
+                    }
+                    if (! layerList.isEmpty())
+                        po->setProperty ("layers", layerList);
                     rack.add (juce::var (po));
                 }
                 o->setProperty ("drumRack", rack);
@@ -6111,6 +6457,21 @@ void MainComponent::saveProject (const juce::File& file, SaveKind kind)
         }
         root->setProperty ("tempoSections", sectionList);
     }
+    if (! engine.getSections().empty())   // the sections of the arrangement (verse, chorus...)
+    {
+        juce::Array<juce::var> arrangementList;
+        for (auto& s : engine.getSections())
+        {
+            auto* so = new juce::DynamicObject();
+            so->setProperty ("name", juce::String (s.name));
+            so->setProperty ("startBar", s.startBar);
+            so->setProperty ("bars", s.bars);
+            if (s.colour != 0)
+                so->setProperty ("colour", (juce::int64) s.colour);
+            arrangementList.add (juce::var (so));
+        }
+        root->setProperty ("arrangement", arrangementList);
+    }
     root->setProperty ("master", juce::var (masterObject));
     root->setProperty ("metronome", engine.metronome.load());
     root->setProperty ("loopEnabled", engine.loopEnabled.load());
@@ -6170,7 +6531,7 @@ void MainComponent::writeBackup (const juce::File& project)
 
     auto backups = folder.findChildFiles (juce::File::findFiles, false, "*.mdaw");
     std::sort (backups.begin(), backups.end(), [] (const juce::File& a, const juce::File& b) { return a.getFileName() > b.getFileName(); });
-    for (int i = 20; i < backups.size(); ++i)
+    for (int i = 40; i < backups.size(); ++i)
         backups.getReference (i).deleteFile();
 }
 
@@ -6270,7 +6631,12 @@ void MainComponent::collectProject()
                 add (c.sourceFile);
             if (t->kit != nullptr)
                 for (int pad = 0; pad < DrumKit::numPads; ++pad)
+                {
                     add (t->kit->getPad (pad).file);
+                    for (auto& ly : t->kit->getPad (pad).layers)
+                        if (ly.used.load())
+                            add (ly.file);
+                }
             if (t->sampler != nullptr)
                 add (t->sampler->getFile());
         }
@@ -6332,9 +6698,11 @@ void MainComponent::saveMenu()
     menu.addItem (2, "Save a new version (adds v2, v3...)");
     menu.addItem (3, "Save with all audio in one folder...");
     menu.addSeparator();
+    menu.addItem (5, "Version history...", currentProject != juce::File() && backupFolder (currentProject).isDirectory());
     menu.addItem (4, "Show the backups folder", currentProject != juce::File() && backupFolder (currentProject).isDirectory());
     menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&saveAsButton), [this] (int result)
     {
+        if (result == 5) openVersionHistory();
         if (result == 1) saveProjectAs();
         if (result == 2) saveNewVersion();
         if (result == 3) collectProject();
@@ -6407,6 +6775,90 @@ void MainComponent::offerRecovery()
     });
 }
 
+// ---- Track templates: one track (settings, effects, plugins with their state, clips) saved as a small project file, added to any project later
+
+juce::File MainComponent::templatesFolder()
+{
+    return juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory).getChildFile ("UFODAW").getChildFile ("templates");
+}
+
+void MainComponent::saveTrackTemplate (Track& t)
+{
+    juce::Component::SafePointer<MainComponent> safe (this);
+    const TrackRef ref (&t);
+    auto* box = new juce::AlertWindow ("Save as a template", "A name for this template (it is added from + > From a template):", juce::MessageBoxIconType::NoIcon);
+    box->addTextEditor ("name", t.name);
+    box->addButton ("Save", 1, juce::KeyPress (juce::KeyPress::returnKey));
+    box->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+    box->enterModalState (true, juce::ModalCallbackFunction::create ([safe, ref, box] (int ok)
+    {
+        if (ok != 1 || safe == nullptr || safe->engine.indexOfTrack (ref) < 0)
+            return;
+        const auto name = juce::File::createLegalFileName (box->getTextEditorContents ("name").trim());
+        if (name.isEmpty())
+            return;
+        const auto file = templatesFolder().getChildFile (name + ".mdaw");
+        templatesFolder().createDirectory();
+        safe->templateOnly = ref.operator->();
+        safe->saveProject (file, SaveKind::Copy);
+        safe->templateOnly = nullptr;
+    }), true);
+}
+
+void MainComponent::addFromTemplate (const juce::File& file)
+{
+    const int before = engine.getNumTracks();
+    loadProject (file, true);
+    if (engine.getNumTracks() == before)
+        cancelEdit();   // nothing was added
+}
+
+// The versions of the project: the copies in its backups folder, with a way to open one in a tab or to go back to it.
+void MainComponent::openVersionHistory()
+{
+    if (currentProject == juce::File() || ! backupFolder (currentProject).isDirectory())
+    {
+        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::InfoIcon, "No versions yet", "Save the project first: every save leaves a version here.");
+        return;
+    }
+    juce::Component::SafePointer<MainComponent> safe (this);
+    auto closeIt = [safe] { juce::MessageManager::callAsync ([safe] { if (safe != nullptr) safe->historyWindow.reset(); }); };
+    auto* panel = new VersionHistoryPanel (backupFolder (currentProject),
+        [safe] (const juce::File& version)
+        {
+            if (safe == nullptr)
+                return;
+            if (safe->requestOpenInTab)
+                safe->requestOpenInTab (version);
+            else
+                juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::InfoIcon, "Open the version", "Use File > Open... and choose:\n" + version.getFullPathName());
+        },
+        [safe] (const juce::File& version)
+        {
+            if (safe == nullptr)
+                return;
+            juce::AlertWindow::showAsync (juce::MessageBoxOptions::makeOptionsOkCancel (juce::MessageBoxIconType::QuestionIcon, "Go back to this version?",
+                                              "The project is replaced by the version of " + version.getLastModificationTime().formatted ("%d %b %Y %H:%M:%S")
+                                                  + ". What you have now is kept as a copy in the history first.",
+                                              "Go back", "Cancel", safe.getComponent()),
+                                          [safe, version] (int result)
+            {
+                if (safe == nullptr || result != 1)
+                    return;
+                const auto original = safe->currentProject;
+                safe->writeBackup (original);   // (the present state stays reachable)
+                safe->historyWindow.reset();
+                safe->loadProject (version);
+                safe->currentProject = original;
+                ++safe->editCounter;   // (differs from what is saved)
+                if (safe->onTitleChanged)
+                    safe->onTitleChanged();
+            });
+        },
+        closeIt);
+    historyWindow = std::make_unique<VersionHistoryWindow> ("Version history - " + currentProject.getFileNameWithoutExtension(), panel, closeIt);
+}
+
 void MainComponent::saveProjectAs()
 {
     chooser = std::make_unique<juce::FileChooser> ("Save project", currentProject, "*.mdaw");
@@ -6465,6 +6917,7 @@ void MainComponent::fileMenu()
     menu.addItem (4, "Save as...");
     menu.addItem (5, "Save a new version (adds v2, v3...)");
     menu.addItem (6, "Save with all audio in one folder...");
+    menu.addItem (11, "Version history...", currentProject != juce::File() && backupFolder (currentProject).isDirectory());
     menu.addItem (7, "Show the backups folder", currentProject != juce::File() && backupFolder (currentProject).isDirectory());
     menu.addSeparator();
     menu.addItem (8, "Export audio (WAV, FLAC, MP3...)...");
@@ -6480,6 +6933,7 @@ void MainComponent::fileMenu()
         else if (result == 5) saveNewVersion();
         else if (result == 6) collectProject();
         else if (result == 7) backupFolder (currentProject).revealToUser();
+        else if (result == 11) openVersionHistory();
         else if (result == 8) exportDialog();
         else if (result == 9) exportStemsDialog();
         else if (result == 10) startTour();
@@ -6541,6 +6995,7 @@ void MainComponent::resetToEmptyProject()
 
     tempoMap.setSections ({ TempoSection() });
     engine.setTempoMap (tempoMap, false);
+    engine.setSections ({});
     engine.metronome = false;
     metroButton.setToggleState (false, juce::dontSendNotification);
     bpmSlider.setValue (120.0, juce::dontSendNotification);
@@ -6579,25 +7034,35 @@ void MainComponent::openProjectDialog()
                           });
 }
 
-void MainComponent::loadProject (const juce::File& file)
+// `asTemplate`: the track(s) of the file are added to the open project (a template): the rest of the file (tempo, master...) is not used.
+void MainComponent::loadProject (const juce::File& file, bool asTemplate)
 {
     auto root = juce::JSON::parse (file);
     if (! root.isObject() || ! root["tracks"].isArray())
     {
         juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon,
-                                                "Cannot open project", file.getFullPathName());
+                                                asTemplate ? "Cannot open template" : "Cannot open project", file.getFullPathName());
         return;
     }
 
-    finishRecording();
-    engine.stop();
-    engine.setPositionSeconds (0.0);
-    playStartSeconds = 0.0;
-    clearTracksUI();
-    undoStack.clear();   // a freshly opened project starts with a clean history
-    redoStack.clear();
-    updateUndoButtons();
+    const int firstNew = asTemplate ? engine.getNumTracks() : 0;
+    if (asTemplate)
+    {
+        beginEdit();
+    }
+    else
+    {
+        finishRecording();
+        engine.stop();
+        engine.setPositionSeconds (0.0);
+        playStartSeconds = 0.0;
+        clearTracksUI();
+        undoStack.clear();   // a freshly opened project starts with a clean history
+        redoStack.clear();
+        updateUndoButtons();
+    }
 
+    if (! asTemplate)
     {
         // tempo sections; older projects only have one BPM (4/4 all the way)
         std::vector<TempoSection> sections;
@@ -6621,6 +7086,22 @@ void MainComponent::loadProject (const juce::File& file)
         tempoMap.setSections (sections);
         engine.setTempoMap (tempoMap, false);   // loading: the MIDI is already where it belongs
     }
+    if (! asTemplate)
+    {
+    {
+        std::vector<ArrSection> arrangement;
+        if (auto* list = root["arrangement"].getArray())
+            for (auto& sv : *list)
+            {
+                ArrSection s;
+                s.name = sv.getProperty ("name", "").toString().toStdString();
+                s.startBar = juce::jmax (0, (int) sv.getProperty ("startBar", 0));
+                s.bars = juce::jlimit (1, 999, (int) sv.getProperty ("bars", 4));
+                s.colour = (juce::uint32) (juce::int64) sv.getProperty ("colour", (juce::int64) 0);
+                arrangement.push_back (s);
+            }
+        engine.setSections (std::move (arrangement));
+    }
     engine.metronome = (bool) root.getProperty ("metronome", false);
     bpmSlider.setValue (tempoMap.getSections().front().bpm, juce::dontSendNotification);
     metroButton.setToggleState (engine.metronome, juce::dontSendNotification);
@@ -6633,22 +7114,26 @@ void MainComponent::loadProject (const juce::File& file)
     punchButton.setToggleState (engine.punchEnabled, juce::dontSendNotification);
     engine.loopEnabled = (bool) root.getProperty ("loopEnabled", false);
     loopButton.setToggleState (engine.loopEnabled, juce::dontSendNotification);
+    }
 
     juce::StringArray missing, pluginProblems;
     const auto baseDir = file.getParentDirectory();
 
     // master channel (projects from before it had effects only stored a master volume)
-    engine.resetMaster();
-    if (const auto masterVar = root["master"]; masterVar.isObject())
+    if (! asTemplate)
     {
-        engine.getMaster().gain = (float) (double) masterVar.getProperty ("gain", 0.9);
-        readEffectsAndAutomation (engine.getMaster(), masterVar, pluginProblems);
+        engine.resetMaster();
+        if (const auto masterVar = root["master"]; masterVar.isObject())
+        {
+            engine.getMaster().gain = (float) (double) masterVar.getProperty ("gain", 0.9);
+            readEffectsAndAutomation (engine.getMaster(), masterVar, pluginProblems);
+        }
+        else
+        {
+            engine.getMaster().gain = (float) (double) root.getProperty ("masterGain", 0.9);
+        }
+        masterHeader->syncControls();
     }
-    else
-    {
-        engine.getMaster().gain = (float) (double) root.getProperty ("masterGain", 0.9);
-    }
-    masterHeader->syncControls();
 
     for (auto& item : *root["tracks"].getArray())
     {
@@ -6660,6 +7145,7 @@ void MainComponent::loadProject (const juce::File& file)
                 : isSampler ? engine.addSamplerTrack (trackName)
                             : engine.addTrack (trackName, isMidi ? Track::Type::Midi : Track::Type::Audio,
                                                ! isMidi && (bool) item.getProperty ("bus", false));
+        t->colour = (juce::uint32) (juce::int64) item.getProperty ("colour", (juce::int64) 0);
 
         if (isSampler)   // the sample and how it plays
         {
@@ -6700,6 +7186,21 @@ void MainComponent::loadProject (const juce::File& file)
                     readSamplerParams (pv, pd.sampler.params);
                     if (const double st = pv.getProperty ("stretch", 1.0); st != 1.0 && pd.sampler.getSample() != nullptr)
                         engine.setSamplerStretch (pd.sampler, st);
+                    pd.velLo = (float) (double) pv.getProperty ("velLo", 0.0);
+                    pd.velHi = (float) (double) pv.getProperty ("velHi", 1.0);
+                    if (auto* layerList = pv["layers"].getArray())   // (after the pad's own settings: a layer starts as a copy of them)
+                        for (auto& lv : *layerList)
+                        {
+                            const int slot = juce::jlimit (0, DrumKit::maxLayers - 1, (int) lv.getProperty ("slot", 0));
+                            const auto sampleFile = baseDir.getChildFile (lv["file"].toString());
+                            if (engine.loadDrumLayer (*t, pad, slot, sampleFile))
+                            {
+                                pd.layers[(size_t) slot].velLo = (float) (double) lv.getProperty ("velLo", 0.0);
+                                pd.layers[(size_t) slot].velHi = (float) (double) lv.getProperty ("velHi", 1.0);
+                            }
+                            else
+                                missing.add (sampleFile.getFullPathName());
+                        }
                 }
         t->gain = (float) (double) item.getProperty ("gain", 0.8);
         t->pan = (float) (double) item.getProperty ("pan", 0.0);
@@ -6717,9 +7218,14 @@ void MainComponent::loadProject (const juce::File& file)
                 missing.add (audioFile.getFullPathName());
                 return;
             }
+            std::vector<WarpMarker> warps;
+            if (auto* warpList = v["warps"].getArray())
+                for (auto& wv : *warpList)
+                    if (auto* pair = wv.getArray(); pair != nullptr && pair->size() >= 2)
+                        warps.push_back ({ (double) (*pair)[0], (double) (*pair)[1] });
             if (v.hasProperty ("stretch"))   // the stretched / shifted audio is made again (or taken from the cache) before the region is set
                 if (! engine.restoreProcessedClip (*t, id, v.getProperty ("stretch", 1.0), v.getProperty ("pitch", 0.0),
-                                                   v.getProperty ("regionStart", 0.0), v.getProperty ("regionLength", 0.0), nullptr))
+                                                   v.getProperty ("regionStart", 0.0), v.getProperty ("regionLength", 0.0), nullptr, warps))
                     pluginProblems.add ("Could not apply the time-stretch of a clip in " + t->name);
             Clip c;
             engine.getClip (*t, id, c);
@@ -6860,24 +7366,24 @@ void MainComponent::loadProject (const juce::File& file)
                     const bool isObject = v.isObject();
                     const int trackIndex = isObject ? (int) v["track"] : (int) v;
                     const int channel = isObject ? (int) v["channel"] : 0;
-                    if (auto* to = engine.getTrack (trackIndex))
+                    if (auto* to = engine.getTrack (firstNew + trackIndex))
                         routes.push_back ({ to, channel });
                 }
             if (item.hasProperty ("midiOut") && (int) item["midiOut"] >= 0)   // projects saved with a single route
-                if (auto* to = engine.getTrack ((int) item["midiOut"]))
+                if (auto* to = engine.getTrack (firstNew + (int) item["midiOut"]))
                     routes.push_back ({ to, 0 });
 
-            if (auto* from = engine.getTrack (index))
+            if (auto* from = engine.getTrack (firstNew + index))
             {
                 from->sequencer = (bool) item.getProperty ("sequencer", ! routes.empty());
                 if (! routes.empty())
                     engine.setMidiOuts (*from, routes);
 
-                // output bus and sends
-                if (item.hasProperty ("output"))
+                // output bus and sends (a template has no other tracks to point at)
+                if (! asTemplate && item.hasProperty ("output"))
                     if (auto* bus = engine.getTrack ((int) item["output"]))
                         engine.setTrackOutput (*from, bus);
-                if (auto* sendArray = item["sends"].getArray())
+                if (auto* sendArray = asTemplate ? nullptr : item["sends"].getArray())
                     for (auto& sv : *sendArray)
                         if (auto* bus = engine.getTrack ((int) sv["bus"]))
                             engine.setSend (*from, *bus, (float) (double) sv.getProperty ("level", 0.5), (bool) sv.getProperty ("pre", false));
@@ -6886,11 +7392,14 @@ void MainComponent::loadProject (const juce::File& file)
         }
     }
 
-    currentProject = file;
-    savedEdit = editCounter;   // freshly opened: nothing unsaved
-    addRecentProject (file);
-    if (onTitleChanged)
-        onTitleChanged();
+    if (! asTemplate)
+    {
+        currentProject = file;
+        savedEdit = editCounter;   // freshly opened: nothing unsaved
+        addRecentProject (file);
+        if (onTitleChanged)
+            onTitleChanged();
+    }
     clipsChanged();
 
     if (missing.size() > 0)

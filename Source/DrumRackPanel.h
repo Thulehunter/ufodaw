@@ -16,6 +16,8 @@ public:
         std::function<bool (int pad, const juce::File&)> load; // load a sample into a pad
         std::function<void (int pad)> reset;                   // back to the built-in sound
         std::function<void (int pad)> editSampler;             // open the pad's Simpler
+        std::function<bool (int pad, int layer, const juce::File&)> loadLayer;   // an extra sample of a pad (layer 0..2)
+        std::function<void (int pad, int layer)> clearLayer;
         std::function<void()> changed;                         // something was edited
         std::function<void()> beginEdit;                       // called before every change (the undo snapshot)
     };
@@ -80,6 +82,66 @@ public:
         for (auto* b : { &loadButton, &resetButton, &editButton })
             addAndMakeVisible (*b);
 
+        // Velocity layers / round-robin: the pad's own sample and up to three more, each with the velocity range it answers to. Samples whose
+        // ranges overlap take turns (round-robin); ranges side by side make a soft / hard pair.
+        layersLabel.setText ("Samples and velocity ranges (overlapping ranges take turns, round-robin)", juce::dontSendNotification);
+        layersLabel.setColour (juce::Label::textColourId, Theme::textDim);
+        layersLabel.setFont (juce::FontOptions (12.5f));
+        addAndMakeVisible (layersLabel);
+        for (int i = 0; i < DrumKit::maxLayers + 1; ++i)
+        {
+            auto& row = layerRows[(size_t) i];
+            row.slider.setSliderStyle (juce::Slider::TwoValueHorizontal);
+            row.slider.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
+            row.slider.setRange (0.0, 127.0, 1.0);
+            row.slider.setMinAndMaxValues (0.0, 127.0, juce::dontSendNotification);
+            row.slider.setTooltip ("The velocities (1-127) this sample plays for");
+            row.slider.onDragStart = [this] { begin(); };
+            row.slider.onValueChange = [this, i]
+            {
+                auto& r = layerRows[(size_t) i];
+                const float lo = (float) r.slider.getMinValue() / 127.0f, hi = (float) r.slider.getMaxValue() / 127.0f;
+                if (i == 0) { kit.getPad (selected).velLo = lo; kit.getPad (selected).velHi = hi; }
+                else        { kit.getPad (selected).layers[(size_t) i - 1].velLo = lo; kit.getPad (selected).layers[(size_t) i - 1].velHi = hi; }
+                rangeText (i);
+                edited();
+            };
+            addAndMakeVisible (row.slider);
+            row.range.setFont (juce::FontOptions (12.0f));
+            row.range.setColour (juce::Label::textColourId, Theme::textDim);
+            row.range.setJustificationType (juce::Justification::centredRight);
+            addAndMakeVisible (row.range);
+            row.name.setFont (juce::FontOptions (13.0f));
+            row.name.setColour (juce::Label::textColourId, Theme::text);
+            addAndMakeVisible (row.name);
+            if (i > 0)
+            {
+                row.add.onClick = [this, i]
+                {
+                    chooser = std::make_unique<juce::FileChooser> ("Choose a sample for this layer", juce::File(), "*.wav;*.aif;*.aiff;*.flac;*.mp3;*.ogg");
+                    const int pad = selected;
+                    chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+                                          [this, pad, i] (const juce::FileChooser& fc)
+                                          {
+                                              if (! fc.getResult().existsAsFile())
+                                                  return;
+                                              begin();
+                                              if (hooks.loadLayer && hooks.loadLayer (pad, i - 1, fc.getResult()))
+                                              {
+                                                  edited();
+                                                  refreshControls();
+                                              }
+                                              else
+                                                  juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Cannot open sample", fc.getResult().getFullPathName());
+                                          });
+                };
+                row.remove.setTooltip ("Remove this sample");
+                row.remove.onClick = [this, i] { begin(); if (hooks.clearLayer) hooks.clearLayer (selected, i - 1); edited(); refreshControls(); };
+                addAndMakeVisible (row.add);
+                addAndMakeVisible (row.remove);
+            }
+        }
+
         hint.setText ("Click a pad, or play the keys Z X C V / A S D F / Q W E R / 1 2 3 4 (like the pads). Drop an audio file on a pad to load it. "
                       "Each pad is a small Simpler: Edit sampler... for start, "
                       "end, pitch, envelope and filter.", juce::dontSendNotification);
@@ -89,7 +151,7 @@ public:
 
         refreshControls();
         setWantsKeyboardFocus (true);
-        setSize (520, 560);
+        setSize (520, 700);
         startTimerHz (15);   // lights the pads that are playing
     }
 
@@ -145,6 +207,30 @@ public:
         chokeBox.setSelectedId (p.chokeGroup.load() + 1, juce::dontSendNotification);
         resetButton.setEnabled (p.file != juce::File() || selected < 8);
         editButton.setEnabled (kit.hasSample (selected));
+
+        for (int i = 0; i < DrumKit::maxLayers + 1; ++i)
+        {
+            auto& row = layerRows[(size_t) i];
+            const bool used = i == 0 || p.layers[(size_t) i - 1].used.load();
+            const float lo = i == 0 ? p.velLo.load() : p.layers[(size_t) i - 1].velLo.load();
+            const float hi = i == 0 ? p.velHi.load() : p.layers[(size_t) i - 1].velHi.load();
+            row.slider.setMinAndMaxValues (std::round (lo * 127.0f), std::round (hi * 127.0f), juce::dontSendNotification);
+            row.slider.setEnabled (used && (i > 0 || kit.hasSample (selected)));
+            row.slider.setVisible (used);
+            row.range.setVisible (used);
+            row.name.setVisible (used);
+            if (i == 0)
+                row.name.setText ("Sample 1 (the pad's own)", juce::dontSendNotification);
+            else
+            {
+                row.add.setVisible (! used);
+                row.remove.setVisible (used);
+                row.add.setButtonText ("+ Add sample " + juce::String (i + 1) + "...");
+                row.name.setText (used ? "Sample " + juce::String (i + 1) + ": " + p.layers[(size_t) i - 1].file.getFileName() : juce::String(), juce::dontSendNotification);
+            }
+            rangeText (i);
+        }
+        resized();
     }
 
     void paint (juce::Graphics& g) override
@@ -213,6 +299,21 @@ public:
         buttons.removeFromLeft (8);
         resetButton.setBounds (buttons.removeFromLeft (130));
         r.removeFromTop (8);
+        layersLabel.setBounds (r.removeFromTop (20));
+        for (int i = 0; i < DrumKit::maxLayers + 1; ++i)
+        {
+            auto line = r.removeFromTop (28);
+            auto& row = layerRows[(size_t) i];
+            if (i > 0)
+            {
+                row.remove.setBounds (line.removeFromRight (26).reduced (0, 2));
+                row.add.setBounds (line.withWidth (150).reduced (0, 2));   // (shown while the layer is empty, in the place of the name)
+            }
+            row.name.setBounds (line.removeFromLeft (190));
+            row.range.setBounds (line.removeFromRight (70));
+            row.slider.setBounds (line.reduced (0, 2));
+        }
+        r.removeFromTop (6);
         hint.setBounds (r.removeFromTop (40));
     }
 
@@ -301,6 +402,13 @@ private:
             juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Cannot open sample", f.getFullPathName());
     }
 
+    void rangeText (int i)
+    {
+        auto& row = layerRows[(size_t) i];
+        row.range.setText ("vel " + juce::String ((int) std::max (1.0, row.slider.getMinValue())) + "-" + juce::String ((int) row.slider.getMaxValue()),
+                           juce::dontSendNotification);
+    }
+
     void edited() { if (hooks.changed) hooks.changed(); }
     void begin() { if (hooks.beginEdit) hooks.beginEdit(); }
 
@@ -317,6 +425,14 @@ private:
     juce::Rectangle<int> gridArea { 12, 12, 496, 330 };
     std::unique_ptr<juce::FileChooser> chooser;
 
+    struct LayerRow
+    {
+        juce::Label name, range;
+        juce::Slider slider;
+        juce::TextButton add, remove { "x" };
+    };
+    std::array<LayerRow, DrumKit::maxLayers + 1> layerRows;
+    juce::Label layersLabel;
     juce::Label nameLabel, fileLabel, gainLabel, panLabel, chokeLabel, hint;
     juce::Slider gain, pan;
     juce::ToggleButton muteButton { "Mute" }, soloButton { "Solo" };
