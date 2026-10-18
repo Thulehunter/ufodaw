@@ -20,5 +20,6 @@ struct PluginSlot
     std::unique_ptr<juce::AudioPluginInstance> instance;
     juce::PluginDescription description;
     std::atomic<bool> bypass { false };
+    std::atomic<bool> editorOpen { false };   // its editor window is open: the engine keeps the plugin processing (many plugins say "audio engine inactive" otherwise)
     juce::AudioBuffer<float> scratch;   // processing buffer sized for the plugin's channel count
 };

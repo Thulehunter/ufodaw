@@ -2002,7 +2002,7 @@ bool Engine::anySynthActive() const
         if ((t->voices != nullptr && t->voices->isActive())
             || (t->kit != nullptr && t->kit->isActive())
             || (t->sampler != nullptr && t->sampler->isActive())
-            || (t->instrument != nullptr && t->pluginTailSamples > 0.0))
+            || (t->instrument != nullptr && (t->pluginTailSamples > 0.0 || t->instrument->editorOpen.load())))   // (an open editor keeps its plugin running)
             return true;
     return false;
 }
@@ -2882,7 +2882,7 @@ void Engine::mixBlock (float* outL, float* outR, int n, juce::int64 pos, bool wi
             else if (t->instrument != nullptr)
             {
                 // the instrument keeps running for a while after the transport stops, so its tail can ring out
-                if (running)
+                if (running || t->instrument->editorOpen.load())   // (with its editor open it keeps processing: drum plugins report "audio engine inactive" otherwise)
                     t->pluginTailSamples = 3.0 * sampleRate;
                 if (t->pluginTailSamples > 0.0)
                 {

@@ -20,6 +20,7 @@ public:
         : juce::DocumentWindow (s.description.name, Theme::panel, juce::DocumentWindow::closeButton),
           host (h), slot (&s)
     {
+        s.editorOpen = true;   // (from here on the audio thread keeps the plugin running, even with the transport stopped)
         setUsingNativeTitleBar (true);
 
         juce::AudioProcessorEditor* editor = s.instance->hasEditor() ? s.instance->createEditorIfNeeded() : nullptr;
@@ -31,6 +32,8 @@ public:
         centreWithSize (getWidth(), getHeight());
         setVisible (true);
     }
+
+    ~EditorWindow() override { slot->editorOpen = false; }
 
     const PluginSlot* getSlot() const { return slot; }
 
