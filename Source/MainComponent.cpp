@@ -4116,8 +4116,12 @@ void MainComponent::openPlugins (Track& t, juce::Component& anchor)
                                                                             [safe, ref]
                                                                             {
                                                                                 if (safe != nullptr && safe->engine.indexOfTrack (ref) >= 0)
+                                                                                {
                                                                                     if (ref->sampler != nullptr || ref->kit != nullptr)
                                                                                         safe->openInstrumentEditor (*ref);
+                                                                                    else if (ref->type == Track::Type::Midi && ref->instrument == nullptr && ref->voices != nullptr)
+                                                                                        safe->openSynthPanel (*ref);   // the built-in synth: all its settings
+                                                                                }
                                                                             }),
                                             anchor.getScreenBounds(), nullptr);
 }
