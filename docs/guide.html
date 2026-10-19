@@ -25,6 +25,7 @@
     <a href="guide.html" aria-current="page">Guide</a>
     <a href="index.html#download">Download</a>
     <a href="index.html#faq">FAQ</a>
+    <a class="nav-btn" id="bug-nav" href="index.html#feedback">Report a bug</a>
     <a class="nav-btn" id="fr-nav" href="index.html#feedback">Request a feature</a>
   </nav>
 </header>
@@ -372,7 +373,7 @@
         <li>VST3 on Windows. VST2 cannot be hosted (Steinberg no longer licenses it) and CLAP is not supported by the hosting code UFODAW is built on. A macOS build can host Audio Units, but it is untested.</li>
         <li>Windows only so far.</li>
       </ul>
-      <p>Missing something? <a id="fr-link" href="index.html#feedback">Request a feature</a>.</p>
+      <p>Missing something? <a id="fr-link" href="index.html#feedback">Request a feature</a>. Found a bug? <a id="bug-link" href="index.html#feedback">Report it</a>.</p>
     </section>
 
   </main>
@@ -388,6 +389,12 @@
   var fr = REPO + "/issues/new?labels=enhancement&title=" + encodeURIComponent("Feature request: ");
   ["fr-nav", "fr-link"].forEach(function (id) {
     var a = document.getElementById(id); a.href = fr; a.target = "_blank"; a.rel = "noopener";
+  });
+  var VERSION = "0.8.8.2";   // (update with every release)
+  var body = "**What happened?**\n\n\n**What did you expect?**\n\n\n**How can it be repeated?**\n1. \n2. \n3. \n\n**Version:** UFODAW " + VERSION + "\n**Windows version:**\n**Audio device and driver (ASIO / WASAPI):**\n**Plugins involved (name, maker):**\n";
+  var bug = REPO + "/issues/new?labels=bug&title=" + encodeURIComponent("Bug: ") + "&body=" + encodeURIComponent(body);
+  ["bug-nav", "bug-link"].forEach(function (id) {
+    var a = document.getElementById(id); a.href = bug; a.target = "_blank"; a.rel = "noopener";
   });
 </script>
 </body>

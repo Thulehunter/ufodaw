@@ -18,7 +18,7 @@
 {"@context":"https://schema.org","@type":"SoftwareApplication","name":"UFODAW","applicationCategory":"MultimediaApplication","applicationSubCategory":"Digital audio workstation","operatingSystem":"Windows","softwareVersion":"0.8.8.2","license":"https://www.gnu.org/licenses/agpl-3.0.html","url":"https://ufodaw.eu/","image":"https://ufodaw.eu/icon.png","downloadUrl":"https://github.com/Thulehunter/ufodaw/releases/latest","offers":{"@type":"Offer","price":"0","priceCurrency":"EUR"}}
 </script>
 <script type="application/ld+json">
-{"@context":"https://schema.org","@type":"VideoObject","name":"UFODAW demo: record, arrange and mix","description":"A 54-second tour of UFODAW, a free digital audio workstation for Windows.","thumbnailUrl":"https://ufodaw.eu/ufodaw-demo-poster.jpg","contentUrl":"https://ufodaw.eu/ufodaw-demo.mp4","uploadDate":"2026-10-19","duration":"PT54S"}
+{"@context":"https://schema.org","@type":"VideoObject","name":"UFODAW demo: record, arrange and mix","description":"A two-minute tour of UFODAW, a free digital audio workstation for Windows: piano roll, EQ and effects chain, track groups, freeze and the loudness meter.","thumbnailUrl":"https://ufodaw.eu/ufodaw-demo-poster.jpg","contentUrl":"https://ufodaw.eu/ufodaw-demo.mp4","uploadDate":"2026-10-19","duration":"PT2M19S"}
 </script>
 <link rel="stylesheet" href="style.css">
 </head>
@@ -32,6 +32,7 @@
     <a href="guide.html">Guide</a>
     <a href="#download">Download</a>
     <a href="#faq">FAQ</a>
+    <a class="nav-btn" id="bug-nav" href="#feedback">Report a bug</a>
     <a class="nav-btn" id="fr-nav" href="#feedback">Request a feature</a>
   </nav>
 </header>
@@ -61,7 +62,7 @@
       <source src="ufodaw-demo.mp4" type="video/mp4">
       Your browser can't play this video. <a href="ufodaw-demo.mp4">Download it instead</a>.
     </video>
-    <p class="meta">A 54-second tour of UFODAW. Press play, sound on.</p>
+    <p class="meta">A two-minute tour of UFODAW: piano roll, EQ and the effects chain, track groups, freeze and the loudness meter. Press play, sound on.</p>
   </section>
 
   <section id="features">
@@ -184,12 +185,15 @@
   </section>
 
   <section id="feedback" class="center">
-    <h2>Missing something?</h2>
-    <p class="lead">UFODAW is shaped by the people who use it. Tell us which feature you want next, or vote for ideas that are already on the list.</p>
+    <h2>Missing something, or found a bug?</h2>
+    <p class="lead">UFODAW is shaped by the people who use it. Tell us which feature you want next, vote for ideas that are already on the list, or report something that does not work the way it should.</p>
     <div class="cta">
       <a class="btn primary" id="fr" href="#" target="_blank" rel="noopener">Request a feature</a>
+      <a class="btn primary" id="bug" href="#" target="_blank" rel="noopener">Report a bug</a>
       <a class="btn" id="fr-list" href="#" target="_blank" rel="noopener">Browse requests</a>
+      <a class="btn" id="bug-list" href="#" target="_blank" rel="noopener">Known bugs</a>
     </div>
+    <p class="meta">A bug report opens a form on GitHub (you need a free GitHub account). Say what you did, what happened and what you expected; a project file that shows the problem helps a lot.</p>
   </section>
 
   <section id="faq" class="alt">
@@ -218,6 +222,13 @@
     document.getElementById("fr-nav").href = fr;
     document.getElementById("fr-nav").target = "_blank";
     document.getElementById("fr-list").href = REPO + "/issues?q=label%3Aenhancement";
+    var VERSION = "0.8.8.2";   // (update with every release)
+    var body = "**What happened?**\n\n\n**What did you expect?**\n\n\n**How can it be repeated?**\n1. \n2. \n3. \n\n**Version:** UFODAW " + VERSION + "\n**Windows version:**\n**Audio device and driver (ASIO / WASAPI):**\n**Plugins involved (name, maker):**\n";
+    var bug = REPO + "/issues/new?labels=bug&title=" + encodeURIComponent("Bug: ") + "&body=" + encodeURIComponent(body);
+    document.getElementById("bug").href = bug;
+    document.getElementById("bug-nav").href = bug;
+    document.getElementById("bug-nav").target = "_blank";
+    document.getElementById("bug-list").href = REPO + "/issues?q=label%3Abug";
   }
 </script>
 </body>
