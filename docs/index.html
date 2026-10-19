@@ -28,6 +28,7 @@
   <a class="brand" href="#top"><img src="icon.png" alt="" width="32" height="32"> UFODAW</a>
   <nav>
     <a href="#features">Features</a>
+    <a href="#gallery">Screenshots</a>
     <a href="#workflow">Workflow</a>
     <a href="guide.html">Guide</a>
     <a href="#download">Download</a>
@@ -63,6 +64,29 @@
       Your browser can't play this video. <a href="ufodaw-demo.mp4">Download it instead</a>.
     </video>
     <p class="meta">A two-minute tour of UFODAW: piano roll, EQ and the effects chain, track groups, freeze and the loudness meter. Press play, sound on.</p>
+  </section>
+
+  <section id="gallery">
+    <h2>Screenshots</h2>
+    <p class="lead center">A look at the interface and some of the deeper features. Click a picture to enlarge it.</p>
+    <div class="shots">
+      <figure><button type="button" data-full="shots/arrangement.jpg" data-cap="Arrangement"><img src="shots/arrangement.jpg" alt="UFODAW arrangement with audio, MIDI and drum tracks and a reverb bus" width="1600" height="960" loading="lazy"></button><figcaption><b>Arrangement</b><span>Audio, MIDI and drum clips on colour-coded tracks, with a bus and a master channel.</span></figcaption></figure>
+      <figure><button type="button" data-full="shots/piano-roll.jpg" data-cap="Piano roll with scale and chord helper"><img src="shots/piano-roll.jpg" alt="Piano roll with a key and scale picker and chord options" width="1600" height="960" loading="lazy"></button><figcaption><b>Piano roll</b><span>Pick a key and scale, snap notes to it, and add whole chords with one click.</span></figcaption></figure>
+      <figure><button type="button" data-full="shots/eq.jpg" data-cap="Six-band EQ with a live spectrum"><img src="shots/eq.jpg" alt="Six-band parametric EQ with a draggable curve over a live spectrum" width="1600" height="960" loading="lazy"></button><figcaption><b>Six-band EQ</b><span>One curve with a draggable node per band, drawn over a live spectrum.</span></figcaption></figure>
+      <figure><button type="button" data-full="shots/compressor.jpg" data-cap="Compressor"><img src="shots/compressor.jpg" alt="Compressor panel with a transfer curve" width="1600" height="960" loading="lazy"></button><figcaption><b>Compressor</b><span>Soft knee, peak or RMS, parallel mix, and a sidechain that can listen to another track.</span></figcaption></figure>
+      <figure><button type="button" data-full="shots/multiband.jpg" data-cap="Multiband compressor"><img src="shots/multiband.jpg" alt="Multiband compressor with three bands" width="1600" height="960" loading="lazy"></button><figcaption><b>Multiband compressor</b><span>Three bands with their own threshold and gain, next to a gate, de-esser, saturation and limiter.</span></figcaption></figure>
+      <figure><button type="button" data-full="shots/delay.jpg" data-cap="Delay"><img src="shots/delay.jpg" alt="Delay panel with time, feedback and ping-pong" width="1600" height="960" loading="lazy"></button><figcaption><b>Delay</b><span>Separate left and right times, filters in the feedback, ping-pong, wobble and tempo sync.</span></figcaption></figure>
+      <figure><button type="button" data-full="shots/reverb.jpg" data-cap="Reverb"><img src="shots/reverb.jpg" alt="Reverb panel with size, decay and damping" width="1600" height="960" loading="lazy"></button><figcaption><b>Reverb</b><span>An 8-line feedback delay network with room, plate, hall and cathedral presets.</span></figcaption></figure>
+      <figure><button type="button" data-full="shots/groups.jpg" data-cap="Track groups"><img src="shots/groups.jpg" alt="Track context menu with the group option" width="1600" height="960" loading="lazy"></button><figcaption><b>Track groups</b><span>Fold tracks into folders with a shared mute and solo.</span></figcaption></figure>
+      <figure><button type="button" data-full="shots/freeze.jpg" data-cap="Freeze"><img src="shots/freeze.jpg" alt="Track context menu with the freeze option" width="1600" height="960" loading="lazy"></button><figcaption><b>Freeze</b><span>Bounce a track to audio to save CPU, and unfreeze it whenever you like.</span></figcaption></figure>
+      <figure><button type="button" data-full="shots/loudness.jpg" data-cap="LUFS loudness meter and spectrum"><img src="shots/loudness.jpg" alt="Master meter with LUFS values and a spectrum" width="1600" height="960" loading="lazy"></button><figcaption><b>Loudness meter</b><span>LUFS, peak and a spectrum, with targets for streaming and broadcast.</span></figcaption></figure>
+      <figure><button type="button" data-full="shots/command-palette.jpg" data-cap="Command palette"><img src="shots/command-palette.jpg" alt="Command palette open over the arrangement" width="1600" height="960" loading="lazy"></button><figcaption><b>Command palette</b><span>Press <kbd>Ctrl</kbd>+<kbd>K</kbd> and type what you want to do.</span></figcaption></figure>
+    </div>
+    <dialog id="lightbox" aria-label="Enlarged screenshot">
+      <form method="dialog"><button class="lb-close" aria-label="Close">×</button></form>
+      <img id="lb-img" alt="">
+      <p id="lb-cap"></p>
+    </dialog>
   </section>
 
   <section id="features">
@@ -257,6 +281,19 @@
     document.getElementById("bug-nav").target = "_blank";
     document.getElementById("bug-list").href = REPO + "/issues?q=label%3Abug";
   }
+  // Screenshot lightbox
+  (function () {
+    var box = document.getElementById("lightbox");
+    if (!box || !box.showModal) return;
+    var img = document.getElementById("lb-img"), cap = document.getElementById("lb-cap");
+    document.querySelectorAll(".shots button").forEach(function (b) {
+      b.addEventListener("click", function () {
+        img.src = b.dataset.full; img.alt = b.querySelector("img").alt; cap.textContent = b.dataset.cap;
+        box.showModal();
+      });
+    });
+    box.addEventListener("click", function (e) { if (e.target === box) box.close(); });
+  })();
 </script>
 </body>
 </html>

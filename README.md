@@ -1,21 +1,75 @@
-# UFODAW
+<p align="center">
+  <img src="docs/icon.png" alt="UFODAW logo" width="140">
+</p>
 
-A small digital audio workstation for Windows, written in C++17 with [JUCE](https://juce.com).
+<h1 align="center">UFODAW</h1>
+
+<p align="center">
+  <b>A free, open-source digital audio workstation for Windows.</b><br>
+  Audio and MIDI tracks, VST3 plugins, sampler, drum rack, deep automation and a full effects chain.
+</p>
+
+<p align="center">
+  <a href="https://ufodaw.eu">Website</a> ·
+  <a href="../../releases/latest">Download</a> ·
+  <a href="https://ufodaw.eu/guide.html">Guide</a> ·
+  <a href="https://discord.gg/BhvKsN6knU">Discord</a> ·
+  <a href="../../issues/new/choose">Report a bug or request a feature</a>
+</p>
+
+<p align="center">
+  <img src="docs/shots/arrangement.jpg" alt="UFODAW arrangement view with audio, MIDI and drum tracks" width="820">
+</p>
+
+UFODAW is a small, fast DAW written in C++17 with [JUCE](https://juce.com). It runs as a single program with no installer required, saves everything in one project file (`.mdaw`) and stays out of your way with a warm dark interface.
+
+## Highlights
+
+- **Record** several audio and MIDI tracks at once, with loop takes, punch in/out, count-in and comping.
+- **Make music** with a built-in synth, a Simpler-style sampler, a 16-pad drum rack, a piano roll with scale and chord helper, and any **VST3** instrument.
+- **Shape the sound** with a 6-band EQ, compressor (with sidechain), multiband compressor, gate, de-esser, saturation, chorus, delay, reverb and limiter on every track, plus buses and sends.
+- **Automate anything**, including plugin parameters, by drawing it or recording rides, and **MIDI-learn** your controller.
+- **Mix with confidence**: LUFS loudness meter, spectrum, reference-track A/B and clipping lamps.
+- **Never lose work**: autosave, crash recovery, versioned backups and a version history.
+- **Hardware friendly**: ASIO, MIDI clock, external synths and recording latency compensation.
+- **Free and open source** under the AGPLv3.
+
+## Screenshots
+
+<table>
+  <tr>
+    <td><img src="docs/shots/eq.jpg" alt="Six-band EQ with a live spectrum"><br><sub>Six-band EQ with a live spectrum</sub></td>
+    <td><img src="docs/shots/piano-roll.jpg" alt="Piano roll with scale and chord helper"><br><sub>Piano roll with scale and chord helper</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/shots/compressor.jpg" alt="Compressor with a transfer curve"><br><sub>Compressor with sidechain</sub></td>
+    <td><img src="docs/shots/loudness.jpg" alt="LUFS loudness meter and spectrum"><br><sub>LUFS loudness meter and spectrum</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/shots/reverb.jpg" alt="Reverb panel"><br><sub>Reverb</sub></td>
+    <td><img src="docs/shots/command-palette.jpg" alt="Command palette"><br><sub>Command palette (Ctrl+K)</sub></td>
+  </tr>
+</table>
+
+More screenshots and a demo video are on the [website](https://ufodaw.eu).
+
+## Quick start
+
+1. Download `UFODAW-<version>-win64.zip` (or the installer) from the [Releases](../../releases/latest) page.
+2. Unzip it and start `UFODAW.exe`. Windows may show a SmartScreen message because the program is not code-signed yet: *More info > Run anyway*.
+3. Open the **Audio** icon in the left rail and pick your audio device (see *Audio interfaces and ASIO* below).
+4. Press **+** in the left rail to add a track, or drag audio files into the window. `Ctrl+K` opens the command palette.
+
+New to it? The [guide](https://ufodaw.eu/guide.html) explains the deeper features step by step, and a short tour starts on the first launch.
 
 ## Features
+
+### Recording and tuning
 
 - **Audio tracks** - import wav / aiff / flac / mp3 / ogg (drag files into the window), record from your audio input.
   Every audio track has its own **input** (the button under the track name: one mono input or a stereo pair of your interface),
   several armed tracks record at once, each from its own input, and **Mon** lets you hear the input live through the track's
   effects, volume and pan.
-- **Tuner** - **Tuner** (gauge icon in the left rail) opens a chromatic tuner for any input of your interface: note, cents sharp/flat, a needle and
-  the frequency (A = 430-450 Hz). It starts on the input of the armed track and works down to a low bass B.
-- **Collect, versions and backups** - **Save As** (button) opens a menu: *Save a new version* (jam, jam v2, jam v3...), and *Save with all
-  audio in one folder*, which copies every audio file the project uses into `<folder>Audio` and opens the project from there, so the
-  whole folder can be moved to another disk or PC. Every normal save also leaves a time-stamped copy in `<project> backups` (the newest
-  twenty are kept; *Show the backups folder* in the same menu).
-- **Autosave and recovery** - every two minutes, when something changed, the project is written to a recovery file. If the program
-  crashes (a plugin, say) or is closed with unsaved changes, the next start offers to restore it; saving normally removes it.
 - **Metronome and count-in** - the **Click** button in the transport bar (or `M`) switches the metronome on and off, also while playing
   or recording. **Count-in** (top bar) sets 0-4 bars of clicks before a recording starts; they follow the tempo and time signature at
   the playhead, play even when the metronome is off, and nothing is recorded during them (the display counts the beats down).
@@ -23,92 +77,33 @@ A small digital audio workstation for Windows, written in C++17 with [JUCE](http
   *Choose take*. Split (`S`) cuts all takes at the playhead, so each part can use a different take (comping); *Keep this take*
   flattens the result.
 - **Punch in/out** - **Punch** records only inside a region: it starts and stops by itself, the rest of the take stays untouched.
-- **Arrangement** - clips can be moved (also between tracks), split, duplicated and deleted; zoom, snap to the grid, loop region.
-- **MIDI tracks** with a built-in polyphonic synth (sine / saw / square / triangle, ADSR, low-pass) and a **piano roll**
-  that names every key and note, lights up the keys that sound (live or during playback) and scrolls to the clip's notes
-  ("Show notes" brings them back).
-- **Sampler** (Simpler-style) - **+ (left rail) > Sampler** makes a MIDI track that plays one sample: load a file (or drop one on the track), drag the
-  yellow start/end markers in its window, and pick the mode: *Classic* (pitched by the key from the root note, with loop, ADSR and a low-pass
-  filter), *One-shot* (plays out whatever the key does) or *Slice* (the region cut into equal slices, one key each). *Detect pitch* sets the root
-  note and tuning from the sample itself. Right-click an audio clip > *Sample this clip* turns it into a sampler track with one note.
-  Open it again with the track's instrument button (*Sampler: ...*) or *Sampler window* in the piano roll.
-- **Stretchable patterns** - drag the right edge of a MIDI or drum clip: longer repeats the pattern to fill the clip, shorter cuts it off. Hold **Shift** to stretch the pattern instead (half as long = twice as fast, longer = slower); hold **Alt** to switch snapping off.
-- **Sub-tracks** - a **+ / -** button in the header of a MIDI track that has sub-tracks shows or hides them. When a drum plugin (EZdrummer, Superior Drummer, Addictive Drums, BFD...) is loaded as the instrument, the drum sub-tracks appear by themselves, once. Right-click a MIDI track header > *Sub-tracks*: one lane per pitch under the track (kick, snare, hats... for a drum plugin such as EZdrummer), created from the notes the track uses, from a General MIDI drum preset, or by hand. Click an empty spot in a lane to add a note, click a note to remove it; each sub-track has its own mute and solo (they filter the notes of that pitch before they reach the instrument), a name and a pitch or pitch range (right-click it). Saved with the project and undoable.
-- **Sub-track faders and meters** - every sub-track has a volume fader (0 - 1.5, double-click resets; it scales the velocity of that pitch) and a small level meter that shows how hard the pitch is hit.
-- **Move tracks** - drag a track by its header up or down (an orange line shows where it lands); the track moves with its sub-tracks, lane and clips. One undo step.
-- **Tempo calculator and BPM detection** - in the sampler window, *Tempo...* tells how many beats the part between the markers lasts and the tempo that makes; *Detect the tempo* finds it from the audio. Set the project tempo to it, or stretch the sample (pitch kept) to the project's tempo.
-- **Slice by hits, and slices to MIDI** - in the sampler's *Slice* mode, *Slice by hits* cuts the part between the markers at its hits (kicks, snares, hats...) instead of in equal parts; the slider next to it sets the sensitivity. *To MIDI* puts the slices on the track as a pattern (one note per slice from the slice key up, in the timing of the sample) at the playhead.
-- **Warp audio clips** - right-click an audio clip > *Warp...*: the clip is drawn over the project's beat grid. *Find hits* puts a marker on every hit, *Match tempo* brings the clip to the project's tempo, *Snap to grid* puts every marker on the nearest sixteenth; drag a marker to move it (double-click adds one, right-click removes it). *Apply* stretches the audio between the markers (pitch kept) in the background. Saved with the project; undoable.
-- **Velocity layers and round-robin for drum pads** - a pad can hold up to three more samples besides its own, each with a velocity range (drum rack window, *Samples and velocity ranges*). Samples whose ranges overlap take turns, so a repeated snare does not sound the same every time; ranges side by side make a soft / hard pair.
-- **Arrangement sections** - the *Sections* button in the top bar: name parts of the song (verse, chorus...), each from a bar for a number of bars; they show as coloured bands along the top of the ruler. *Go* moves the playhead there, *Loop* loops that part, *Copy* puts a copy of the section (with everything that plays in it) right after it and moves what comes later along, and *<* / *>* swap a section with its neighbour (the clips go with it). Saved with the project; undoable.
-- **Track colours and templates** - right-click a track header > *Colour* (header, mixer strip and clips take it). *Save as a template...* keeps the track (settings, effects, plugins with their state, clips); *+ > From a template* adds it to any project.
-- **Version history** - *File > Version history...* lists the copies that every save leaves in the project's backups folder (and one every ten minutes of unsaved work, the newest forty are kept): open one in a new tab, or go back to it (the project as it is now is kept as a copy first).
-- **Command palette** - **Ctrl+K** (or File > Command palette): type a few letters of what you want to do (warp, export, mixer, add drums...) and press Enter. Up / Down choose, Esc closes.
-- **Keyboard shortcuts you can change** - *File > Keyboard shortcuts...* lists every command with its key. Select one, press *Change* and then the new key; a key that another command had moves to the new one. *Default* and *Reset all* put the original keys back. Saved for all projects.
-- **Copy between projects** - the clipboard is shared by all open projects (tabs): copy a clip in one project, paste it in another. In the Sections panel, *Clip* puts a whole section (with its clips on every track) on the clipboard and *Paste section* puts it at the playhead, in this project or another; tracks that are not there yet (by name) are made.
-- **Sidechain compression** - in a track's *FX* panel, the compressor has a *Listens to* box: pick another track (the kick, for example) and this track ducks whenever that one is loud (a bass or pad that pumps with the kick). Picking a track turns the compressor on with settings for that. The track that is listened to can be muted and still does its job; stems and the mix both contain the ducking.
-- **Master meter** - the *Meter* button on the master strip (or the command palette): loudness in LUFS (momentary, short-term, integrated, measured as streaming services do: ITU-R BS.1770 / EBU R128), the highest sample, a spectrum (20 Hz - 20 kHz), and a target to aim for (-14 LUFS for Spotify / YouTube, -16 Apple Music, -23 broadcast).
-- **Reference track** - in the master meter: *Load reference...* a finished song and press **B** (or the button) to switch between your mix and the reference while the transport plays, with a short crossfade. *Match loudness* sets the reference to the loudness of your mix so that louder does not sound better; *Start here* lines it up at the playhead. The reference is saved with the project and is never part of an export.
-- **Key and chords in the piano roll** - left of the keys: pick a root note and a scale (major, minor, modes, pentatonics, blues...). The rows of the scale stay light, the others are dimmed, the root is tinted, and the keys of the scale get a dot. *Snap to scale* makes new and moved notes jump to the nearest note of the scale, *Fit notes* moves the notes of the clip that are outside it, and *Triads / 7th chords on click* adds a whole chord (built from the scale, so each degree gets the right kind of chord) with one click. Stored with the track.
-- **MIDI learn** - *File > MIDI controllers (MIDI learn)* (or the command palette): add a mapping, choose a track and what to control (volume, pan, mute, solo, or any effect, synth, sampler or plugin parameter that can be automated), press *Learn* and move a knob or fader of your controller. Saved with the project.
-- **Tap tempo and an EQ curve** - the *Tap* button next to the tempo (or the key **T**) sets the project tempo from your taps; the EQ in the FX panel draws its frequency response.
-- **Deeper EQ and compressor** - the EQ has six bands: a 24 dB/oct high-pass, low shelf, two peaks (with Q), high shelf and a 24 dB/oct low-pass, drawn as one curve with a node per band: drag sideways for the frequency and up/down for the gain, scroll over a peak for its Q, double-click to reset a band; the selected band has sliders under the curve, and there are EQ presets. The compressor has a soft knee, a peak/RMS detector, a sidechain high-pass filter, a dry/wet mix (parallel compression), auto makeup, presets (vocal, drums, bass, bus glue, parallel, limiter, ducking), a live transfer curve and a gain-reduction meter. The delay has separate left/right times, a low and high cut inside the feedback, ping-pong, tape-style wobble, tempo sync (note lengths) and presets; the reverb is a new 8-line feedback delay network with decay time, size, pre-delay, damping, low cut, width, motion and presets (room, plate, hall, cathedral). Old projects load as before; everything can be automated and MIDI-learned.
-- **Own title bar and project icons** - the tab strip is the window's title bar (drag it to move, double-click to maximise) with minimise, maximise and close buttons built into the UI; `.mdaw` project files get the UFODAW icon and open in UFODAW when double-clicked (set up by the installer, and by the program itself for the current user).
 - **Live waveform while recording** - the waveform of an armed audio track grows in the lane as you record, instead of waiting until you stop.
-- **A starter pack and templates** - the program makes its own sounds on first start (about 45 drum one-shots, bass, synth and effect sounds and four drum loops, all synthesised, free to use) in `%APPDATA%\UFODAW\StarterPack`. The **drum rack** loads five ready-made kits (Punch, 808, Lo-fi, House, Tight) from a box at the top, the piano roll has ten **sounds** for the built-in synth (pluck, pad, strings, brass, lead, keys, bell, sub and fat bass), and *File > New from a template* opens a beat, a lo-fi sketch, a house and a trap groove, a song sketch with named sections, or a vocal-recording setup as a new, unsaved project. The **sample browser** (File menu or Ctrl+K) lists the starter pack and folders of your own with search, plays a sound when you click it, and adds it to a new track on double-click or drag.
-- **Installer and update check** - besides the zip there is now a normal Windows installer (`UFODAW-<version>-setup.exe`, built by `scripts\package.ps1` with Inno Setup): start menu entry, optional desktop shortcut, optional `.mdaw` file association, and an uninstaller. In the program, *File > Check for updates...* asks GitHub for the latest release (one small request, nothing about you or your projects is sent); when a newer version exists an orange **Update available** button appears in the top bar with what is new and a download link. It also checks once a day at start-up, which you can switch off in the same menu.
-- **Freeze** - right-click a track > *Freeze*: the track (instrument, effects, plugins, volume and pan) is bounced to audio on a new track right after it, and the original is switched off completely, so its plugins no longer use the CPU. *Unfreeze* removes the bounce and plays the track itself again. A frozen track has a yellow frame.
-- **Safer plugins** - plugin scanning runs in a helper process (UFODAW starts itself as the helper), so a plugin that crashes while it is scanned no longer takes the program down. A plugin that crashed the program while it was being *loaded* is skipped the next time (the project opens without it) until you open the Plugins window again. A plugin that crashes while it *plays* (an access violation, a divide by zero) is caught: it is switched off, an effect lets the sound through, an instrument goes silent, and a message tells you which plugin it was - the program keeps running. A crash in a plugin's own window or callbacks is caught as well (the program is built with `/EHa`): its windows close, the plugin is blocked and a message names it. If the program is closed anyway, the faulting module is recorded, that plugin is blocked at the next start (with a notice), and the autosave brings your work back.
-- **Updates and problem reports** - *Update available* offers **Install now**: the installer is downloaded, checked against the SHA-256 GitHub lists for it, run silently, and UFODAW starts again. *File > Report a problem* and the notice after a crash show a plain-text report (version, Windows, CPU, crashed file; no project data) that you send yourself via a prefilled GitHub issue or by copying it. Nothing is ever sent automatically.
-- **Multi-core audio** - heavy projects are mixed on several CPU cores at once (tracks and buses are rendered side by side, then summed in a fixed order, so the sound is bit-identical to single-core). Light projects stay on one core. *Audio settings > CPU* sets the number of helper threads (automatic by default).
-- **More effects, in depth** - the FX panel shows the effects as a chain along the top (in the order the sound goes through them, with a light to switch each on or off); click one to see its controls. *Gate*: hysteresis, a filtered detector (low and high cut) and a meter. *De-esser*: adjustable width, whole-sound mode and a *Listen* button to find the frequency. *Multiband compressor*: 3 bands with their own threshold and gain, shared ratio/attack/release, a meter per band. *Limiter*: lookahead (the gain comes down before a peak, the track is delay-compensated), true-peak detection, meter. *Saturation*: five characters (tube, tape, hard clip, fold, diode), bias, tone, and 4x oversampling (about 45 dB less aliasing). *Chorus/flanger*: 1-4 voices, width, tone filter, vibrato mode. Every effect has presets and can be automated. Chain order: gate, EQ, compressor, de-esser, saturation, multiband, chorus, delay, reverb, limiter.
-- **Spectrum behind the EQ** - the EQ curve shows the live spectrum of the sound (after the EQ) while the FX panel is open.
-- **Track groups (folders)** - right-click a track > *Group (folder)*: a header row with a name, an arrow to collapse the tracks of the group, and mute/solo for all of them. Double-click the header to rename it; right-click for ungroup.
-- **Tuner range** - the tuner follows notes from C0 (16 Hz) to C8 (4200 Hz).
-- **Track menu** - right-click a track header: Rename, Duplicate track (clips, settings, effects, sampler / drum rack and plugins with their settings), Delete track, Move up / down, Mute, Solo, Arm for recording, and the instrument panel. Everything can be undone.
-- **Export in more formats** - *File > Export audio* and *Export stems* offer WAV (16 / 24 / 32-bit float), FLAC, AIFF, MP3 (128-320 kbps) and Ogg Vorbis. The mix renders in the background behind a progress window with a Cancel button; the last format is remembered.
-- **Rename tracks** - double-click a track's name (in the track header or in the mixer) and type a new one; Enter keeps it, Esc cancels, and it is one undo step.
-- **Quick tour** - on the first start (and from File > Quick tour) a short tour lights up the rail, the Add button, the clock and tempo, the track headers, the arrangement, the transport and STOP ALL, with a card that explains each. Esc skips it, Enter and the arrow keys step through.
-- **Undo for the sampler and the drum rack** - sample loads, markers, sliders, pad level / pan / mute / solo / choke and stretches are undo steps. Stretching a sample runs in the background behind a progress window with a Cancel button.
 - **Comping loop recordings** - right-click a take > *Comp takes*: every take of the recording gets a row; swipe across a row to play that take there (the takes are split at the swipe, with short fades at the joins). Right-click to leave. Undo works on each swipe.
-- **Follow** - the *Follow* button in the top bar makes the arrangement turn a page when the playhead reaches the right edge while playing.
-- **Mixer** - the bars icon in the left rail opens the mixer: a strip per track (meter, volume fader, pan, mute, solo) and the master. It works on the same values as the track headers and every change can be undone.
-- **Drum pads on the keyboard** - with the drum rack window focused, Z X C V / A S D F / Q W E R / 1 2 3 4 play the 16 pads (bottom row = pads 1-4); the key letter is shown on each pad.
 - **Takes as blocks** - in the comp view every take is a block with handles: drag an edge to trim it, Alt+drag the body to move it, right-click to duplicate or delete (all undoable).
 - **Comp view** - for an envelope with takes, A > *Comp view* shows the result on top and every take in a row of its own. Swipe across a take's row to play that take there; the result updates at once. Recorded rides can be undone, and hovering the right edge of a MIDI / drum clip shows what drag, Shift and Alt do.
-- **Project tabs** - several projects open at once, as tabs along the top (New project / Ctrl+N and + open a new tab, Open puts a file in a tab of its own, Ctrl+W closes, Ctrl+Tab / Ctrl+Shift+Tab switch). All tabs share one audio device; only the shown tab is connected to it and to the MIDI inputs (the others stop playing when you switch away), so switching is instant. Unsaved tabs have a yellow dot and are asked about when closed; each keeps its own recovery file.
-- **Automation rides, takes and comping** - **A** > pick an envelope (volume, pan, effect, synth/sampler or plugin parameter) > *Record rides* > Touch / Latch / Write. Press play and move the fader or knob: every pass is kept as a take, comped into the envelope with a short crossfade. In the lane, Shift+drag picks a time range and right-click gives *Play here* per take (comping), *Delete take* and *Fade between takes*.
-- **Icon rail** - the strip on the left has File, Add track (+), Plugins, Tuner and Audio settings; tracks are rounded cards; the transport floats as a pill at the bottom.
-- **File menu and STOP ALL** - the *File* button has New project (Ctrl+N, a new tab), Open, Open recent, Save, Save as / new version / collect, and the exports. The red *STOP ALL* button at the top right (Ctrl+Shift+Space) stops playback and recording and cuts off every sound at once, plugins and MIDI hardware included.
-  The **Stretch** slider time-stretches the sample (0.25x-4x) without changing its pitch (Rubber Band); it works on drum pads too.
-- **Drum Rack** - 16 pads, each a small Simpler (start / end, pitch, envelope, filter, reverse) with its own level, pan, mute, solo and choke group (closed / open hat). Click the track's "Drum kit" button or double-click a pad name in the step sequencer to open the 4x4 pad window; drop an audio file on a pad to load it. The first 8 pads come with generated sounds; a **step sequencer** plays all 16.
 - **MIDI input per track** - a MIDI track listens to every MIDI input, or to one device and channel (VST panel > *MIDI input*), so a
   keyboard can play the synth and an e-drum the drum track at the same time. Arm several MIDI tracks with their red dot and they
   record together, each from its own input (also together with armed audio tracks). The computer keyboard ("Keys") plays the selected track.
 - **Controllers** - mod wheel, expression, sustain and other pedals, hi-hat pedal, pitch bend and aftertouch are recorded with the
   notes, played back to plugin instruments and hardware, and edited in the lane under the piano roll (pick the controller in the lane box:
   click adds a point, drag moves it, right-click deletes). The built-in synth ignores them.
-- **Effects per track** - 6-band parametric EQ, compressor, delay, reverb, and a **Mono** button on every track, bus and the master (lit = mono): the channel
-  plays with left and right summed - to check a source or the whole mix in mono, or to centre a stereo recording.
-- **VST3 hosting** - instruments and effects, with their own editor windows; plugin states are saved in the project. Picking a plugin
-  (the instrument, or *+ Add effect plugin...*) opens a **search box**: type part of a name, a maker or a category ("kon", "reverb",
-  "native") and the list narrows; Up / Down move through it, Enter picks.
-- **MIDI routing** - a sequencer plugin on one track can play the synth (built-in, drum kit or VST) of one or more other tracks; plugins receive tempo, bar position and play state from the DAW.
-- **External hardware** - the MIDI notes of a track or sequencer plugin can play analog/hardware synths through any MIDI output, with channel selection.
-- **MIDI effects** - arpeggiators, chord tools and other MIDI plugins can sit in front of a track's instrument.
-- **Plugin delay compensation** - tracks are delayed to line up with plugins that report latency (up to half a second).
-- **Automation** - breakpoint envelopes for volume, pan, every built-in effect parameter, the synth, and any parameter of a hosted VST3 plugin.
-- **Velocity editing** - velocity bars under the piano roll; Ctrl+drag a step in the drum sequencer.
-- **CPU readout** - the status line shows the audio device load (*CPU n %*), and a track name turns yellow (25 %+) or orange (50 %+) of the audio
-  time when its plugins and effects are heavy; hover the header for the exact figure. Denormal numbers are flushed to zero in the mix, and the
-  window only repaints what changes, so UFODAW itself stays light.
-- **Clipping indicators** - a red **CLIP** lamp in the top bar, a lamp at the top of every level meter, a red frame round the strip and a red
-  track name show when something reached full scale: a track's output, the master mix (over 0 dB before the limiter), or the input of an
-  armed audio track (then lower the gain on the interface; a recording that clips cannot be repaired). They stay lit until you click
-  them, and are cleared when playback starts. Hover a lamp to see where. Armed audio tracks show their input level on their meter.
-- **Mixer** - volume, pan, mute, solo and level meters per track, plus a **master channel** (the yellow strip under the tracks):
-  volume with automation, the built-in effects (EQ, compressor, delay, reverb), VST3 effect plugins on the whole mix, a
-  level meter, and the soft limiter after it. Stems skip the master channel.
+- **Tuner** - **Tuner** (gauge icon in the left rail) opens a chromatic tuner for any input of your interface: note, cents sharp/flat, a needle and
+  the frequency (A = 430-450 Hz). It starts on the input of the armed track and works down to a low bass B.
+- **Tuner range** - the tuner follows notes from C0 (16 Hz) to C8 (4200 Hz).
+
+### Arrangement and editing
+
+- **Arrangement** - clips can be moved (also between tracks), split, duplicated and deleted; zoom, snap to the grid, loop region.
+- **Move tracks** - drag a track by its header up or down (an orange line shows where it lands); the track moves with its sub-tracks, lane and clips. One undo step.
+- **Arrangement sections** - the *Sections* button in the top bar: name parts of the song (verse, chorus...), each from a bar for a number of bars; they show as coloured bands along the top of the ruler. *Go* moves the playhead there, *Loop* loops that part, *Copy* puts a copy of the section (with everything that plays in it) right after it and moves what comes later along, and *<* / *>* swap a section with its neighbour (the clips go with it). Saved with the project; undoable.
+- **Track groups (folders)** - right-click a track > *Group (folder)*: a header row with a name, an arrow to collapse the tracks of the group, and mute/solo for all of them. Double-click the header to rename it; right-click for ungroup.
+- **Track colours and templates** - right-click a track header > *Colour* (header, mixer strip and clips take it). *Save as a template...* keeps the track (settings, effects, plugins with their state, clips); *+ > From a template* adds it to any project.
+- **Track menu** - right-click a track header: Rename, Duplicate track (clips, settings, effects, sampler / drum rack and plugins with their settings), Delete track, Move up / down, Mute, Solo, Arm for recording, and the instrument panel. Everything can be undone.
+- **Rename tracks** - double-click a track's name (in the track header or in the mixer) and type a new one; Enter keeps it, Esc cancels, and it is one undo step.
+- **Follow** - the *Follow* button in the top bar makes the arrangement turn a page when the playhead reaches the right edge while playing.
+- **Project tabs** - several projects open at once, as tabs along the top (New project / Ctrl+N and + open a new tab, Open puts a file in a tab of its own, Ctrl+W closes, Ctrl+Tab / Ctrl+Shift+Tab switch). All tabs share one audio device; only the shown tab is connected to it and to the MIDI inputs (the others stop playing when you switch away), so switching is instant. Unsaved tabs have a yellow dot and are asked about when closed; each keeps its own recovery file.
+- **Copy between projects** - the clipboard is shared by all open projects (tabs): copy a clip in one project, paste it in another. In the Sections panel, *Clip* puts a whole section (with its clips on every track) on the clipboard and *Paste section* puts it at the playhead, in this project or another; tracks that are not there yet (by name) are made.
+- **Freeze** - right-click a track > *Freeze*: the track (instrument, effects, plugins, volume and pan) is bounced to audio on a new track right after it, and the original is switched off completely, so its plugins no longer use the CPU. *Unfreeze* removes the bounce and plays the track itself again. A frozen track has a yellow frame.
 - **Clip gain, volume curve, time-stretch and pitch-shift** - right-click an audio clip: *Gain, stretch and pitch...* sets the clip gain
   (with *Normalize*), the length as a percentage (200% = twice as long; *Fit to project tempo* from the clip's own BPM) and the pitch in
   semitones, made offline with Rubber Band from the original (a progress window, Cancel; *Reset* puts the original back; results are
@@ -117,18 +112,106 @@ A small digital audio workstation for Windows, written in C++17 with [JUCE](http
 - **Clip fades, crossfades and reverse** - drag the little squares in the top corners of an audio clip to set its fade-in and
   fade-out (equal-power curves). Drag a clip so it overlaps its neighbour a little, then right-click > *Crossfade with overlapping
   clip(s)*. *Reverse* plays the clip backwards (also after splitting it).
+- **Warp audio clips** - right-click an audio clip > *Warp...*: the clip is drawn over the project's beat grid. *Find hits* puts a marker on every hit, *Match tempo* brings the clip to the project's tempo, *Snap to grid* puts every marker on the nearest sixteenth; drag a marker to move it (double-click adds one, right-click removes it). *Apply* stretches the audio between the markers (pitch kept) in the background. Saved with the project; undoable.
 - **Tempo and time signature changes** - **Tempo** (next to BPM) opens the list of sections: each starts at a bar and has its own BPM
   and time signature (3/4, 6/8, 7/8, ...). The ruler, grid, snapping, metronome (one click per counted beat, the first of the bar
   higher) and the tempo/position given to plugins all follow it. Changing tempo or meter keeps MIDI, the loop and the punch region
   in place *in the music* (same bar, same beat), so MIDI follows the new tempo; audio clips stay where they are in time. The BPM
   slider is the tempo of the first section.
+- **Undo / redo**, project **save / load** (`.mdaw`) and **WAV export** (24-bit).
+- **Undo for the sampler and the drum rack** - sample loads, markers, sliders, pad level / pan / mute / solo / choke and stretches are undo steps. Stretching a sample runs in the background behind a progress window with a Cancel button.
+
+### MIDI and instruments
+
+- **MIDI tracks** with a built-in polyphonic synth (sine / saw / square / triangle, ADSR, low-pass) and a **piano roll**
+  that names every key and note, lights up the keys that sound (live or during playback) and scrolls to the clip's notes
+  ("Show notes" brings them back).
+- **Key and chords in the piano roll** - left of the keys: pick a root note and a scale (major, minor, modes, pentatonics, blues...). The rows of the scale stay light, the others are dimmed, the root is tinted, and the keys of the scale get a dot. *Snap to scale* makes new and moved notes jump to the nearest note of the scale, *Fit notes* moves the notes of the clip that are outside it, and *Triads / 7th chords on click* adds a whole chord (built from the scale, so each degree gets the right kind of chord) with one click. Stored with the track.
+- **MIDI quantize, swing, humanize** - right-click a MIDI clip (or press `Q`): grid from 1/4 to 1/32 and triplets, strength, swing
+  (100% = triplet feel), random timing (ms) and velocity variation, optionally the note lengths too. Works on drum clips as well.
+- **Velocity editing** - velocity bars under the piano roll; Ctrl+drag a step in the drum sequencer.
+- **Stretchable patterns** - drag the right edge of a MIDI or drum clip: longer repeats the pattern to fill the clip, shorter cuts it off. Hold **Shift** to stretch the pattern instead (half as long = twice as fast, longer = slower); hold **Alt** to switch snapping off.
+- **Sub-tracks** - a **+ / -** button in the header of a MIDI track that has sub-tracks shows or hides them. When a drum plugin (EZdrummer, Superior Drummer, Addictive Drums, BFD...) is loaded as the instrument, the drum sub-tracks appear by themselves, once. Right-click a MIDI track header > *Sub-tracks*: one lane per pitch under the track (kick, snare, hats... for a drum plugin such as EZdrummer), created from the notes the track uses, from a General MIDI drum preset, or by hand. Click an empty spot in a lane to add a note, click a note to remove it; each sub-track has its own mute and solo (they filter the notes of that pitch before they reach the instrument), a name and a pitch or pitch range (right-click it). Saved with the project and undoable.
+- **Sub-track faders and meters** - every sub-track has a volume fader (0 - 1.5, double-click resets; it scales the velocity of that pitch) and a small level meter that shows how hard the pitch is hit.
+- **Drum Rack** - 16 pads, each a small Simpler (start / end, pitch, envelope, filter, reverse) with its own level, pan, mute, solo and choke group (closed / open hat). Click the track's "Drum kit" button or double-click a pad name in the step sequencer to open the 4x4 pad window; drop an audio file on a pad to load it. The first 8 pads come with generated sounds; a **step sequencer** plays all 16.
+- **Velocity layers and round-robin for drum pads** - a pad can hold up to three more samples besides its own, each with a velocity range (drum rack window, *Samples and velocity ranges*). Samples whose ranges overlap take turns, so a repeated snare does not sound the same every time; ranges side by side make a soft / hard pair.
+- **Drum pads on the keyboard** - with the drum rack window focused, Z X C V / A S D F / Q W E R / 1 2 3 4 play the 16 pads (bottom row = pads 1-4); the key letter is shown on each pad.
+- **Sampler** (Simpler-style) - **+ (left rail) > Sampler** makes a MIDI track that plays one sample: load a file (or drop one on the track), drag the
+  yellow start/end markers in its window, and pick the mode: *Classic* (pitched by the key from the root note, with loop, ADSR and a low-pass
+  filter), *One-shot* (plays out whatever the key does) or *Slice* (the region cut into equal slices, one key each). *Detect pitch* sets the root
+  note and tuning from the sample itself. Right-click an audio clip > *Sample this clip* turns it into a sampler track with one note.
+  Open it again with the track's instrument button (*Sampler: ...*) or *Sampler window* in the piano roll.
+  The **Stretch** slider time-stretches the sample (0.25x-4x) without changing its pitch (Rubber Band); it works on drum pads too.
+- **Tempo calculator and BPM detection** - in the sampler window, *Tempo...* tells how many beats the part between the markers lasts and the tempo that makes; *Detect the tempo* finds it from the audio. Set the project tempo to it, or stretch the sample (pitch kept) to the project's tempo.
+- **Slice by hits, and slices to MIDI** - in the sampler's *Slice* mode, *Slice by hits* cuts the part between the markers at its hits (kicks, snares, hats...) instead of in equal parts; the slider next to it sets the sensitivity. *To MIDI* puts the slices on the track as a pattern (one note per slice from the slice key up, in the timing of the sample) at the playhead.
+
+### Effects and mixing
+
+- **Effects per track** - 6-band parametric EQ, compressor, delay, reverb, and a **Mono** button on every track, bus and the master (lit = mono): the channel
+  plays with left and right summed - to check a source or the whole mix in mono, or to centre a stereo recording.
+- **Deeper EQ and compressor** - the EQ has six bands: a 24 dB/oct high-pass, low shelf, two peaks (with Q), high shelf and a 24 dB/oct low-pass, drawn as one curve with a node per band: drag sideways for the frequency and up/down for the gain, scroll over a peak for its Q, double-click to reset a band; the selected band has sliders under the curve, and there are EQ presets. The compressor has a soft knee, a peak/RMS detector, a sidechain high-pass filter, a dry/wet mix (parallel compression), auto makeup, presets (vocal, drums, bass, bus glue, parallel, limiter, ducking), a live transfer curve and a gain-reduction meter. The delay has separate left/right times, a low and high cut inside the feedback, ping-pong, tape-style wobble, tempo sync (note lengths) and presets; the reverb is a new 8-line feedback delay network with decay time, size, pre-delay, damping, low cut, width, motion and presets (room, plate, hall, cathedral). Old projects load as before; everything can be automated and MIDI-learned.
+- **More effects, in depth** - the FX panel shows the effects as a chain along the top (in the order the sound goes through them, with a light to switch each on or off); click one to see its controls. *Gate*: hysteresis, a filtered detector (low and high cut) and a meter. *De-esser*: adjustable width, whole-sound mode and a *Listen* button to find the frequency. *Multiband compressor*: 3 bands with their own threshold and gain, shared ratio/attack/release, a meter per band. *Limiter*: lookahead (the gain comes down before a peak, the track is delay-compensated), true-peak detection, meter. *Saturation*: five characters (tube, tape, hard clip, fold, diode), bias, tone, and 4x oversampling (about 45 dB less aliasing). *Chorus/flanger*: 1-4 voices, width, tone filter, vibrato mode. Every effect has presets and can be automated. Chain order: gate, EQ, compressor, de-esser, saturation, multiband, chorus, delay, reverb, limiter.
+- **Spectrum behind the EQ** - the EQ curve shows the live spectrum of the sound (after the EQ) while the FX panel is open.
+- **Sidechain compression** - in a track's *FX* panel, the compressor has a *Listens to* box: pick another track (the kick, for example) and this track ducks whenever that one is loud (a bass or pad that pumps with the kick). Picking a track turns the compressor on with settings for that. The track that is listened to can be muted and still does its job; stems and the mix both contain the ducking.
 - **Buses and sends** - **+ (left rail) > Bus** makes a group / effects-return channel. Put a reverb or delay on it (FX or VST), then use
   the **Out** button on any track: play the track *into* the bus (a drum bus, say) and/or *send* part of it to buses with a level per
   bus (post-fader, or *Pre*). Muting a track mutes its sends; soloing a track keeps its bus audible. Buses are not exported as stems.
-- **MIDI quantize, swing, humanize** - right-click a MIDI clip (or press `Q`): grid from 1/4 to 1/32 and triplets, strength, swing
-  (100% = triplet feel), random timing (ms) and velocity variation, optionally the note lengths too. Works on drum clips as well.
-- **Undo / redo**, project **save / load** (`.mdaw`) and **WAV export** (24-bit).
+- **Mixer** - the bars icon in the left rail opens the mixer: a strip per track (meter, volume fader, pan, mute, solo) and the master. It works on the same values as the track headers and every change can be undone.
+- **Mixer** - volume, pan, mute, solo and level meters per track, plus a **master channel** (the yellow strip under the tracks):
+  volume with automation, the built-in effects (EQ, compressor, delay, reverb), VST3 effect plugins on the whole mix, a
+  level meter, and the soft limiter after it. Stems skip the master channel.
+- **Plugin delay compensation** - tracks are delayed to line up with plugins that report latency (up to half a second).
+- **Automation** - breakpoint envelopes for volume, pan, every built-in effect parameter, the synth, and any parameter of a hosted VST3 plugin.
+- **Automation rides, takes and comping** - **A** > pick an envelope (volume, pan, effect, synth/sampler or plugin parameter) > *Record rides* > Touch / Latch / Write. Press play and move the fader or knob: every pass is kept as a take, comped into the envelope with a short crossfade. In the lane, Shift+drag picks a time range and right-click gives *Play here* per take (comping), *Delete take* and *Fade between takes*.
+
+### Metering and monitoring
+
+- **Master meter** - the *Meter* button on the master strip (or the command palette): loudness in LUFS (momentary, short-term, integrated, measured as streaming services do: ITU-R BS.1770 / EBU R128), the highest sample, a spectrum (20 Hz - 20 kHz), and a target to aim for (-14 LUFS for Spotify / YouTube, -16 Apple Music, -23 broadcast).
+- **Reference track** - in the master meter: *Load reference...* a finished song and press **B** (or the button) to switch between your mix and the reference while the transport plays, with a short crossfade. *Match loudness* sets the reference to the loudness of your mix so that louder does not sound better; *Start here* lines it up at the playhead. The reference is saved with the project and is never part of an export.
+- **CPU readout** - the status line shows the audio device load (*CPU n %*), and a track name turns yellow (25 %+) or orange (50 %+) of the audio
+  time when its plugins and effects are heavy; hover the header for the exact figure. Denormal numbers are flushed to zero in the mix, and the
+  window only repaints what changes, so UFODAW itself stays light.
+- **Clipping indicators** - a red **CLIP** lamp in the top bar, a lamp at the top of every level meter, a red frame round the strip and a red
+  track name show when something reached full scale: a track's output, the master mix (over 0 dB before the limiter), or the input of an
+  armed audio track (then lower the gain on the interface; a recording that clips cannot be repaired). They stay lit until you click
+  them, and are cleared when playback starts. Hover a lamp to see where. Armed audio tracks show their input level on their meter.
+
+### Plugins, MIDI routing and hardware
+
+- **VST3 hosting** - instruments and effects, with their own editor windows; plugin states are saved in the project. Picking a plugin
+  (the instrument, or *+ Add effect plugin...*) opens a **search box**: type part of a name, a maker or a category ("kon", "reverb",
+  "native") and the list narrows; Up / Down move through it, Enter picks.
+- **Safer plugins** - plugin scanning runs in a helper process (UFODAW starts itself as the helper), so a plugin that crashes while it is scanned no longer takes the program down. A plugin that crashed the program while it was being *loaded* is skipped the next time (the project opens without it) until you open the Plugins window again. A plugin that crashes while it *plays* (an access violation, a divide by zero) is caught: it is switched off, an effect lets the sound through, an instrument goes silent, and a message tells you which plugin it was - the program keeps running. A crash in a plugin's own window or callbacks is caught as well (the program is built with `/EHa`): its windows close, the plugin is blocked and a message names it. If the program is closed anyway, the faulting module is recorded, that plugin is blocked at the next start (with a notice), and the autosave brings your work back.
+- **Multi-core audio** - heavy projects are mixed on several CPU cores at once (tracks and buses are rendered side by side, then summed in a fixed order, so the sound is bit-identical to single-core). Light projects stay on one core. *Audio settings > CPU* sets the number of helper threads (automatic by default).
+- **MIDI routing** - a sequencer plugin on one track can play the synth (built-in, drum kit or VST) of one or more other tracks; plugins receive tempo, bar position and play state from the DAW.
+- **External hardware** - the MIDI notes of a track or sequencer plugin can play analog/hardware synths through any MIDI output, with channel selection.
+- **MIDI effects** - arpeggiators, chord tools and other MIDI plugins can sit in front of a track's instrument.
+- **MIDI learn** - *File > MIDI controllers (MIDI learn)* (or the command palette): add a mapping, choose a track and what to control (volume, pan, mute, solo, or any effect, synth, sampler or plugin parameter that can be automated), press *Learn* and move a knob or fader of your controller. Saved with the project.
+
+### Projects, files and export
+
+- **Collect, versions and backups** - **Save As** (button) opens a menu: *Save a new version* (jam, jam v2, jam v3...), and *Save with all
+  audio in one folder*, which copies every audio file the project uses into `<folder>Audio` and opens the project from there, so the
+  whole folder can be moved to another disk or PC. Every normal save also leaves a time-stamped copy in `<project> backups` (the newest
+  twenty are kept; *Show the backups folder* in the same menu).
+- **Autosave and recovery** - every two minutes, when something changed, the project is written to a recovery file. If the program
+  crashes (a plugin, say) or is closed with unsaved changes, the next start offers to restore it; saving normally removes it.
+- **Version history** - *File > Version history...* lists the copies that every save leaves in the project's backups folder (and one every ten minutes of unsaved work, the newest forty are kept): open one in a new tab, or go back to it (the project as it is now is kept as a copy first).
+- **A starter pack and templates** - the program makes its own sounds on first start (about 45 drum one-shots, bass, synth and effect sounds and four drum loops, all synthesised, free to use) in `%APPDATA%\UFODAW\StarterPack`. The **drum rack** loads five ready-made kits (Punch, 808, Lo-fi, House, Tight) from a box at the top, the piano roll has ten **sounds** for the built-in synth (pluck, pad, strings, brass, lead, keys, bell, sub and fat bass), and *File > New from a template* opens a beat, a lo-fi sketch, a house and a trap groove, a song sketch with named sections, or a vocal-recording setup as a new, unsaved project. The **sample browser** (File menu or Ctrl+K) lists the starter pack and folders of your own with search, plays a sound when you click it, and adds it to a new track on double-click or drag.
+- **Installer and update check** - besides the zip there is now a normal Windows installer (`UFODAW-<version>-setup.exe`, built by `scripts\package.ps1` with Inno Setup): start menu entry, optional desktop shortcut, optional `.mdaw` file association, and an uninstaller. In the program, *File > Check for updates...* asks GitHub for the latest release (one small request, nothing about you or your projects is sent); when a newer version exists an orange **Update available** button appears in the top bar with what is new and a download link. It also checks once a day at start-up, which you can switch off in the same menu.
+- **Updates and problem reports** - *Update available* offers **Install now**: the installer is downloaded, checked against the SHA-256 GitHub lists for it, run silently, and UFODAW starts again. *File > Report a problem* and the notice after a crash show a plain-text report (version, Windows, CPU, crashed file; no project data) that you send yourself via a prefilled GitHub issue or by copying it. Nothing is ever sent automatically.
+- **Export in more formats** - *File > Export audio* and *Export stems* offer WAV (16 / 24 / 32-bit float), FLAC, AIFF, MP3 (128-320 kbps) and Ogg Vorbis. The mix renders in the background behind a progress window with a Cancel button; the last format is remembered.
 - **Stem export** - every track as its own WAV file in a folder you choose (see below).
+
+### Workflow and interface
+
+- **Command palette** - **Ctrl+K** (or File > Command palette): type a few letters of what you want to do (warp, export, mixer, add drums...) and press Enter. Up / Down choose, Esc closes.
+- **Keyboard shortcuts you can change** - *File > Keyboard shortcuts...* lists every command with its key. Select one, press *Change* and then the new key; a key that another command had moves to the new one. *Default* and *Reset all* put the original keys back. Saved for all projects.
+- **Tap tempo and an EQ curve** - the *Tap* button next to the tempo (or the key **T**) sets the project tempo from your taps; the EQ in the FX panel draws its frequency response.
+- **Own title bar and project icons** - the tab strip is the window's title bar (drag it to move, double-click to maximise) with minimise, maximise and close buttons built into the UI; `.mdaw` project files get the UFODAW icon and open in UFODAW when double-clicked (set up by the installer, and by the program itself for the current user).
+- **Quick tour** - on the first start (and from File > Quick tour) a short tour lights up the rail, the Add button, the clock and tempo, the track headers, the arrangement, the transport and STOP ALL, with a card that explains each. Esc skips it, Enter and the arrow keys step through.
+- **Icon rail** - the strip on the left has File, Add track (+), Plugins, Tuner and Audio settings; tracks are rounded cards; the transport floats as a pill at the bottom.
+- **File menu and STOP ALL** - the *File* button has New project (Ctrl+N, a new tab), Open, Open recent, Save, Save as / new version / collect, and the exports. The red *STOP ALL* button at the top right (Ctrl+Shift+Space) stops playback and recording and cuts off every sound at once, plugins and MIDI hardware included.
 
 ## Running
 
