@@ -1,5 +1,7 @@
 #include "Engine.h"
 #include "Stretch.h"
+#include "SynthPresets.h"
+#include "StarterPack.h"
 #include <iostream>
 #include <cmath>
 #include <algorithm>
@@ -261,6 +263,192 @@ int main (int argc, char** argv)
         auto st = e.getSlotState (*synth);
         all &= report (st.playing == -1 && st.queued == -1, "launcher: the stopped pattern is no longer playing");
         e.stop();
+    }
+
+    // 5. the synth: every preset plays a chord; the sound must be finite, audible, not too loud, and stereo where it has unison
+    {
+        const double rate = 48000.0;
+        bool allFine = true;
+        double loudest = 0.0, quietest = 1.0;
+        juce::String worst;
+        for (auto& preset : SynthPresets::all())
+        {
+            Synth synth; synth.prepare (rate);
+            SynthParams params; params.apply (preset.values);
+            const int total = (int) (rate * 3.0), hold = (int) (rate * 1.5);
+            std::vector<float> l ((size_t) total, 0.0f), r ((size_t) total, 0.0f);
+            const std::vector<int> chord = preset.values.mono ? std::vector<int> { 48 } : std::vector<int> { 48, 52, 55 };   // (a mono sound plays one note at a time)
+            for (int p : chord) synth.noteOn (p, 0.8f, params);
+            int done = 0;
+            while (done < total)
+            {
+                const int n = std::min (512, total - done);
+                if (done <= hold && done + n > hold) for (int p : chord) synth.noteOff (p);
+                synth.render (l.data() + done, r.data() + done, n, params);
+                done += n;
+            }
+            double peak = 0, sumSq = 0, diff = 0; bool finite = true;
+            for (int i = 0; i < total; ++i)
+            {
+                finite = finite && std::isfinite (l[(size_t) i]) && std::isfinite (r[(size_t) i]);
+                peak = std::max ({ peak, (double) std::abs (l[(size_t) i]), (double) std::abs (r[(size_t) i]) });
+                sumSq += (double) l[(size_t) i] * l[(size_t) i];
+                diff += std::abs (l[(size_t) i] - r[(size_t) i]);
+            }
+            const double rms = std::sqrt (sumSq / total);
+            const bool ok = finite && peak > 0.02 && peak < 1.2 && rms > 0.002 && (preset.values.unison == 1 || diff > 1.0);
+            if (argc > 2) std::cout << "     peak " << peak << "  " << preset.name << "  (level " << preset.values.level << ")\n";
+            if (! ok) std::cout << "     " << preset.name << ": peak " << peak << ", rms " << rms << ", finite " << finite << ", L-R " << diff << "\n";
+            allFine = allFine && ok;
+            if (peak > loudest) { loudest = peak; worst = preset.name; }
+            quietest = std::min (quietest, peak);
+        }
+        all &= report (allFine, "synth: " + juce::String ((int) SynthPresets::all().size()) + " presets are finite, audible and not clipping (loudest peak "
+                                    + juce::String (loudest, 2) + " in " + worst + ", quietest " + juce::String (quietest, 2) + ")");
+    }
+
+    // 6. the piano engine: the note has the right pitch and dies away; a mono sound with legato stays one voice
+    {
+        const double rate = 48000.0;
+        Synth synth; synth.prepare (rate);
+        SynthParams params; params.apply (SynthPresets::find ("Grand piano"));
+        const int total = (int) (rate * 3.0);
+        std::vector<float> l ((size_t) total, 0.0f), r ((size_t) total, 0.0f);
+        synth.noteOn (69, 0.8f, params);
+        int done = 0;
+        while (done < total) { const int n = std::min (512, total - done); synth.render (l.data() + done, r.data() + done, n, params); done += n; }
+        auto magnitudeAt = [&] (double hz, double from, double to)
+        {
+            double re = 0, im = 0;
+            const size_t a = (size_t) (from * rate), b = (size_t) (to * rate);
+            for (size_t i = a; i < b; ++i) { const double ph = 6.283185307 * hz * (double) i / rate; re += l[i] * std::cos (ph); im += l[i] * std::sin (ph); }
+            return std::sqrt (re * re + im * im) / (double) (b - a);
+        };
+        const double at440 = magnitudeAt (440.0, 0.2, 0.7), off = std::max (magnitudeAt (400.0, 0.2, 0.7), magnitudeAt (480.0, 0.2, 0.7));
+        auto rmsOf = [&] (double from, double to) { double s = 0; const size_t a = (size_t) (from * rate), b = (size_t) (to * rate); for (size_t i = a; i < b; ++i) s += (double) l[i] * l[i]; return std::sqrt (s / (double) (b - a)); };
+        const double early = rmsOf (0.1, 0.3), late = rmsOf (2.5, 2.7);
+        all &= report (at440 > 4.0 * off, "piano: A4 sounds at 440 Hz (" + juce::String (at440, 4) + " against " + juce::String (off, 4) + " next to it)");
+        all &= report (late < early * 0.7 && late > 0.0, "piano: the note dies away (" + juce::String (early, 3) + " then " + juce::String (late, 3) + ")");
+
+        Synth bass; bass.prepare (rate);
+        SynthParams bassParams; bassParams.apply (SynthPresets::find ("Legato bass"));
+        std::vector<float> bl ((size_t) total, 0.0f), br ((size_t) total, 0.0f);
+        bass.noteOn (40, 0.8f, bassParams);
+        bass.noteOn (47, 0.8f, bassParams);   // (while the first is held: glides, no second voice)
+        done = 0;
+        while (done < total) { const int n = std::min (512, total - done); bass.render (bl.data() + done, br.data() + done, n, bassParams); done += n; }
+        float bassPeak = 0; for (auto v : bl) bassPeak = std::max (bassPeak, std::abs (v));
+        bass.noteOff (47); bass.noteOff (40);
+        all &= report (bassPeak > 0.05f && bassPeak < 0.9f, "mono bass: legato notes play as one voice (peak " + juce::String (bassPeak, 2) + ")");
+    }
+
+    // 7. the generated drums: each kind has its energy where it belongs, no sample is empty or clipping, and the variations differ from the original
+    {
+        StarterPack::ensureInstalled();
+        juce::AudioFormatManager fm; fm.registerBasicFormats();
+        auto load = [&] (const juce::String& cat, const juce::String& name)
+        {
+            std::vector<float> out;
+            if (std::unique_ptr<juce::AudioFormatReader> r (fm.createReaderFor (StarterPack::sample (cat, name))); r != nullptr)
+            {
+                juce::AudioBuffer<float> b (1, (int) std::min<juce::int64> (r->lengthInSamples, 96000));
+                r->read (&b, 0, b.getNumSamples(), 0, true, true);
+                out.assign (b.getReadPointer (0), b.getReadPointer (0) + b.getNumSamples());
+            }
+            return out;
+        };
+        // the share of the energy of the first 60 ms below 300 Hz and above 4 kHz (a plain DFT on a log-spaced set of frequencies)
+        auto shares = [] (const std::vector<float>& s)
+        {
+            const size_t len = std::min<size_t> (s.size(), 2880);
+            double low = 0, high = 0, total = 1.0e-12;
+            for (int k = 0; k < 96; ++k)
+            {
+                const double hz = 30.0 * std::pow (600.0, k / 95.0);   // 30 Hz .. 18 kHz
+                double re = 0, im = 0;
+                for (size_t i = 0; i < len; ++i) { const double ph = 6.283185307 * hz * (double) i / 48000.0; re += s[i] * std::cos (ph); im += s[i] * std::sin (ph); }
+                const double e = (re * re + im * im) * hz;   // (a log-spaced grid: weight by the width of the bin)
+                total += e;
+                if (hz < 300.0) low += e;
+                if (hz > 4000.0) high += e;
+            }
+            return std::make_pair (low / total, high / total);
+        };
+        bool drumsFine = true;
+        juce::String detail;
+        auto check = [&] (const char* cat, const char* name, const std::function<bool (double, double)>& expect)
+        {
+            const auto s = load (cat, name);
+            float peak = 0; for (auto v : s) peak = std::max (peak, std::abs (v));
+            const auto sh = shares (s);
+            const bool ok = ! s.empty() && peak > 0.3f && peak <= 1.0f && expect (sh.first, sh.second);
+            if (! ok) detail << " " << name << "(low " << juce::String (sh.first, 2) << ", high " << juce::String (sh.second, 2) << ")";
+            drumsFine = drumsFine && ok;
+        };
+        for (auto* k : { "Kick Punch", "Kick Deep", "Kick 808", "Kick Soft" })
+            check ("Kicks", k, [] (double low, double) { return low > 0.5; });
+        for (auto* h : { "Hat Closed 1", "Hat Closed 2", "Hat Open 1" })
+            check ("Hats", h, [] (double, double high) { return high > 0.5; });
+        for (auto* s : { "Snare Tight", "Snare Snap" })
+            check ("Snares", s, [] (double low, double) { return low < 0.6; });
+        const auto a = load ("Snares", "Snare Tight"), b = load ("Variations", "Snare Tight b");
+        double diff = 0; for (size_t i = 0; i < std::min (a.size(), b.size()); ++i) diff += std::abs (a[i] - b[i]);
+        all &= report (drumsFine && diff > 1.0, "drums: kicks are low, hats are high, nothing is empty or clipping, a round-robin variation differs" + detail);
+    }
+
+    // 8. the extra drums: acoustic and electronic sounds exist, rooms and cymbals are stereo and long enough, the whole pack is made quickly
+    {
+        juce::AudioFormatManager fm; fm.registerBasicFormats();
+        auto info = [&] (const char* cat, const char* name, int& channels, double& seconds, float& peak, double& lowShare)
+        {
+            channels = 0; seconds = 0; peak = 0; lowShare = 0;
+            std::unique_ptr<juce::AudioFormatReader> r (fm.createReaderFor (StarterPack::sample (cat, name)));
+            if (r == nullptr) return false;
+            channels = (int) r->numChannels;
+            seconds = (double) r->lengthInSamples / r->sampleRate;
+            juce::AudioBuffer<float> b (channels, (int) r->lengthInSamples);
+            r->read (&b, 0, (int) r->lengthInSamples, 0, true, true);
+            for (int c = 0; c < channels; ++c) peak = std::max (peak, b.getMagnitude (c, 0, b.getNumSamples()));
+            double low = 0, total = 1.0e-12;   // the share of the energy below 200 Hz, in the first 100 ms, by a plain DFT
+            const int len = std::min (b.getNumSamples(), 4410);
+            for (int k = 0; k < 64; ++k)
+            {
+                const double hz = 30.0 * std::pow (400.0, k / 63.0);
+                double re = 0, im = 0;
+                for (int i = 0; i < len; ++i) { const double ph = 6.283185307 * hz * i / r->sampleRate; re += b.getSample (0, i) * std::cos (ph); im += b.getSample (0, i) * std::sin (ph); }
+                const double e = (re * re + im * im) * hz; total += e; if (hz < 200.0) low += e;
+            }
+            lowShare = low / total;
+            return true;
+        };
+        bool fine = true; juce::String detail;
+        auto expect = [&] (const char* cat, const char* name, int channels, double minSeconds, double minLow, double maxLow)
+        {
+            int ch; double sec, low; float peak;
+            const bool ok = info (cat, name, ch, sec, peak, low) && ch == channels && sec >= minSeconds && peak > 0.3f && peak <= 1.0f && low >= minLow && low <= maxLow;
+            if (! ok) detail << " " << name << "(ch " << ch << ", " << juce::String (sec, 2) << " s, peak " << juce::String (peak, 2) << ", low " << juce::String (low, 2) << ")";
+            fine = fine && ok;
+        };
+        expect ("Kicks", "Kick 909", 1, 0.4, 0.5, 1.0);
+        expect ("Kicks", "Kick Boom", 1, 1.0, 0.8, 1.0);
+        expect ("Kicks", "Kick Acoustic", 2, 0.7, 0.5, 1.0);
+        expect ("Snares", "Snare 909", 1, 0.25, 0.0, 0.5);
+        expect ("Snares", "Snare Room", 2, 0.5, 0.0, 0.5);
+        expect ("Claps", "Clap Room", 2, 0.5, 0.0, 0.2);
+        expect ("Cymbals", "Crash", 2, 2.0, 0.0, 0.1);
+        expect ("Cymbals", "Ride", 2, 1.3, 0.0, 0.2);
+        expect ("Toms", "Tom Floor", 2, 0.8, 0.5, 1.0);
+        expect ("Percussion", "Triangle", 2, 1.5, 0.0, 0.05);
+        expect ("Hats", "Hat Pedal", 1, 0.04, 0.0, 0.1);
+
+        auto marker = StarterPack::folder().getChildFile (".version");
+        const auto keep = marker.loadFileAsString();
+        marker.replaceWithText ("0");
+        const auto t0 = juce::Time::getMillisecondCounterHiRes();
+        StarterPack::ensureInstalled();   // (writes the whole pack again)
+        const double ms = juce::Time::getMillisecondCounterHiRes() - t0;
+        all &= report (fine, "drums: the new acoustic and electronic drums have the right length, width and weight" + detail);
+        all &= report (ms < 6000.0, "starter pack: written in " + juce::String (ms, 0) + " ms");
     }
 
     std::cout << (all ? "ALL PASSED\n" : "FAILED\n");

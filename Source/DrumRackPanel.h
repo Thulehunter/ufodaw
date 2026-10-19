@@ -161,7 +161,34 @@ public:
             {
                 const auto file = StarterPack::sample (kitDef.pads[(size_t) pad].first, kitDef.pads[(size_t) pad].second);
                 if (file.existsAsFile() && hooks.load)
+                {
                     hooks.load (pad, file);
+
+                    // the soft and round-robin versions of the drum go on the pad as velocity layers: light hits play the soft one, and the
+                    // others take turns, so a repeated hit does not sound the same
+                    for (int slot = 0; slot < DrumKit::maxLayers; ++slot)
+                        if (hooks.clearLayer)
+                            hooks.clearLayer (pad, slot);
+                    auto& pd = kit.getPad (pad);
+                    pd.velLo = 0.0f;
+                    pd.velHi = 1.0f;
+                    const auto variants = StarterPack::variantsOf (kitDef.pads[(size_t) pad].first, kitDef.pads[(size_t) pad].second);
+                    int slot = 0;
+                    if (variants.soft != juce::File() && hooks.loadLayer && hooks.loadLayer (pad, slot, variants.soft))
+                    {
+                        pd.layers[(size_t) slot].velLo = 0.0f;
+                        pd.layers[(size_t) slot].velHi = 0.5f;
+                        pd.velLo = 0.5f;
+                        ++slot;
+                    }
+                    for (auto& other : variants.roundRobin)
+                        if (slot < DrumKit::maxLayers && hooks.loadLayer && hooks.loadLayer (pad, slot, other))
+                        {
+                            pd.layers[(size_t) slot].velLo = pd.velLo.load();
+                            pd.layers[(size_t) slot].velHi = 1.0f;
+                            ++slot;
+                        }
+                }
             }
             edited();
             refreshControls();

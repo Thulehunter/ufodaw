@@ -17,6 +17,7 @@
 #include "ProjectTemplates.h"
 #include "SampleBrowser.h"
 #include "ClipLauncher.h"
+#include "SynthPanel.h"
 #include "UpdateCheck.h"
 #include "UpdateInstall.h"
 #include "CrashReport.h"
@@ -3210,6 +3211,7 @@ MainComponent::~MainComponent()
     warpWindow.reset();
     historyWindow.reset();
     stopTimer();
+    synthWindow.reset();
     samplerWindow.reset();   // (it points into the engine's tracks)
     padSamplerWindow.reset();
     drumRackWindow.reset();
@@ -5016,6 +5018,7 @@ void MainComponent::removeTrackUI (Track* t)
 {
     if (mixerWindow != nullptr)
         mixerWindow->getPanel().detach();   // (the strips would point at the removed track)
+    synthWindow.reset();
     samplerWindow.reset();   // (they point into the track)
     padSamplerWindow.reset();
     drumRackWindow.reset();
@@ -5045,6 +5048,7 @@ void MainComponent::clearTracksUI()
 {
     if (mixerWindow != nullptr)
         mixerWindow->getPanel().detach();
+    synthWindow.reset();
     samplerWindow.reset();
     padSamplerWindow.reset();
     drumRackWindow.reset();
@@ -5930,6 +5934,24 @@ void MainComponent::openSampleBrowser()
     hooks.addToProject = [safe] (const juce::File& f) { if (safe != nullptr) safe->importFiles (juce::StringArray (f.getFullPathName()), nullptr, 0.0); };
     auto closeIt = [safe] { juce::MessageManager::callAsync ([safe] { if (safe != nullptr) safe->browserWindow.reset(); }); };
     browserWindow = std::make_unique<SampleBrowserWindow> (new SampleBrowserPanel (engine, std::move (hooks)), closeIt);
+}
+
+void MainComponent::openSynthPanel (Track& t)
+{
+    if (synthWindow != nullptr)
+    {
+        auto* panel = dynamic_cast<SynthPanel*> (synthWindow->getContentComponent());
+        if (panel != nullptr && panel->getTrack() == &t)
+        {
+            synthWindow->toFront (true);
+            return;
+        }
+        synthWindow.reset();   // (one at a time: it is another track's)
+    }
+    juce::Component::SafePointer<MainComponent> safe (this);
+    auto closeIt = [safe] { juce::MessageManager::callAsync ([safe] { if (safe != nullptr) safe->synthWindow.reset(); }); };
+    synthWindow = std::make_unique<SynthWindow> (new SynthPanel (t, [safe] { if (safe != nullptr) safe->beginEdit(); }, [safe] { if (safe != nullptr) ++safe->editCounter; }),
+                                                 t.name, closeIt);
 }
 
 void MainComponent::openClipLauncher()
@@ -7124,11 +7146,13 @@ void MainComponent::saveProject (const juce::File& file, SaveKind kind)
         {
             auto* s = new juce::DynamicObject();
             s->setProperty ("waveform", t->synth.waveform.load());
-            s->setProperty ("attack", (double) t->synth.attack.load());
-            s->setProperty ("decay", (double) t->synth.decay.load());
-            s->setProperty ("sustain", (double) t->synth.sustain.load());
-            s->setProperty ("release", (double) t->synth.release.load());
-            s->setProperty ("cutoff", (double) t->synth.cutoff.load());
+            for (auto& info : SynthParams::floatInfo())
+                if (std::abs ((t->synth.*(info.member)).load() - info.def) > 1.0e-6f || juce::String (info.name) == "attack" || juce::String (info.name) == "decay"
+                    || juce::String (info.name) == "sustain" || juce::String (info.name) == "release" || juce::String (info.name) == "cutoff")
+                    s->setProperty (juce::Identifier (info.name), (double) (t->synth.*(info.member)).load());
+            if (t->synth.osc2Wave.load() != 1) s->setProperty ("osc2Wave", t->synth.osc2Wave.load());
+            if (t->synth.unison.load() != 1)   s->setProperty ("unison", t->synth.unison.load());
+            if (t->synth.lfoShape.load() != 0) s->setProperty ("lfoShape", t->synth.lfoShape.load());
             o->setProperty ("synth", juce::var (s));
 
             juce::Array<juce::var> midiList;
@@ -8249,12 +8273,12 @@ void MainComponent::loadProject (const juce::File& file, bool asTemplate, bool r
         if (isMidi)
         {
             const auto s = item["synth"];
+            for (auto& info : SynthParams::floatInfo())   // (a setting that is not in the file keeps its default: old projects sound as before)
+                (t->synth.*(info.member)) = (float) (double) s.getProperty (juce::Identifier (info.name), (double) info.def);
             t->synth.waveform = (int) s.getProperty ("waveform", (int) SynthParams::Saw);
-            t->synth.attack = (float) (double) s.getProperty ("attack", 0.005);
-            t->synth.decay = (float) (double) s.getProperty ("decay", 0.15);
-            t->synth.sustain = (float) (double) s.getProperty ("sustain", 0.7);
-            t->synth.release = (float) (double) s.getProperty ("release", 0.25);
-            t->synth.cutoff = (float) (double) s.getProperty ("cutoff", 8000.0);
+            t->synth.osc2Wave = (int) s.getProperty ("osc2Wave", (int) SynthParams::Saw);
+            t->synth.unison = juce::jlimit (1, 5, (int) s.getProperty ("unison", 1));
+            t->synth.lfoShape = juce::jlimit (0, 3, (int) s.getProperty ("lfoShape", 0));
 
             if ((bool) item.getProperty ("subAuto", false))
                 t->subAutoDone = true;
@@ -8444,13 +8468,27 @@ void MainComponent::loadProject (const juce::File& file, bool asTemplate, bool r
     showProjectCheck (file, asTemplate, relinking, missing, pluginProblems, futureNote);
 }
 
+// "--render project out.wav": the mix of the open project, to the file; WAV (24 bit), FLAC, AIFF, MP3 or Ogg from the extension.
+bool MainComponent::renderForCommandLine (const juce::File& target)
+{
+    Engine::RenderOptions options;
+    const auto extension = target.getFileExtension().trimCharactersAtStart (".").toLowerCase();
+    for (int i = 0; i < (int) AudioExport::choices().size(); ++i)
+        if (AudioExport::extensionOf (AudioExport::choices()[(size_t) i].format) == extension && extension != "wav")
+            options.formatChoice = i;
+    return engine.renderToFile (target, engine.getTotalLengthSeconds() + engine.getRenderTailSeconds(), options);
+}
+
 // "--selftest": what the open project looks like, and whether it renders. ok = nothing was missing, it has tracks, and the mix is not silent.
 juce::String MainComponent::selfTestReport (bool& ok, bool expectWarning)
 {
-    int clips = 0, slots = 0;
+    int clips = 0, slots = 0, layers = 0;
     for (int i = 0; i < engine.getNumTracks(); ++i)
     {
         clips += (int) engine.getClips (*engine.getTrack (i)).size();
+        if (auto* kit = engine.getTrack (i)->kit.get())
+            for (int pad = 0; pad < DrumKit::numPads; ++pad)
+                layers += kit->layerCount (pad);
         for (auto& s : engine.getSlots (*engine.getTrack (i)))
             slots += s.used ? 1 : 0;
     }
@@ -8478,7 +8516,7 @@ juce::String MainComponent::selfTestReport (bool& ok, bool expectWarning)
     ok = (expectWarning != selfTestProblems.isEmpty()) && engine.getNumTracks() > 0 && rendered && peak > 0.001f;
     if (slots > 0)
         engine.stop();
-    return "tracks=" + juce::String (engine.getNumTracks()) + " clips=" + juce::String (clips) + " slots=" + juce::String (slots) + " render=" + (rendered ? "ok" : "FAILED")
+    return "tracks=" + juce::String (engine.getNumTracks()) + " clips=" + juce::String (clips) + " slots=" + juce::String (slots) + " drumLayers=" + juce::String (layers) + " render=" + (rendered ? "ok" : "FAILED")
            + " peak=" + juce::String (peak, 3) + (selfTestProblems.isEmpty() ? juce::String() : " problems: " + selfTestProblems.joinIntoString ("; "));
 }
 

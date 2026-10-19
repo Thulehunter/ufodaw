@@ -1,5 +1,6 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 #include "ProjectTabs.h"
+#include <iostream>
 #include "PluginScan.h"
 #include "PluginCrash.h"
 #include "CrashReport.h"
@@ -39,6 +40,28 @@ public:
             auto args = juce::StringArray::fromTokens (commandLine.trim(), true);
             args.removeRange (0, 1);
             juce::MessageManager::callAsync ([this, args] { runSelfTest (args); });
+            return;
+        }
+
+        // "UFODAW.exe --render project.mdaw out.wav": renders the whole project to an audio file (wav, flac, aiff, mp3 or ogg) without a dialog and ends
+        if (commandLine.trim().startsWith ("--render"))
+        {
+            auto args = juce::StringArray::fromTokens (commandLine.trim(), true);
+            args.removeRange (0, 1);
+            juce::MessageManager::callAsync ([this, args]
+            {
+                auto* tabs = dynamic_cast<ProjectTabs*> (window->getContentComponent());
+                bool ok = false;
+                if (tabs != nullptr && tabs->getActive() != nullptr && args.size() >= 2 && juce::File (args[0].unquoted()).existsAsFile())
+                {
+                    MainComponent::selfTesting = true;   // (no dialogs)
+                    tabs->getActive()->openFileHere (juce::File (args[0].unquoted()));
+                    ok = tabs->getActive()->renderForCommandLine (juce::File (args[1].unquoted()));
+                }
+                std::cout << (ok ? "rendered " : "FAILED ") << (args.size() >= 2 ? args[1] : juce::String()) << std::endl;
+                setApplicationReturnValue (ok ? 0 : 1);
+                quit();
+            });
             return;
         }
 

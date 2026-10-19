@@ -51,6 +51,7 @@
     <a href="#mixing">Buses, sends &amp; sidechain</a>
     <a href="#effects">EQ, compressor, delay, reverb, more</a>
     <a href="#freeze">Freeze, groups &amp; plugin safety</a>
+    <a href="#synth">Synth, piano &amp; drums</a>
     <a href="#launcher">Clip launcher</a>
     <a href="#starter">Starter pack &amp; templates</a>
     <a href="#metering">Metering &amp; reference</a>
@@ -306,6 +307,18 @@
       </ul>
     </section>
 
+    <section id="synth">
+      <h2>Synth, piano and drums</h2>
+      <h3>The built-in synth</h3>
+      <p>Every MIDI track without a plugin has a synth. In the piano roll, the <b>Sounds</b> box gives 43 ready-made sounds (bass, leads, pads, keys, plucks, pianos, brass, a riser) and <b>Edit sound...</b> opens all settings: up to five detuned unison oscillators spread over the stereo image, a second oscillator and a sub oscillator, pulse width, a resonant filter with drive, key tracking and its own envelope, the amplifier envelope, an LFO (to pitch, cutoff or volume, with a fade-in), glide, a pitch envelope (for 808 basses) and a mono legato mode. Changes sound at once and every drag is one undo step. Most settings can be automated.</p>
+      <h3>The piano engine</h3>
+      <p>Choose <b>Piano</b> as the sound engine for a piano built from decaying partials: the notes beat softly like two or three strings, the hammer adds a burst of noise and harder notes are brighter. <i>Ring time</i>, <i>brightness</i>, <i>string detune</i> and <i>hammer noise</i> change the character; the piano sounds in the list are a good start.</p>
+      <h3>Drums</h3>
+      <p>The drum rack has seven kits (<i>Punch</i>, <i>808</i>, <i>Lo-fi</i>, <i>House</i>, <i>Tight</i>, <i>909</i> and <i>Acoustic</i>). Every pad gets a soft version for light hits and round-robin versions that take turns, so a repeated hit does not sound the same. Hit a pad softly or hard (with a MIDI keyboard, or by the velocity of the notes in a drum clip) to hear the layers.</p>
+      <h3>Render from the command line</h3>
+      <p><code>UFODAW.exe --render project.mdaw out.wav</code> renders a whole project to an audio file without a dialog; the format follows the extension (wav, flac, aiff, mp3 or ogg).</p>
+    </section>
+
     <section id="launcher">
       <h2>Clip launcher</h2>
       <p>The clip launcher is for playing and trying ideas live instead of laying them out on the timeline. Open it from <b>File &gt; Clip launcher</b> or the command palette (<kbd>Ctrl</kbd>+<kbd>K</kbd>). The <b>Launcher jam</b> template (<i>File &gt; New from a template</i>) is a project with four rows of drums, bass, chords and a lead, ready to play.</p>
@@ -468,7 +481,7 @@
   ["fr-nav", "fr-link"].forEach(function (id) {
     var a = document.getElementById(id); a.href = fr; a.target = "_blank"; a.rel = "noopener";
   });
-  var VERSION = "0.9.1";   // (update with every release)
+  var VERSION = "0.9.2";   // (update with every release)
   var body = "**What happened?**\n\n\n**What did you expect?**\n\n\n**How can it be repeated?**\n1. \n2. \n3. \n\n**Version:** UFODAW " + VERSION + "\n**Windows version:**\n**Audio device and driver (ASIO / WASAPI):**\n**Plugins involved (name, maker):**\n";
   var bug = REPO + "/issues/new?labels=bug&title=" + encodeURIComponent("Bug: ") + "&body=" + encodeURIComponent(body);
   ["bug-nav", "bug-link"].forEach(function (id) {

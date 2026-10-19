@@ -104,6 +104,7 @@ class SubLaneHeader;
 class GroupHeader;
 class SampleBrowserWindow;
 class ClipLauncherWindow;
+class SynthWindow;
 class SubLaneFooter;
 class TimeRuler;
 class PianoRoll;
@@ -214,6 +215,7 @@ public:
 
     // ---- Used by the timeline components
     Engine& getEngine() { return engine; }
+    void openSynthPanel (Track&);                    // every setting of a track's built-in synth
     SyncViewport& getLaneViewport() { return laneViewport; }
     juce::Component& getLaneHolder() { return laneHolder; }
     Track* trackAtY (int yInLaneHolder) const;       // the track whose lane contains this y, or nullptr
@@ -240,6 +242,7 @@ public:
     static inline bool selfTesting = false;
     static inline juce::StringArray selfTestProblems;
     juce::String selfTestReport (bool& ok, bool expectWarning);
+    bool renderForCommandLine (const juce::File& target);   // "--render": the whole project to an audio file (the format from the extension)
     void openTemplateHere (const juce::File& templateFile);   // a project from the starter pack: opened as a new, unsaved project (it is named after the template)
     std::function<void (const juce::File&)> requestOpenTemplate;
     juce::String untitledTitle;
@@ -379,6 +382,7 @@ private:
     std::unique_ptr<MasterMeterWindow> meterWindow;
     std::unique_ptr<SampleBrowserWindow> browserWindow;
     std::unique_ptr<ClipLauncherWindow> launcherWindow;
+    std::unique_ptr<SynthWindow> synthWindow;
     // Updates: the latest release on GitHub. A button in the top bar appears when a newer version exists.
     juce::TextButton updateButton { "Update available" };
     static inline juce::String updateVersion, updateNotes, updateDownload, updateSha;   // (empty version: none; shared by all the tabs)

@@ -392,8 +392,7 @@ struct TrackState
     bool subAutoDone = false;
     float gain = 0.8f, pan = 0.0f;
     bool mute = false, solo = false;
-    int waveform = 0;
-    float synthValues[5] = {};          // attack, decay, sustain, release, cutoff
+    SynthValues synth;                  // every setting of the built-in synth
     std::vector<float> fxFloats;        // FxParams::forEachFloat order
     std::vector<char> fxBools;          // FxParams::forEachBool order
     struct LaneState
@@ -867,7 +866,7 @@ private:
     // Caller must hold `lock`; adds into outL/outR (which must be pre-cleared).
     // `running` is false when only synth tails/previews should be rendered.
     void mixBlock (float* outL, float* outR, int numSamples, juce::int64 pos, bool withMetronome, bool running);
-    void renderMidiTrack (Track&, int numSamples, juce::int64 pos, bool running, float* scratch);
+    void renderMidiTrack (Track&, int numSamples, juce::int64 pos, bool running, float* outL, float* outR);
     // The mix of one block, track by track (see mixBlock): stage one makes a track's sound in its own buffers, stage two adds it to the master or a bus.
     void renderTrackSignal (Track&, int numSamples, juce::int64 pos, bool running, bool anySolo, int maxLatency);
     void sumTrack (Track&, int numSamples, float* outL, float* outR);

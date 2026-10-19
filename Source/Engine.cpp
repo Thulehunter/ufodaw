@@ -1726,21 +1726,13 @@ ParamAutomation* Engine::ensureLane (Track& t, const juce::String& id)
     }
     else if (id.startsWith ("synth."))
     {
-        struct S { const char* name; std::atomic<float>* target; const char* label; float lo, hi; };
-        const S synthParams[] = {
-            { "attack",  &t.synth.attack,  "Synth attack",  0.001f, 2.0f },
-            { "decay",   &t.synth.decay,   "Synth decay",   0.001f, 2.0f },
-            { "sustain", &t.synth.sustain, "Synth sustain", 0.0f,   1.0f },
-            { "release", &t.synth.release, "Synth release", 0.01f,  3.0f },
-            { "cutoff",  &t.synth.cutoff,  "Synth cutoff",  100.0f, 18000.0f },
-        };
-        for (auto& s : synthParams)
-            if (id.substring (6) == s.name)
+        for (auto& info : SynthParams::floatInfo())
+            if (id.substring (6) == info.name)
             {
-                lane->name = s.label;
-                lane->lo = s.lo;
-                lane->hi = s.hi;
-                lane->floatTarget = s.target;
+                lane->name = "Synth " + juce::String (info.label).toLowerCase();
+                lane->lo = info.lo;
+                lane->hi = info.hi;
+                lane->floatTarget = &(t.synth.*(info.member));
             }
     }
     else if (id.startsWith ("sampler.") && t.sampler != nullptr)
@@ -1809,8 +1801,11 @@ std::vector<AutoTarget> Engine::listAutomationTargets (const Track& t) const
         out.push_back ({ juce::String ("fx.") + spec.id, spec.label, "Effects" });
 
     if (t.type == Track::Type::Midi && t.instrument == nullptr && t.kit == nullptr && t.sampler == nullptr)
-        for (auto* name : { "cutoff", "attack", "release" })
-            out.push_back ({ juce::String ("synth.") + name, "Synth " + juce::String (name), "Synth" });
+        for (auto* name : { "cutoff", "resonance", "drive", "filterEnv", "attack", "decay", "sustain", "release", "osc2Mix", "osc2Detune", "subLevel",
+                            "unisonDetune", "lfoRate", "lfoPitch", "lfoCutoff", "lfoAmp", "glide", "level" })
+            for (auto& info : SynthParams::floatInfo())
+                if (juce::String (info.name) == name)
+                    out.push_back ({ juce::String ("synth.") + name, "Synth " + juce::String (info.label).toLowerCase(), "Synth" });
 
     if (t.sampler != nullptr)
         for (auto* name : { "cutoff", "volume", "tune", "attack", "decay", "sustain", "release", "velocity" })
@@ -1977,12 +1972,7 @@ TrackState Engine::captureTrack (const Track& t) const
     ts.mute = t.mute;
     ts.frozen = t.frozen.load();
     ts.solo = t.solo;
-    ts.waveform = t.synth.waveform;
-    ts.synthValues[0] = t.synth.attack;
-    ts.synthValues[1] = t.synth.decay;
-    ts.synthValues[2] = t.synth.sustain;
-    ts.synthValues[3] = t.synth.release;
-    ts.synthValues[4] = t.synth.cutoff;
+    ts.synth = t.synth.capture();
     ts.instrument = t.instrument;
     ts.inserts = t.inserts;
     ts.midiFx = t.midiFx;
@@ -2027,12 +2017,7 @@ void Engine::applyTrackState (Track& t, const TrackState& ts)
     t.mute = ts.mute;
     t.frozen = ts.frozen;
     t.solo = ts.solo;
-    t.synth.waveform = ts.waveform;
-    t.synth.attack = ts.synthValues[0];
-    t.synth.decay = ts.synthValues[1];
-    t.synth.sustain = ts.synthValues[2];
-    t.synth.release = ts.synthValues[3];
-    t.synth.cutoff = ts.synthValues[4];
+    t.synth.apply (ts.synth);
 
     size_t fi = 0, bi = 0;
     t.fx.forEachFloat ([&] (const char*, std::atomic<float>& v) { if (fi < ts.fxFloats.size()) v = ts.fxFloats[fi]; ++fi; });
@@ -2305,7 +2290,7 @@ void Engine::drainPreviewEvents()
                 }
                 else if (t->voices != nullptr)
                 {
-                    if (e.on) t->voices->noteOn (e.pitch, e.velocity); else t->voices->noteOff (e.pitch);
+                    if (e.on) t->voices->noteOn (e.pitch, e.velocity, t->synth); else t->voices->noteOff (e.pitch);
                 }
                 return;
             }
@@ -3181,9 +3166,10 @@ void Engine::renderSamplerTrack (Track& t, int n, juce::int64 pos, bool running,
         t.sampler->render (outL + done, outR + done, n - done);
 }
 
-void Engine::renderMidiTrack (Track& t, int n, juce::int64 pos, bool running, float* scratch)
+void Engine::renderMidiTrack (Track& t, int n, juce::int64 pos, bool running, float* outL, float* outR)
 {
-    std::fill (scratch, scratch + n, 0.0f);
+    std::fill (outL, outL + n, 0.0f);
+    std::fill (outR, outR + n, 0.0f);
     collectNoteEvents (t, n, pos, running);
 
     int done = 0;
@@ -3191,13 +3177,13 @@ void Engine::renderMidiTrack (Track& t, int n, juce::int64 pos, bool running, fl
     {
         if (e.offset > done)
         {
-            t.voices->render (scratch + done, e.offset - done, t.synth);
+            t.voices->render (outL + done, outR + done, e.offset - done, t.synth);
             done = e.offset;
         }
-        if (e.on) t.voices->noteOn (e.pitch, e.velocity); else t.voices->noteOff (e.pitch);
+        if (e.on) t.voices->noteOn (e.pitch, e.velocity, t.synth); else t.voices->noteOff (e.pitch);
     }
     if (done < n)
-        t.voices->render (scratch + done, n - done, t.synth);
+        t.voices->render (outL + done, outR + done, n - done, t.synth);
 }
 
 // Stage one of a track in a block: its sound (instrument, clips, monitored input), effects, plugins, mono, delay compensation and the copy for sidechains,
@@ -3314,8 +3300,7 @@ void Engine::renderTrackSignal (Track& t, int n, juce::int64 pos, bool running, 
         }
         else if (t.voices != nullptr)
         {
-            renderMidiTrack (t, nn, pos, running, bufL);
-            std::copy (bufL, bufL + nn, bufR);
+            renderMidiTrack (t, nn, pos, running, bufL, bufR);
         }
     }
     else if (! running && ! monitoring && ! (t.bus && t.busFed))

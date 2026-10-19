@@ -1,11 +1,12 @@
 #include "ProjectTemplates.h"
 #include "StarterPack.h"
+#include "SynthPresets.h"
 #include <initializer_list>
 
 namespace
 {
     using juce::var;
-    constexpr int templatesVersion = 2;
+    constexpr int templatesVersion = 4;
 
     var obj (std::initializer_list<std::pair<const char*, var>> props)
     {
@@ -56,10 +57,23 @@ namespace
 
     void append (std::vector<N>& to, const std::vector<N>& from) { to.insert (to.end(), from.begin(), from.end()); }
 
-    struct SynthSound { int wave; double a, d, s, r, cutoff; };
-    const SynthSound sPad { 1, 0.6, 0.5, 0.8, 1.4, 1800 }, sKeys { 3, 0.004, 0.5, 0.35, 0.4, 7000 }, sSub { 0, 0.003, 0.2, 0.9, 0.12, 600 },
-                     sFat { 1, 0.003, 0.25, 0.6, 0.15, 900 }, sLead { 2, 0.005, 0.2, 0.7, 0.2, 5000 }, sPluck { 1, 0.002, 0.18, 0.0, 0.12, 4500 },
-                     sBell { 0, 0.001, 1.2, 0.0, 1.2, 12000 }, sStrings { 1, 0.35, 0.3, 0.85, 0.8, 3000 };
+    struct SynthSound { const char* preset; };   // a sound of SynthPresets.h by name
+    const SynthSound sPad { "Warm pad" }, sKeys { "Electric piano" }, sSub { "Sub bass" }, sFat { "Fat bass" }, sLead { "Saw lead" }, sPluck { "Pluck" },
+                     sBell { "Bell" }, sStrings { "Strings" };
+
+    var synthSettings (const SynthSound& s)
+    {
+        SynthParams params;
+        params.apply (SynthPresets::find (s.preset));
+        auto* o = new juce::DynamicObject();
+        o->setProperty ("waveform", params.waveform.load());
+        o->setProperty ("osc2Wave", params.osc2Wave.load());
+        o->setProperty ("unison", params.unison.load());
+        o->setProperty ("lfoShape", params.lfoShape.load());
+        for (auto& info : SynthParams::floatInfo())
+            o->setProperty (juce::Identifier (info.name), (double) (params.*(info.member)).load());
+        return var (o);
+    }
 
     var synthTrack (const juce::String& name, const SynthSound& s, const juce::Array<var>& clips, double gain = 0.8, juce::int64 colour = 0, var fx = {})
     {
@@ -68,7 +82,7 @@ namespace
         t->setProperty ("type", "midi");
         t->setProperty ("gain", gain);
         t->setProperty ("clips", juce::Array<var>());
-        t->setProperty ("synth", obj ({ { "waveform", s.wave }, { "attack", s.a }, { "decay", s.d }, { "sustain", s.s }, { "release", s.r }, { "cutoff", s.cutoff } }));
+        t->setProperty ("synth", synthSettings (s));
         t->setProperty ("midiClips", clips);
         if (colour != 0) t->setProperty ("colour", colour);
         if (! fx.isVoid()) t->setProperty ("fx", fx);
@@ -77,10 +91,32 @@ namespace
 
     var drumTrack (const juce::String& name, int kitIndex, const juce::Array<var>& clips, double gain = 0.85, var fx = {})
     {
-        juce::Array<var> pads;
+        juce::Array<var> pads, rack;
         const auto& kit = StarterPack::kits()[(size_t) kitIndex];
         for (auto& p : kit.pads)
+        {
             pads.add (StarterPack::sample (p.first, p.second).getFullPathName());
+
+            // the soft and round-robin versions of the drum as velocity layers (see DrumRackPanel's kit box)
+            const auto variants = StarterPack::variantsOf (p.first, p.second);
+            auto* pad = new juce::DynamicObject();
+            juce::Array<var> layers;
+            double ownLo = 0.0;
+            if (variants.soft != juce::File())
+            {
+                layers.add (obj ({ { "slot", layers.size() }, { "file", variants.soft.getFullPathName() }, { "velLo", 0.0 }, { "velHi", 0.5 } }));
+                ownLo = 0.5;
+            }
+            for (auto& other : variants.roundRobin)
+                if (layers.size() < 3)
+                    layers.add (obj ({ { "slot", layers.size() }, { "file", other.getFullPathName() }, { "velLo", ownLo }, { "velHi", 1.0 } }));
+            if (! layers.isEmpty())
+            {
+                pad->setProperty ("velLo", ownLo);
+                pad->setProperty ("layers", layers);
+            }
+            rack.add (var (pad));
+        }
         auto* t = new juce::DynamicObject();
         t->setProperty ("name", name);
         t->setProperty ("type", "midi");
@@ -88,6 +124,7 @@ namespace
         t->setProperty ("clips", juce::Array<var>());
         t->setProperty ("midiClips", clips);
         t->setProperty ("drumPads", pads);
+        t->setProperty ("drumRack", rack);
         if (! fx.isVoid()) t->setProperty ("fx", fx);
         return var (t);
     }

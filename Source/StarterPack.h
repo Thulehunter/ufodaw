@@ -21,6 +21,14 @@ namespace StarterPack
     };
     const std::vector<Kit>& kits();
 
+    // The variations of a drum (see the "Variations" folder): a soft version for light hits, and round-robin versions that take turns with it.
+    struct DrumVariants
+    {
+        juce::File soft;                          // empty when there is none
+        std::vector<juce::File> roundRobin;       // "<name> b", "<name> c"
+    };
+    DrumVariants variantsOf (const juce::String& category, const juce::String& name);
+
     // The tempo (BPM) a loop was made at; 0 for a sound that is not a loop
     int loopTempo (const juce::String& name);
 }
