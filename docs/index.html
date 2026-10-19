@@ -31,6 +31,7 @@
     <a href="#gallery">Screenshots</a>
     <a href="#workflow">Workflow</a>
     <a href="guide.html">Guide</a>
+    <a href="compare.html">Compare</a>
     <a href="#download">Download</a>
     <a href="#faq">FAQ</a>
     <a class="nav-btn" id="bug-nav" href="#feedback">Report a bug</a>
@@ -47,7 +48,7 @@
       <a class="btn primary" href="#download">Download for Windows</a>
       <a class="btn" href="#features">See what it does</a>
     </div>
-    <p class="meta">Version 0.9.2 · Free &amp; open source · AGPLv3 · Windows 64-bit · no installation needed</p>
+    <p class="meta">Version 0.9.2 · Free &amp; open source · AGPLv3 · Windows 64-bit · installer, no admin rights needed</p>
   </section>
 
   <section class="strip" aria-label="Highlights">
@@ -273,6 +274,7 @@
     <details><summary>Does it run on macOS or Linux?</summary><p>Not yet. UFODAW is built and tested for Windows. The code has a macOS build that can also host Audio Units, but that is untested because it needs a Mac. There is no Linux build.</p></details>
     <details><summary>Can I use my audio interface's ASIO driver?</summary><p>Yes. ASIO is supported when built with Steinberg's ASIO SDK. Otherwise WASAPI and DirectSound drivers are available, or an aggregate driver from your interface maker.</p></details>
     <details><summary>Which plugins work?</summary><p>VST3 instruments and effects, with their own editor windows. Plugin state is stored in the project, and what you do in a plugin window is part of undo. VST2 and CLAP are not supported.</p></details>
+    <details><summary>How does it compare to REAPER, FL Studio or Ableton Live?</summary><p>UFODAW is free, open and light, but it is young and Windows-only, with fewer built-in sounds and effects. See the <a href="compare.html">honest comparison</a>.</p></details>
     <details><summary>Can I build it myself?</summary><p>Yes. It is C++17 with CMake and JUCE 8: <code>cmake -S . -B build</code>, then <code>cmake --build build --config Release</code>. Use Release, since Debug is too slow for audio.</p></details>
   </section>
 </main>

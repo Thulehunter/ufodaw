@@ -21,7 +21,7 @@
   <img src="docs/shots/arrangement.jpg" alt="UFODAW arrangement view with audio, MIDI and drum tracks" width="820">
 </p>
 
-UFODAW is a small, fast DAW written in C++17 with [JUCE](https://juce.com). It runs as a single program with no installer required, saves everything in one project file (`.mdaw`) and stays out of your way with a warm dark interface.
+UFODAW is a small, fast DAW written in C++17 with [JUCE](https://juce.com). It installs with a small installer (no administrator rights needed), saves everything in one project file (`.mdaw`) and stays out of your way with a warm dark interface.
 
 ## Highlights
 
@@ -220,7 +220,7 @@ New to it? The [guide](https://ufodaw.eu/guide.html) explains the deeper feature
 
 ## Running
 
-Download `UFODAW-<version>-win64.zip` from the [Releases](../../releases) page (or build it yourself, see *Packaging*), unzip it and start `UFODAW.exe`. No installation is needed.
+Download `UFODAW-<version>-win64.zip` from the [Releases](../../releases) page (or build it yourself, see *Packaging*), unzip it and start `UFODAW.exe`. Or run the installer (`UFODAW-<version>-setup.exe`).
 `UFODAW.exe project.mdaw` (or "Open with" on a `.mdaw` file) opens that project right away.
 
 The interface uses a warm dark theme with red, orange and yellow accents; the colours live in `Source/Theme.h`. Track colours tell the types apart: orange = audio, red = MIDI synth, yellow = drums.
