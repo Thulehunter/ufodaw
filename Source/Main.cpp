@@ -1,6 +1,7 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 #include "ProjectTabs.h"
 #include <iostream>
+#include <thread>
 #include "PluginScan.h"
 #include "PluginCrash.h"
 #include "CrashReport.h"
@@ -129,6 +130,19 @@ public:
         }
         PluginCrash::crashedLastTime = false;
         PluginCrash::pendingNotice.clear();
+
+       #if UFODAW_DEMO_HOOKS   // (only in the demonstration build, see CMakeLists.txt)
+        {
+            const auto mode = juce::SystemStats::getEnvironmentVariable ("UFODAW_DEMO_CRASH", {});
+            if (mode == "caught")
+                juce::Timer::callAfterDelay (6000, [] { volatile int* p = nullptr; *p = 1; });   // an access violation in the message thread: caught, the program goes on
+            else if (mode == "fatal")
+                juce::Timer::callAfterDelay (6000, []
+                {
+                    std::thread ([] { volatile int* p = nullptr; *p = 1; }).detach();   // in another thread nothing catches it: the crash handler writes its report
+                });
+        }
+       #endif
     }
 
     void runSelfTest (juce::StringArray args)

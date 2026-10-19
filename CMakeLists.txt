@@ -136,6 +136,13 @@ else()
     message(STATUS "ASIO support: off (set ASIO_SDK_DIR to the ASIO SDK folder to switch it on)")
 endif()
 
+
+# A build for demonstrations only (cmake -DUFODAW_DEMO_HOOKS=ON in its own build folder): the environment variable UFODAW_DEMO_CRASH=caught|fatal makes the
+# program crash on purpose a few seconds after it starts, to show the crash handling. It is never part of a release.
+option(UFODAW_DEMO_HOOKS "Build with the crash demonstration hooks" OFF)
+if(UFODAW_DEMO_HOOKS)
+    target_compile_definitions(UFODAW PRIVATE UFODAW_DEMO_HOOKS=1)
+endif()
 ufodaw_use_async_exceptions()
 
 target_link_libraries(UFODAW

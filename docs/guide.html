@@ -52,6 +52,7 @@
     <a href="#mixing">Buses, sends &amp; sidechain</a>
     <a href="#effects">EQ, compressor, delay, reverb, more</a>
     <a href="#freeze">Freeze, groups &amp; plugin safety</a>
+    <a href="#recovery">Crash recovery demo</a>
     <a href="#scripting">Scripting (Lua)</a>
     <a href="#synth">Synth, piano &amp; drums</a>
     <a href="#launcher">Clip launcher</a>
@@ -306,6 +307,27 @@
         <li><b>Scanning</b> runs in a helper process (UFODAW starts itself as the helper), so a plugin that crashes while it is examined no longer takes the program down.</li>
         <li><b>Loading:</b> a plugin that crashed the program while it was loaded is skipped the next time, so the project opens without it. Open the Plugins window to allow it again.</li>
         <li><b>Playing:</b> a plugin that crashes while processing sound is caught and switched off. An effect lets the sound through, an instrument goes silent, and a message names the plugin. Save and reopen the project to load it again.</li>
+      </ul>
+    </section>
+
+    <section id="recovery">
+      <h2>Crash recovery: your work comes back</h2>
+      <p>A DAW that loses an hour of work is worse than one that lacks a feature, so UFODAW is built to survive the things that go wrong. This 3-minute demo shows three cases, on a real project: the program is killed while there is unsaved work, a crash inside the program that it catches itself, and a crash that does end the program.</p>
+      <video controls preload="metadata" width="100%" src="recovery-demo.mp4" style="max-width:900px;border-radius:8px">Your browser cannot play the video; the list below tells the same.</video>
+      <h3>What you see in the demo</h3>
+      <ol>
+        <li><b>Killed with unsaved work.</b> A script adds a track to the project; the project is not saved. The program writes a recovery file every two minutes while there are unsaved changes. The program is then force-closed (the same as a crash or a power cut). At the next start UFODAW asks <i>Restore your work?</i> and the new track is back.</li>
+        <li><b>A crash that is caught.</b> A deliberate access violation in the program (the kind of error that normally closes a program at once) is caught: a message tells you, and the music keeps playing.</li>
+        <li><b>A crash that ends the program.</b> The next start says so and shows a plain-text report (version, Windows, processor, the file that crashed; no project data). Nothing is sent by the program: you choose to open a prefilled GitHub issue or copy the text.</li>
+      </ol>
+      <p class="tip">The crashes in the demo are made on purpose with a special build for demonstrations; the program you download has no such switch.</p>
+      <h3>The safety net in short</h3>
+      <ul>
+        <li><b>Autosave and restore.</b> A recovery file every two minutes (and when you switch project tab); the next start offers to restore it.</li>
+        <li><b>Backups and version history.</b> Every save keeps a time-stamped copy (the newest twenty), plus one every ten minutes of unsaved work; <i>File &gt; Version history</i> shows them.</li>
+        <li><b>Plugins that crash.</b> While playing, a plugin that crashes is switched off and named (an effect lets the sound through, an instrument goes silent). A crash in the plugin's own window is caught as well and the plugin is blocked. If a plugin does end the program, it is blocked at the next start, so the project opens again without it. Scanning for plugins runs in a helper process.</li>
+        <li><b>Missing files.</b> One dialog lists what did not come through when a project opens, and <i>Find the files...</i> looks for missing audio in a folder.</li>
+        <li><b>Undo.</b> Everything you do, including a whole script, is undoable.</li>
       </ul>
     </section>
 
