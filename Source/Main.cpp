@@ -200,10 +200,19 @@ public:
         const auto exe = juce::File::getSpecialLocation (juce::File::currentExecutableFile).getFullPathName();
         const juce::String command = "\"" + exe + "\" \"%1\"", icon = "\"" + exe + "\",0";
         const juce::String base = "HKEY_CURRENT_USER\\Software\\Classes\\";
-        if (juce::WindowsRegistry::getValue (base + "UFODAW.Project\\shell\\open\\command\\") == command
+        // The "Open with" choice of Windows ("Always use this app") points to the program's *file name*: Applications\UFODAW.exe. It keeps the path
+        // of whichever copy was chosen once, so double-clicking a project would keep opening an older copy. Pointing it at this copy keeps the
+        // newest version that was started the one that opens projects.
+        const juce::String appKey = base + "Applications\\UFODAW.exe\\";
+        if (juce::WindowsRegistry::getValue (appKey + "shell\\open\\command\\") == command
+            && juce::WindowsRegistry::getValue (base + "UFODAW.Project\\shell\\open\\command\\") == command
             && juce::WindowsRegistry::getValue (base + "UFODAW.Project\\DefaultIcon\\") == icon
             && juce::WindowsRegistry::getValue (base + ".mdaw\\") == "UFODAW.Project")
             return;
+
+        juce::WindowsRegistry::setValue (appKey + "shell\\open\\command\\", command);
+        juce::WindowsRegistry::setValue (appKey + "SupportedTypes\\.mdaw", "");
+        juce::WindowsRegistry::setValue (appKey + "FriendlyAppName", "UFODAW");
 
         juce::WindowsRegistry::setValue (base + ".mdaw\\", "UFODAW.Project");
         juce::WindowsRegistry::setValue (base + "UFODAW.Project\\", "UFODAW project");

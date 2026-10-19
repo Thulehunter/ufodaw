@@ -57,6 +57,9 @@ Root: HKA; Subkey: "Software\Classes\.mdaw"; ValueType: string; ValueName: ""; V
 Root: HKA; Subkey: "Software\Classes\UFODAW.Project"; ValueType: string; ValueName: ""; ValueData: "UFODAW project"; Flags: uninsdeletekey; Tasks: associate
 Root: HKA; Subkey: "Software\Classes\UFODAW.Project\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: """{app}\UFODAW.exe"",0"; Tasks: associate
 Root: HKA; Subkey: "Software\Classes\UFODAW.Project\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\UFODAW.exe"" ""%1"""; Tasks: associate
+; (the "Open with > Always use this app" choice of Windows keeps the path of one copy of the program: point it at the installed one)
+Root: HKA; Subkey: "Software\Classes\Applications\UFODAW.exe\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\UFODAW.exe"" ""%1"""; Tasks: associate
+Root: HKA; Subkey: "Software\Classes\Applications\UFODAW.exe\SupportedTypes"; ValueType: string; ValueName: ".mdaw"; ValueData: ""; Tasks: associate
 
 [Run]
 Filename: "{app}\UFODAW.exe"; Description: "Start UFODAW"; Flags: nowait postinstall skipifsilent

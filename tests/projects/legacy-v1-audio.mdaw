@@ -1,0 +1,7 @@
+﻿{
+  "version": 1,
+  "bpm": 90.0,
+  "tracks": [
+    { "name": "Old audio track", "file": "tone.wav", "gain": 0.8, "pan": -0.3, "start": 0.5 }
+  ]
+}

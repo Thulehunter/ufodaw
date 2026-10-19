@@ -1,0 +1,15 @@
+﻿{
+  "version": 2,
+  "bpm": 110.0,
+  "masterGain": 0.8,
+  "tracks": [
+    {
+      "name": "Old synth", "type": "midi", "gain": 0.8,
+      "synth": { "waveform": 2, "attack": 0.01, "decay": 0.2, "sustain": 0.6, "release": 0.3, "cutoff": 2500.0 },
+      "clips": [],
+      "midiClips": [ { "start": 0.0, "length": 2.0, "notes": [ { "pitch": 60, "start": 0.0, "length": 0.5, "velocity": 0.8 }, { "pitch": 67, "start": 0.5, "length": 0.5, "velocity": 0.7 } ] } ],
+      "fx": { "reverbOn": true, "reverbMix": 0.2, "eqOn": true, "eqHigh": -3.0 }
+    },
+    { "name": "Old audio", "type": "audio", "gain": 0.7, "clips": [ { "file": "tone.wav", "start": 0.0, "offset": 0.0, "length": 0.4 } ], "midiClips": [] }
+  ]
+}
