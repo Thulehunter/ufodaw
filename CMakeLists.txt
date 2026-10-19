@@ -54,6 +54,7 @@ set(SHINE_SOURCES
     "${shine_SOURCE_DIR}/src/lib/layer3.c" "${shine_SOURCE_DIR}/src/lib/reservoir.c" "${shine_SOURCE_DIR}/src/lib/tables.c")
 
 juce_add_gui_app(UFODAW PRODUCT_NAME "UFODAW"
+    VERSION "${PROJECT_VERSION}"
     BUNDLE_ID "io.github.thulehunter.ufodaw"
     MICROPHONE_PERMISSION_ENABLED TRUE
     MICROPHONE_PERMISSION_TEXT "UFODAW needs the audio input to record."
