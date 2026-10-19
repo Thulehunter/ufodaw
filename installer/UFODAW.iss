@@ -60,3 +60,4 @@ Root: HKA; Subkey: "Software\Classes\UFODAW.Project\shell\open\command"; ValueTy
 
 [Run]
 Filename: "{app}\UFODAW.exe"; Description: "Start UFODAW"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\UFODAW.exe"; Flags: nowait runasoriginaluser; Check: WizardSilent

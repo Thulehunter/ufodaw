@@ -19,6 +19,7 @@ namespace UpdateCheck
         juce::String notes;            // what is new, as written in the release
         juce::String pageUrl;          // the release page
         juce::String downloadUrl;      // the installer (or the zip) of the release; the page when there is none
+        juce::String installerSha256;  // of the installer, as GitHub lists it (empty when unknown); only an installer with this can be installed from inside the program
     };
 
     // "0.8.8.2" is newer than "0.8.8"; every part is a number, a missing part counts as 0
@@ -51,7 +52,11 @@ namespace UpdateCheck
         {
             for (auto& a : *assets)   // the installer first, else the zip
                 if (a["name"].toString().endsWithIgnoreCase ("-setup.exe"))
+                {
                     r.downloadUrl = a["browser_download_url"].toString();
+                    const auto digest = a["digest"].toString();   // "sha256:<hex>"
+                    r.installerSha256 = digest.startsWithIgnoreCase ("sha256:") ? digest.fromFirstOccurrenceOf (":", false, false).toLowerCase() : juce::String();
+                }
             if (r.downloadUrl == r.pageUrl)
                 for (auto& a : *assets)
                     if (a["name"].toString().endsWithIgnoreCase (".zip") && ! a["name"].toString().containsIgnoreCase ("unsigned"))

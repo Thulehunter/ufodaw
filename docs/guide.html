@@ -38,6 +38,7 @@
 <div class="doc">
   <aside class="toc" aria-label="Contents">
     <b>On this page</b>
+    <a href="#start">Getting started</a>
     <a href="#recording">Recording &amp; takes</a>
     <a href="#latency">Latency &amp; audio setup</a>
     <a href="#automation">Automation</a>
@@ -56,10 +57,29 @@
     <a href="#export">Exporting &amp; stems</a>
     <a href="#projects">Projects &amp; safety</a>
     <a href="#shortcuts">Shortcuts</a>
+    <a href="#updates">Updates &amp; problem reports</a>
+    <a href="#trouble">Troubleshooting</a>
     <a href="#limits">Known limitations</a>
   </aside>
 
   <main class="prose">
+
+    <section id="start">
+      <h2>Getting started</h2>
+      <h3>Install</h3>
+      <p>Run <code>UFODAW-&lt;version&gt;-setup.exe</code> (no administrator rights needed), or unzip the zip anywhere and start <code>UFODAW.exe</code>. Windows may show a SmartScreen message because the program is not code-signed yet: <i>More info &gt; Run anyway</i>. The first start shows a short tour and writes the starter pack of sounds.</p>
+      <h3>Set up your sound</h3>
+      <p>Press <kbd>Ctrl</kbd>+<kbd>K</kbd>, type <i>audio settings</i> and press <kbd>Enter</kbd>. Pick your interface (the ASIO driver of your interface gives the lowest latency; <i>Windows Audio</i> works everywhere), the sample rate and the buffer size. A smaller buffer means less delay and more risk of crackles; 256 to 512 samples is a good start. The <b>Recording latency</b> tab places recordings exactly on the beat, and the <b>CPU</b> tab sets how many cores help with the mixing.</p>
+      <h3>Your first minutes</h3>
+      <ol>
+        <li><b>File &gt; New from a template</b> and choose <i>Beat starter</i>. Press <kbd>Space</kbd> to play and stop.</li>
+        <li>Change something in the drum rack or the piano roll. <kbd>Ctrl</kbd>+<kbd>Z</kbd> undoes it; a template cannot be ruined, because it opens as a new project.</li>
+        <li>Add a track with the <b>+</b> button on the left: an audio track (for recording and samples), a MIDI track with a synth or plugin, or a drum track.</li>
+        <li>Record: arm an audio track, press <kbd>R</kbd>, play, press <kbd>Space</kbd> to stop. Turn on the count-in in the top bar if you like.</li>
+        <li>Save with <kbd>Ctrl</kbd>+<kbd>S</kbd>; <b>File &gt; Export audio</b> makes a WAV, FLAC or MP3 of the mix.</li>
+      </ol>
+      <p class="tip">Lost? <kbd>Ctrl</kbd>+<kbd>K</kbd> is the command palette: type what you want to do (<i>export</i>, <i>reverb</i>, <i>tempo</i>) and it finds it. <b>File &gt; Quick tour</b> shows the tour again.</p>
+    </section>
 
     <section id="recording">
       <h2>Recording, takes and comping</h2>
@@ -296,7 +316,7 @@
       <h3>The sample browser</h3>
       <p>Open it from the File menu or the command palette (<kbd>Ctrl</kbd>+<kbd>K</kbd>). It lists the starter pack by category and any folders you add. Click a sound to hear it (through the master output, apart from your project); double-click, or press <b>Add to project</b>, to put it on a new audio track; or drag it onto a track, a drum pad or the sampler. The search box looks in all folders.</p>
       <h3>Updates</h3>
-      <p><b>File &gt; Check for updates</b> asks GitHub for the latest release. Only that one small request is made; nothing about you or your projects is sent. When a newer version exists, an orange <b>Update available</b> button appears in the top bar with what is new and a download link. The program also checks once a day at start-up; you can switch that off in the same menu.</p>
+      <p><b>File &gt; Check for updates</b> asks GitHub for the latest release. Only that one small request is made; nothing about you or your projects is sent. When a newer version exists, an orange <b>Update available</b> button appears in the top bar with what is new; <b>Install now</b> updates the program for you (see <a href="#updates">Updates &amp; problem reports</a>). The program also checks once a day at start-up; you can switch that off in the same menu.</p>
     </section>
 
     <section id="metering">
@@ -378,6 +398,34 @@
       </div>
     </section>
 
+    <section id="updates">
+      <h2>Updates &amp; problem reports</h2>
+      <h3>Updating</h3>
+      <p>When a newer version exists, an orange <b>Update available</b> button appears in the top bar (the program asks GitHub once a day at start-up; <b>File &gt; Check for updates</b> asks right now, and you can switch the daily check off in the same menu). The button shows what is new. <b>Install now</b> downloads the installer, checks it against the checksum GitHub lists for it, closes UFODAW, updates and starts it again. Unsaved changes are kept in the autosave and offered when the program starts. If anything does not match, nothing is installed and you are pointed to the download page. <b>Download page</b> opens the releases page instead.</p>
+      <h3>Reporting a problem</h3>
+      <p><b>File &gt; Report a problem</b> asks what went wrong and then shows the complete report. It holds the UFODAW version, the Windows version, the processor and memory, the time, and what you typed. Nothing is sent by the program: <b>Report on GitHub</b> opens a prefilled issue page that you read and submit yourself, and <b>Copy report</b> puts the text on the clipboard (for an e-mail or a chat). A copy is also kept in <code>%APPDATA%\UFODAW\reports</code>.</p>
+      <h3>After a crash</h3>
+      <p>If the program is closed by a crash, the next start says so and shows the same kind of report, with the file the crash happened in (your user folder name is replaced by <code>%USERPROFILE%</code>). If that file belongs to a plugin, the plugin is blocked so the project can open again without it; open <b>Plugins</b> to allow it again. Your project is offered back from the autosave. No project data, audio or file names of your projects are ever in a report.</p>
+    </section>
+
+    <section id="trouble">
+      <h2>Troubleshooting</h2>
+      <h3>No sound</h3>
+      <p>Open Audio settings and press <b>Test</b>. Check that the right output is selected and that no other program has the interface in exclusive mode. Check that the master and the track are not muted and that <b>STOP ALL</b> is not lit.</p>
+      <h3>Crackles or dropouts</h3>
+      <p>Raise the buffer size in Audio settings. Look at the CPU figure in the status line and at the track names (yellow at 25% and orange at 50% of the audio time): <b>freeze</b> heavy tracks, or choose more helpers in the CPU tab. Close other programs that use the interface.</p>
+      <h3>Recordings are late</h3>
+      <p>Use the <b>Recording latency</b> tab: measure the round trip (it plays a click and listens for it on the input, so connect an output to an input with a cable first) or add an offset by hand.</p>
+      <h3>A plugin is missing or blocked</h3>
+      <p>Open <b>Plugins</b> and scan again (scanning runs in a helper process, so a bad plugin cannot take the program down). Blocked plugins are allowed again when you open that window. Only VST3 plugins are supported.</p>
+      <h3>The program closed unexpectedly</h3>
+      <p>Start it again and accept the restore prompt. Send the report that is offered; it tells which file crashed.</p>
+      <h3>Windows shows a SmartScreen warning</h3>
+      <p>The program is not code-signed yet. Choose <i>More info &gt; Run anyway</i>.</p>
+      <h3>Where are my files?</h3>
+      <p>Settings, autosaves, the starter pack and reports are in <code>%APPDATA%\UFODAW</code>. Your projects are where you saved them; <b>File &gt; Save with all audio in one folder</b> makes a project that can be moved to another computer.</p>
+    </section>
+
     <section id="limits">
       <h2>Known limitations</h2>
       <ul>
@@ -405,7 +453,7 @@
   ["fr-nav", "fr-link"].forEach(function (id) {
     var a = document.getElementById(id); a.href = fr; a.target = "_blank"; a.rel = "noopener";
   });
-  var VERSION = "0.8.9";   // (update with every release)
+  var VERSION = "0.9.0";   // (update with every release)
   var body = "**What happened?**\n\n\n**What did you expect?**\n\n\n**How can it be repeated?**\n1. \n2. \n3. \n\n**Version:** UFODAW " + VERSION + "\n**Windows version:**\n**Audio device and driver (ASIO / WASAPI):**\n**Plugins involved (name, maker):**\n";
   var bug = REPO + "/issues/new?labels=bug&title=" + encodeURIComponent("Bug: ") + "&body=" + encodeURIComponent(body);
   ["bug-nav", "bug-link"].forEach(function (id) {

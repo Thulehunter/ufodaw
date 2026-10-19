@@ -372,7 +372,7 @@ private:
     std::unique_ptr<SampleBrowserWindow> browserWindow;
     // Updates: the latest release on GitHub. A button in the top bar appears when a newer version exists.
     juce::TextButton updateButton { "Update available" };
-    static inline juce::String updateVersion, updateNotes, updateDownload;   // (empty version: none; shared by all the tabs)
+    static inline juce::String updateVersion, updateNotes, updateDownload, updateSha;   // (empty version: none; shared by all the tabs)
     void checkForUpdates (bool userAsked);                      // File > Check for updates; also once a day at start-up
     void showUpdateInfo();
     void openSampleBrowser();                         // the starter pack and your own folders, with preview

@@ -17,6 +17,8 @@
 #include "ProjectTemplates.h"
 #include "SampleBrowser.h"
 #include "UpdateCheck.h"
+#include "UpdateInstall.h"
+#include "CrashReport.h"
 #include "StarterPack.h"
 #include "MidiLearn.h"
 #include "AudioExport.h"
@@ -5840,6 +5842,7 @@ void MainComponent::checkForUpdates (bool userAsked)
             self.updateVersion = r.version;
             self.updateNotes = r.notes;
             self.updateDownload = r.downloadUrl;
+            self.updateSha = r.installerSha256;
             self.resized();
             self.updateButton.setTooltip ("UFODAW " + r.version + " is available. Click to see what is new and to download it.");
             if (userAsked)
@@ -5863,12 +5866,14 @@ void MainComponent::showUpdateInfo()
     juce::StringArray shownLines;
     for (auto line : juce::StringArray::fromLines (updateNotes))
     {
-        line = line.replace ("**", "").replace ("`", "").trim();
+        line = line.replace ("**", "").replace ("`", "").replace ("*", "").trim();
         if (line.startsWithChar ('#'))
             line = line.trimCharactersAtStart ("# ").toUpperCase();
         else if (line.startsWith ("- "))
             line = juce::String (juce::CharPointer_UTF8 ("\xe2\x80\xa2 ")) + line.substring (2);
-        if (line.isEmpty() || line.startsWithIgnoreCase ("DOWNLOAD"))
+        if (line.equalsIgnoreCase ("DOWNLOAD"))
+            break;   // (the download links and the SmartScreen remark that follow are for the website)
+        if (line.isEmpty())
             continue;
         while (line.length() > 90)   // wrap at a space
         {
@@ -5887,13 +5892,26 @@ void MainComponent::showUpdateInfo()
     }
     const auto notes = shownLines.joinIntoString ("\n");
     const auto download = updateDownload;
-    juce::AlertWindow::showAsync (juce::MessageBoxOptions::makeOptionsOkCancel (juce::MessageBoxIconType::InfoIcon, "UFODAW " + updateVersion + " is available",
-                                      "You have " + juce::SystemStats::getEnvironmentVariable ("UFODAW_VERSION_OVERRIDE", JUCE_APPLICATION_VERSION_STRING) + ".\n\n" + notes + "\n\nDownload the new version? Your projects open as before.",
-                                      "Download", "Later", this),
-                                  [download] (int result)
+    const auto sha = updateSha, version = updateVersion;
+    const bool canInstall = UpdateInstall::isTrustedUrl (download) && sha.length() == 64;   // (without a checksum only the download page is offered)
+    juce::Component::SafePointer<MainComponent> safe (this);
+    auto options = juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::InfoIcon)
+                       .withTitle ("UFODAW " + updateVersion + " is available")
+                       .withMessage ("You have " + juce::SystemStats::getEnvironmentVariable ("UFODAW_VERSION_OVERRIDE", JUCE_APPLICATION_VERSION_STRING) + ".\n\n" + notes
+                                     + (canInstall ? "\n\nInstall now? UFODAW closes, updates and starts again. Unsaved changes are kept in the autosave and offered when it starts."
+                                                   : "\n\nDownload the new version? Your projects open as before."))
+                       .withAssociatedComponent (this);
+    if (canInstall)
+        options = options.withButton ("Install now").withButton ("Download page").withButton ("Later");
+    else
+        options = options.withButton ("Download").withButton ("Later");
+
+    juce::AlertWindow::showAsync (options, [safe, download, sha, version, canInstall] (int result)
     {
-        if (result == 1)
-            juce::URL (download).launchInDefaultBrowser();
+        if (result == 1 && canInstall && safe != nullptr)
+            UpdateInstall::start (download, sha, version, safe.getComponent());
+        else if ((result == 1 && ! canInstall) || (result == 2 && canInstall))
+            juce::URL (canInstall ? "https://github.com/Thulehunter/ufodaw/releases/latest" : download).launchInDefaultBrowser();
     });
 }
 
@@ -7754,6 +7772,7 @@ void MainComponent::fileMenu()
     menu.addItem (16, updateVersion.isNotEmpty() ? "Update available: " + updateVersion + "..." : juce::String ("Check for updates..."));
     menu.addItem (17, "Check for updates once a day at start-up", true, UiSettings::autoUpdateCheck);
     menu.addItem (10, "Quick tour...");
+    menu.addItem (18, "Report a problem...");
     menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&railFile), [this, recent, templateList] (int result)
     {
         if (result == 12) openPalette();
@@ -7762,6 +7781,7 @@ void MainComponent::fileMenu()
         else if (result == 15) openSampleBrowser();
         else if (result == 16) { if (updateVersion.isNotEmpty()) showUpdateInfo(); else checkForUpdates (true); }
         else if (result == 17) { UiSettings::autoUpdateCheck = ! UiSettings::autoUpdateCheck; saveUiSettings(); }
+        else if (result == 18) CrashReport::showProblemDialog();
         if (result == 1) newProject();
         else if (result == 2) openProjectDialog();
         else if (result == 3) saveButton.triggerClick();

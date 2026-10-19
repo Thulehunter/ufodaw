@@ -2,6 +2,7 @@
 #include "ProjectTabs.h"
 #include "PluginScan.h"
 #include "PluginCrash.h"
+#include "CrashReport.h"
 #include "ProjectTemplates.h"
 #include "StarterPack.h"
 #if JUCE_WINDOWS
@@ -36,12 +37,19 @@ public:
         if (auto* tabs = dynamic_cast<ProjectTabs*> (window->getContentComponent()))
             tabs->start (project);
 
-        if (PluginCrash::pendingNotice.isNotEmpty())
-            juce::MessageManager::callAsync ([notice = PluginCrash::pendingNotice]
+        if (PluginCrash::crashedLastTime)
+        {
+            const auto module = PluginCrash::pendingModule == "unknown" ? juce::String() : PluginCrash::pendingModule;
+            const auto plugin = PluginCrash::pendingPlugin;
+            const auto notice = PluginCrash::pendingNotice;
+            juce::MessageManager::callAsync ([module, plugin, notice]
             {
-                juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::WarningIcon)
-                                                  .withTitle ("A plugin crashed").withMessage (notice).withButton ("OK"), nullptr);
+                CrashReport::show (plugin.isNotEmpty() ? "A plugin crashed" : "UFODAW closed unexpectedly", notice,
+                                   plugin.isNotEmpty() ? "Crash in plugin " + plugin : juce::String ("Crash on start-up after an unexpected close"),
+                                   CrashReport::build ("(Please add what you were doing when it happened.)", module, plugin));
             });
+        }
+        PluginCrash::crashedLastTime = false;
         PluginCrash::pendingNotice.clear();
     }
 

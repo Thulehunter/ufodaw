@@ -15,7 +15,7 @@
 <meta property="og:image" content="https://ufodaw.eu/icon.png">
 <meta name="twitter:card" content="summary">
 <script type="application/ld+json">
-{"@context":"https://schema.org","@type":"SoftwareApplication","name":"UFODAW","applicationCategory":"MultimediaApplication","applicationSubCategory":"Digital audio workstation","operatingSystem":"Windows","softwareVersion":"0.8.9","license":"https://www.gnu.org/licenses/agpl-3.0.html","url":"https://ufodaw.eu/","image":"https://ufodaw.eu/icon.png","downloadUrl":"https://github.com/Thulehunter/ufodaw/releases/latest","offers":{"@type":"Offer","price":"0","priceCurrency":"EUR"}}
+{"@context":"https://schema.org","@type":"SoftwareApplication","name":"UFODAW","applicationCategory":"MultimediaApplication","applicationSubCategory":"Digital audio workstation","operatingSystem":"Windows","softwareVersion":"0.9.0","license":"https://www.gnu.org/licenses/agpl-3.0.html","url":"https://ufodaw.eu/","image":"https://ufodaw.eu/icon.png","downloadUrl":"https://github.com/Thulehunter/ufodaw/releases/latest","offers":{"@type":"Offer","price":"0","priceCurrency":"EUR"}}
 </script>
 <script type="application/ld+json">
 {"@context":"https://schema.org","@type":"VideoObject","name":"UFODAW demo: record, arrange and mix","description":"A two-minute tour of UFODAW, a free digital audio workstation for Windows: piano roll, EQ and effects chain, track groups, freeze and the loudness meter.","thumbnailUrl":"https://ufodaw.eu/ufodaw-demo-poster.jpg","contentUrl":"https://ufodaw.eu/ufodaw-demo.mp4","uploadDate":"2026-10-19","duration":"PT2M19S"}
@@ -46,7 +46,7 @@
       <a class="btn primary" href="#download">Download for Windows</a>
       <a class="btn" href="#features">See what it does</a>
     </div>
-    <p class="meta">Version 0.8.9 · Free &amp; open source · AGPLv3 · Windows 64-bit · no installation needed</p>
+    <p class="meta">Version 0.9.0 · Free &amp; open source · AGPLv3 · Windows 64-bit · no installation needed</p>
   </section>
 
   <section class="strip" aria-label="Highlights">
@@ -99,6 +99,10 @@
       <article>
         <h3 class="c-red">Metering &amp; mastering aids</h3>
         <p>LUFS loudness meter, clipping lamps on every meter, a reference-track A/B switch, and a CPU readout so you see trouble before it crackles.</p>
+      </article>
+      <article>
+        <h3 class="c-orange">Updates &amp; problem reports</h3>
+        <p>One click on <i>Install now</i> updates the program (checked against GitHub's checksum). <i>Report a problem</i> and the notice after a crash show a plain-text report that you send yourself; nothing is sent automatically.</p>
       </article>
       <article>
         <h3 class="c-red">Multi-core &amp; crash-proof</h3>
@@ -159,7 +163,11 @@
   <section id="new" class="alt">
     <h2>What's new</h2>
     <div class="log">
-      <div><h3>0.8.9 <small>latest</small></h3><ul>
+      <div><h3>0.9.0 <small>latest</small></h3><ul>
+        <li><b>Install now:</b> the <i>Update available</i> button installs the new version for you: it downloads the installer, checks the checksum, updates and starts UFODAW again.</li>
+        <li><b>Problem reports:</b> <i>File &gt; Report a problem</i>, and a report offered after a crash (version, Windows, processor, the crashed file; no project data). You send it yourself, by a prefilled GitHub issue or by copying it.</li>
+        <li><b>Documentation:</b> a Getting started section, a section on updates and reports, and a troubleshooting section in the guide.</li></ul></div>
+      <div><h3>0.8.9</h3><ul>
         <li><b>Multi-core audio:</b> tracks and buses are rendered side by side on several CPU cores (bit-identical to single-core), set under <i>Audio settings &gt; CPU</i>; automatic by default.</li>
         <li><b>Plugin crash isolation:</b> a crash inside a plugin's own window or callbacks is caught, its windows close, the plugin is blocked and named. If the program is closed anyway, that plugin is blocked at the next start with a notice.</li></ul></div>
       <div><h3>0.8.8.3</h3><ul>
@@ -193,10 +201,10 @@
 
   <section id="download">
     <h2>Download</h2>
-    <p class="center">Grab <code>UFODAW-0.8.9-setup.exe</code> (the installer) from the Releases page and run it, or take <code>UFODAW-0.8.9-win64.zip</code>, unzip it anywhere and run <code>UFODAW.exe</code>. Double-click any <code>.mdaw</code> file to open a project directly.</p>
+    <p class="center">Grab <code>UFODAW-0.9.0-setup.exe</code> (the installer) from the Releases page and run it, or take <code>UFODAW-0.9.0-win64.zip</code>, unzip it anywhere and run <code>UFODAW.exe</code>. Double-click any <code>.mdaw</code> file to open a project directly.</p>
     <div class="cta center">
       <!-- TODO: replace # with your GitHub Releases URL -->
-      <a class="btn primary" href="#" id="dl">Download 0.8.9 (Windows 64-bit)</a>
+      <a class="btn primary" href="#" id="dl">Download 0.9.0 (Windows 64-bit)</a>
       <a class="btn" href="#" id="src">Source code</a>
     </div>
     <p class="meta center">Releases are not code-signed yet, so Windows SmartScreen may show a warning. Choose “More info” → “Run anyway”.</p>
@@ -241,7 +249,7 @@
     document.getElementById("fr-nav").href = fr;
     document.getElementById("fr-nav").target = "_blank";
     document.getElementById("fr-list").href = REPO + "/issues?q=label%3Aenhancement";
-    var VERSION = "0.8.9";   // (update with every release)
+    var VERSION = "0.9.0";   // (update with every release)
     var body = "**What happened?**\n\n\n**What did you expect?**\n\n\n**How can it be repeated?**\n1. \n2. \n3. \n\n**Version:** UFODAW " + VERSION + "\n**Windows version:**\n**Audio device and driver (ASIO / WASAPI):**\n**Plugins involved (name, maker):**\n";
     var bug = REPO + "/issues/new?labels=bug&title=" + encodeURIComponent("Bug: ") + "&body=" + encodeURIComponent(body);
     document.getElementById("bug").href = bug;

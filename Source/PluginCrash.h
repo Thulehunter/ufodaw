@@ -5,6 +5,12 @@
 #include <functional>
 
 #if JUCE_WINDOWS
+ #ifndef NOMINMAX
+  #define NOMINMAX
+ #endif
+ #ifndef WIN32_LEAN_AND_MEAN
+  #define WIN32_LEAN_AND_MEAN
+ #endif
  #include <windows.h>
 #endif
 
@@ -27,6 +33,8 @@ namespace PluginCrash
     inline juce::File lastCrashFile() { return folder().getChildFile ("last-crash.txt"); }
 
     inline juce::String pendingNotice;   // shown once by the application after the window is up
+    inline bool crashedLastTime = false;      // the program was closed by a crash last time (the notice then offers a report)
+    inline juce::String pendingModule, pendingPlugin;
 
     // The plugin whose file contains the module (or is the module) is added to the blocked list. Returns its name, or empty if it is no plugin.
     inline juce::String blockModule (const juce::String& modulePath)
@@ -82,8 +90,11 @@ namespace PluginCrash
         const auto module = readLastCrashModule().trim();
         file.deleteFile();
         const auto name = blockModule (module);
-        if (name.isNotEmpty())
-            pendingNotice = noticeFor (name) + "\n\n(The program was closed by that plugin. Your work is restored from the autosave if you accept the restore prompt.)";
+        crashedLastTime = true;
+        pendingModule = module;
+        pendingPlugin = name;
+        pendingNotice = name.isNotEmpty() ? noticeFor (name) + "\n\n(The program was closed by that plugin. Your work is restored from the autosave if you accept the restore prompt.)"
+                                          : juce::String ("UFODAW closed unexpectedly last time. Your work is restored from the autosave if you accept the restore prompt.");
     }
 
 #if JUCE_WINDOWS
@@ -129,7 +140,9 @@ namespace PluginCrash
         if (module[0] == 0 && faultTick.load() != 0 && GetTickCount64() - faultTick.load() < 3000)
             wcscpy_s (module, MAX_PATH, faultModule);
 
-        if (module[0] != 0 && crashFilePath[0] != 0)
+        if (module[0] == 0)
+            wcscpy_s (module, MAX_PATH, L"unknown");
+        if (crashFilePath[0] != 0)
         {
             HANDLE h = CreateFileW (crashFilePath, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
             if (h != INVALID_HANDLE_VALUE)
