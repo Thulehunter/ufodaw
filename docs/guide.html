@@ -50,6 +50,7 @@
     <a href="#mixing">Buses, sends &amp; sidechain</a>
     <a href="#effects">EQ, compressor, delay, reverb, more</a>
     <a href="#freeze">Freeze, groups &amp; plugin safety</a>
+    <a href="#starter">Starter pack &amp; templates</a>
     <a href="#metering">Metering &amp; reference</a>
     <a href="#tempo">Tempo map &amp; sections</a>
     <a href="#export">Exporting &amp; stems</a>
@@ -284,6 +285,20 @@
       </ul>
     </section>
 
+    <section id="starter">
+      <h2>Starter pack, templates and the sample browser</h2>
+      <h3>The starter pack</h3>
+      <p>On first start the program writes its own sounds to <code>%APPDATA%\UFODAW\StarterPack</code>: about 45 drum one-shots (kicks, snares, claps, hats, toms, cymbals, percussion), bass and synth sounds, effects (risers, an impact, vinyl crackle) and four drum loops with their tempo in the name. They are synthesised by the program, so you can use them in any music without worrying about licences.</p>
+      <h3>Drum kits and synth sounds</h3>
+      <p>The drum rack has a box at the top that fills all 16 pads from a kit: <b>Punch</b>, <b>808</b>, <b>Lo-fi</b>, <b>House</b> and <b>Tight</b>. Undo brings your own samples back. In the piano roll of a synth track, the <b>Sounds</b> box sets the wave, the envelope and the filter: pluck, warm pad, strings, brass, lead, keys, bell, sub bass and fat bass.</p>
+      <h3>New from a template</h3>
+      <p><b>File &gt; New from a template</b> opens a finished starting point as a new, unsaved project, so the template itself is never overwritten: <i>Beat starter</i>, <i>Lo-fi hip hop</i>, <i>House 124</i>, <i>Trap 140</i>, <i>Song sketch</i> (named sections and empty tracks for guitar and vocals) and <i>Vocal recording</i> (a vocal track with a ready effects chain and a reverb bus, and the click on).</p>
+      <h3>The sample browser</h3>
+      <p>Open it from the File menu or the command palette (<kbd>Ctrl</kbd>+<kbd>K</kbd>). It lists the starter pack by category and any folders you add. Click a sound to hear it (through the master output, apart from your project); double-click, or press <b>Add to project</b>, to put it on a new audio track; or drag it onto a track, a drum pad or the sampler. The search box looks in all folders.</p>
+      <h3>Updates</h3>
+      <p><b>File &gt; Check for updates</b> asks GitHub for the latest release. Only that one small request is made; nothing about you or your projects is sent. When a newer version exists, an orange <b>Update available</b> button appears in the top bar with what is new and a download link. The program also checks once a day at start-up; you can switch that off in the same menu.</p>
+    </section>
+
     <section id="metering">
       <h2>Metering and reference tracks</h2>
       <p>The <b>Meter</b> button on the master strip shows loudness in LUFS (momentary, short-term, integrated, measured as streaming services do: ITU-R BS.1770 / EBU R128), the highest sample, a 20 Hz–20 kHz spectrum and a target to aim for: −14 LUFS for Spotify and YouTube, −16 for Apple Music, −23 for broadcast.</p>
@@ -390,7 +405,7 @@
   ["fr-nav", "fr-link"].forEach(function (id) {
     var a = document.getElementById(id); a.href = fr; a.target = "_blank"; a.rel = "noopener";
   });
-  var VERSION = "0.8.8.2";   // (update with every release)
+  var VERSION = "0.8.8.3";   // (update with every release)
   var body = "**What happened?**\n\n\n**What did you expect?**\n\n\n**How can it be repeated?**\n1. \n2. \n3. \n\n**Version:** UFODAW " + VERSION + "\n**Windows version:**\n**Audio device and driver (ASIO / WASAPI):**\n**Plugins involved (name, maker):**\n";
   var bug = REPO + "/issues/new?labels=bug&title=" + encodeURIComponent("Bug: ") + "&body=" + encodeURIComponent(body);
   ["bug-nav", "bug-link"].forEach(function (id) {
