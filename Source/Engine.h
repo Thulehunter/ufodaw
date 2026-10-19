@@ -226,6 +226,10 @@ struct Track
 
     juce::String name;
     juce::uint32 colour = 0;            // the colour of the track in the headers, mixer and clips (ARGB); 0 = the colour of its type
+    // The key of the piano roll of this track (see Scales.h): root 0..11, scale 0 = none, snap = new and moved notes stay in the scale,
+    // chord 0 / 1 / 2 = single notes / triads / sevenths when a note is added
+    int scaleRoot = 0, scaleType = 0, scaleChord = 0;
+    bool scaleSnap = false;
     // Sidechain: this track's compressor listens to the sound of sidechainSource instead of its own (it ducks when that one is loud). A track
     // that is used this way (sidechainTapped) is rendered first and leaves a copy of its sound in scL / scR for the others.
     std::atomic<Track*> sidechainSource { nullptr };
@@ -321,6 +325,8 @@ struct TrackState
 {
     juce::String name;
     juce::uint32 colour = 0;
+    int scaleRoot = 0, scaleType = 0, scaleChord = 0;
+    bool scaleSnap = false;
     Track::Type type = Track::Type::Audio;
     std::vector<Clip> clips;
     std::vector<MidiClip> midiClips;
@@ -446,6 +452,8 @@ public:
     void setReferenceOffset (double seconds) { referenceOffset = seconds; }   // where in the project the reference starts (seconds)
     double getReferenceOffset() const { return referenceOffset.load(); }
 
+    // A parameter by id ("volume", "pan", "mute", "solo", or an automation target id) set from a 0..1 position: what a MIDI controller does (message thread)
+    bool setParameterNormalised (Track&, const juce::String& id, double position);
     void setSidechain (Track&, Track* source);           // the compressor of the track listens to source (null: its own signal)
     void updateSidechainTaps();                          // (callers hold the lock)
     void setSend (Track&, Track& bus, float level, bool preFader);             // level <= 0 removes the send

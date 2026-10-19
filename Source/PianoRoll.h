@@ -49,6 +49,13 @@ private:
     juce::Label attackLabel { {}, "Attack" }, releaseLabel { {}, "Release" }, cutoffLabel { {}, "Cutoff" };
     juce::Slider attack, release, cutoff;
     juce::TextButton closeButton { "x" }, pluginButton { "Plugin window" }, fitButton { "Show notes" };
+    // the key: root note, scale, chords, snapping (stored with the track)
+    juce::ComboBox rootBox, scaleBox, chordBox;
+    juce::ToggleButton snapToggle { "Snap to scale" };
+    juce::TextButton fitScaleButton { "Fit notes" };
+    juce::Label scaleLabel;
+    void refreshScaleControls();
+    void fitNotesToScale();
     juce::ComboBox laneBox;           // what the lane under the notes shows: velocity, or a controller (mod wheel, pitch bend...)
     void refreshLaneChoices();        // adds the controllers a clip contains that are not in the usual list
     bool pendingScroll = false;

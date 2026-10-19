@@ -528,6 +528,31 @@ void Engine::setTrackOutput (Track& t, Track* bus)
     t.output = bus;
 }
 
+bool Engine::setParameterNormalised (Track& t, const juce::String& id, double position)
+{
+    position = juce::jlimit (0.0, 1.0, position);
+    if (id == "volume") { t.gain = (float) (position * 1.5); return true; }
+    if (id == "pan")    { t.pan = (float) (position * 2.0 - 1.0); return true; }
+    if (id == "mute")   { t.mute = position >= 0.5; return true; }
+    if (id == "solo")   { t.solo = position >= 0.5; return true; }
+
+    const juce::ScopedLock sl (lock);
+    auto* lane = ensureLane (t, id);
+    if (lane == nullptr)
+        return false;
+    if (lane->floatTarget != nullptr)
+    {
+        lane->floatTarget->store (lane->lo + (float) position * (lane->hi - lane->lo));
+        return true;
+    }
+    if (lane->plugin != nullptr && juce::isPositiveAndBelow (lane->pluginParam, lane->plugin->instance->getParameters().size()))
+    {
+        lane->plugin->instance->getParameters()[lane->pluginParam]->setValueNotifyingHost ((float) position);
+        return true;
+    }
+    return false;
+}
+
 void Engine::setSidechain (Track& t, Track* source)
 {
     const juce::ScopedLock sl (lock);
@@ -1911,6 +1936,10 @@ TrackState Engine::captureTrack (const Track& t) const
     }
     ts.name = t.name;
     ts.colour = t.colour;
+    ts.scaleRoot = t.scaleRoot;
+    ts.scaleType = t.scaleType;
+    ts.scaleChord = t.scaleChord;
+    ts.scaleSnap = t.scaleSnap;
     ts.type = t.type;
     ts.bus = t.bus;
     ts.clips = t.clips;
@@ -1952,6 +1981,10 @@ void Engine::applyTrackState (Track& t, const TrackState& ts)
 {
     t.name = ts.name;
     t.colour = ts.colour;
+    t.scaleRoot = ts.scaleRoot;
+    t.scaleType = ts.scaleType;
+    t.scaleChord = ts.scaleChord;
+    t.scaleSnap = ts.scaleSnap;
     t.subLanes = ts.subLanes;
     t.subLanesOpen = ts.subLanesOpen;
     t.subAutoDone = ts.subAutoDone;

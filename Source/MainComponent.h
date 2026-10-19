@@ -15,6 +15,8 @@ class SamplerWindow;   // (SamplerPanel.h)
 class DrumRackWindow;  // (DrumRackPanel.h)
 class MixerWindow;     // (MixerPanel.h)
 class WarpWindow;      // (WarpEditor.h)
+struct MidiMapping;    // (MidiLearn.h)
+class MidiLearnWindow;
 class MasterMeterWindow;   // (MasterMeter.h)
 struct Command;        // (Commands.h)
 class CommandPalette;
@@ -237,7 +239,7 @@ public:
     void sectionSwap (int index);                               // section `index` and the one after it change places
     void openWarpEditor (Track&, int clipId);                   // markers on the hits of an audio clip, dragged to the grid
     void slicesToMidi (Track&);                                // the sampler's slices as a MIDI pattern at the playhead
-    void setFirstTempo (double bpm);                           // the tempo of the first section (one undo step)
+    void setFirstTempo (double bpm, bool withUndo = true);                           // the tempo of the first section (one undo step)
     double snapTime (double seconds) const;
 
     bool isLiveNoteDown (int pitch) const   // a note being played right now on a MIDI keyboard or the computer keys
@@ -413,6 +415,16 @@ private:
     // Autosave: every two minutes, when something changed, the project goes to a recovery file. A normal save (or a normal exit
     // without unsaved changes) removes it; if the program dies, or is closed with unsaved changes, it is offered at the next start.
     void openVersionHistory();                        // File > Version history...
+    // MIDI learn: controllers of a hardware MIDI controller tied to parameters (see MidiLearn.h)
+    std::vector<MidiMapping> midiMappings;
+    std::unique_ptr<MidiLearnWindow> learnWindow;
+    std::array<std::atomic<int>, 16 * 128> ccValue;           // the last value of every controller on every channel (MIDI thread writes)
+    std::array<std::atomic<unsigned>, 16 * 128> ccStamp;      // counts the messages
+    std::atomic<bool> ccLearning { false };
+    std::atomic<int> ccLearnedNumber { -1 }, ccLearnedChannel { 0 };
+    std::function<void (int, int)> onCcLearned;               // (message thread) the controller that was learned
+    void openMidiLearn();
+    void applyMidiMappings();                                 // (message thread, 30 times a second)
     struct PluginOpen { juce::MemoryBlock before; size_t undoSize = 0; };
     std::map<PluginSlot*, PluginOpen> pluginOpen;     // plugin windows that are open: the state they had when they opened
     void pluginEditorOpened (PluginSlot&);            // (what is done inside a plugin's window is part of undo)
@@ -556,7 +568,9 @@ private:
     void updateCountInButton();
     double recordLatencySeconds() const;   // how much earlier a recording is placed on the timeline (the round trip through the interface)
     TempoMap tempoMap;   // the same as the engine's; only the message thread changes either, always together
-    juce::TextButton tempoButton { "Tempo" }, sectionsButton { "Sections" };
+    juce::TextButton tempoButton { "Tempo" }, sectionsButton { "Sections" }, tapButton { "Tap" };
+    std::vector<juce::uint32> tapTimes;                 // tap tempo: when the button was tapped (ms)
+    void tapTempo();
     juce::Label bpmLabel { {}, "BPM" }, timeLabel;
     juce::Slider bpmSlider { juce::Slider::LinearBar, juce::Slider::TextBoxLeft };
     // The master channel strip, pinned below the tracks: controls on the left, an automation lane on the right.

@@ -14,6 +14,7 @@
 #include "SectionsPanel.h"
 #include "Commands.h"
 #include "MasterMeter.h"
+#include "MidiLearn.h"
 #include "AudioExport.h"
 #include "SamplerPanel.h"
 #include "DrumRackPanel.h"
@@ -2840,6 +2841,12 @@ MainComponent::MainComponent (int slot, std::shared_ptr<juce::AudioDeviceManager
     tempoButton.onClick = [this] { openTempoPanel(); };
     addAndMakeVisible (tempoButton);
 
+    tapButton.getProperties().set ("pill", true);
+    tapButton.setTooltip ("Tap tempo: tap in time (or press T) and the tempo follows. Two seconds without a tap start over.");
+    tapButton.setWantsKeyboardFocus (false);
+    tapButton.onClick = [this] { tapTempo(); grabKeyboardFocus(); };
+    addAndMakeVisible (tapButton);
+
     sectionsButton.getProperties().set ("pill", true);
     sectionsButton.setTooltip ("The sections of the arrangement (verse, chorus...): name them, loop one, copy one or swap two. They show as bands on the ruler.");
     sectionsButton.setWantsKeyboardFocus (false);
@@ -2887,6 +2894,8 @@ MainComponent::MainComponent (int slot, std::shared_ptr<juce::AudioDeviceManager
     addAndMakeVisible (headerViewport);
     addAndMakeVisible (*ruler);
 
+    for (auto& v : ccValue) v = 0;
+    for (auto& s : ccStamp) s = 0;
     pluginHost.onEditorOpened = [this] (PluginSlot& s) { pluginEditorOpened (s); };
     pluginHost.onEditorClosed = [this] (PluginSlot& s) { pluginEditorClosed (s); };
     buildCommands();
@@ -2960,6 +2969,7 @@ static void readSamplerParams (const juce::var& sv, Sampler::Params& sp)
 
 MainComponent::~MainComponent()
 {
+    learnWindow.reset();
     pluginHost.onEditorOpened = nullptr;   // (the editor windows close below, with the project half gone)
     pluginHost.onEditorClosed = nullptr;
     mixerWindow.reset();
@@ -3369,6 +3379,22 @@ void MainComponent::routeLiveMidi (const juce::String& sourceId, const juce::Mid
         if (m.isNoteOn()) mask.fetch_or (bit); else mask.fetch_and (~bit);
     }
 
+    if (m.isController())   // for MIDI learn: what every controller says now (and which one moved last)
+    {
+        const int index = (m.getChannel() - 1) * 128 + m.getControllerNumber();
+        if (juce::isPositiveAndBelow (index, 16 * 128))
+        {
+            ccValue[(size_t) index].store (m.getControllerValue());
+            ccStamp[(size_t) index].fetch_add (1u);
+            if (ccLearning.load())
+            {
+                ccLearnedChannel = m.getChannel();
+                ccLearnedNumber = m.getControllerNumber();
+                ccLearning = false;
+            }
+        }
+    }
+
     if (! (m.isNoteOnOrOff() || m.isController() || m.isPitchWheel() || m.isChannelPressure()))
         return;
 
@@ -3620,9 +3646,26 @@ void MainComponent::slicesToMidi (Track& t)
 }
 
 // The tempo of the first section (what the BPM slider shows), e.g. from the sampler's tempo calculator. One undo step.
-void MainComponent::setFirstTempo (double bpm)
+// Tap tempo: tap in time (also with the key T); the tempo follows the average of the last taps. Two seconds without a tap start over.
+void MainComponent::tapTempo()
 {
-    beginEdit();
+    const auto now = juce::Time::getMillisecondCounter();
+    if (tapTimes.empty() || now - tapTimes.back() > 2500u)
+        tapTimes.clear();
+    tapTimes.push_back (now);
+    if (tapTimes.size() > 8)
+        tapTimes.erase (tapTimes.begin());
+    if (tapTimes.size() < 2)
+        return;
+    const double meanMs = (double) (tapTimes.back() - tapTimes.front()) / (double) (tapTimes.size() - 1);
+    const double bpm = std::round (juce::jlimit (20.0, 400.0, 60000.0 / meanMs) * 10.0) / 10.0;
+    setFirstTempo (bpm, tapTimes.size() == 2);   // (one undo step for all the taps of a go)
+}
+
+void MainComponent::setFirstTempo (double bpm, bool withUndo)
+{
+    if (withUndo)
+        beginEdit();
     auto sections = tempoMap.getSections();
     sections[0].bpm = bpm;
     TempoMap m;
@@ -4838,6 +4881,8 @@ void MainComponent::resized()
     bpmLabel.setBounds (top.removeFromLeft (36));
     bpmSlider.setBounds (top.removeFromLeft (70));
     top.removeFromLeft (6);
+    tapButton.setBounds (top.removeFromLeft (46));
+    top.removeFromLeft (6);
     tempoButton.setBounds (top.removeFromLeft (62));
     top.removeFromLeft (8);
     sectionsButton.setBounds (top.removeFromLeft (78));
@@ -5433,6 +5478,7 @@ void MainComponent::buildCommands()
 
     // windows and panels
     add ("mixer", "Open the mixer", "Windows", none, [this] { openMixer(); });
+    add ("midilearn", "MIDI controllers: tie knobs and faders to parameters (MIDI learn)...", "Windows", none, [this] { openMidiLearn(); });
     add ("meter", "Master meter: loudness (LUFS) and spectrum...", "Windows", none, [this] { openMasterMeter(); });
     add ("refab", "Reference track: switch between your mix and the reference", "Windows", K ('B'), [this]
         {
@@ -5445,6 +5491,7 @@ void MainComponent::buildCommands()
     add ("plugins", "Plugins (scan, manage)...", "Windows", none, [this] { pluginsButton.triggerClick(); });
     add ("audiosettings", "Audio settings (driver, interface, buffer)...", "Windows", none, [this] { openAudioSettings(); });
     add ("tempo", "Tempo and time signature...", "Windows", none, [this] { openTempoPanel(); });
+    add ("taptempo", "Tap tempo", "Transport", K ('T'), [this] { tapTempo(); });
     add ("sections", "Sections of the arrangement (verse, chorus...)...", "Windows", none, [this] { openSectionsPanel(); });
     add ("zoomin", "Zoom in", "View", none, [this] { zoomBy (1.4, laneViewport.getMaximumVisibleWidth() / 2); });
     add ("zoomout", "Zoom out", "View", none, [this] { zoomBy (1.0 / 1.4, laneViewport.getMaximumVisibleWidth() / 2); });
@@ -5551,8 +5598,64 @@ bool MainComponent::keyPressed (const juce::KeyPress& k)
     juce::ignoreUnused (ch);    return false;
 }
 
+// The mappings of MIDI learn: a controller that moved moves its parameter (also what the learn window waits for)
+void MainComponent::applyMidiMappings()
+{
+    if (onCcLearned && ccLearnedNumber.load() >= 0)
+    {
+        const int cc = ccLearnedNumber.exchange (-1), channel = ccLearnedChannel.load();
+        auto callback = std::move (onCcLearned);
+        onCcLearned = nullptr;
+        if (callback)
+            callback (cc, channel);
+    }
+
+    for (auto& mp : midiMappings)
+    {
+        if (mp.cc < 0 || mp.cc > 127)
+            continue;
+        Track* track = mp.trackIndex < 0 ? &engine.getMaster() : engine.getTrack (mp.trackIndex);
+        if (track == nullptr)
+            continue;
+        for (int ch = 0; ch < 16; ++ch)
+        {
+            if (mp.channel > 0 && mp.channel - 1 != ch)
+                continue;
+            const auto stamp = ccStamp[(size_t) (ch * 128 + mp.cc)].load();
+            if (stamp == mp.seen[ch])
+                continue;
+            mp.seen[ch] = stamp;
+            engine.setParameterNormalised (*track, mp.id, (double) ccValue[(size_t) (ch * 128 + mp.cc)].load() / 127.0);
+        }
+    }
+}
+
+void MainComponent::openMidiLearn()
+{
+    if (learnWindow != nullptr)
+    {
+        learnWindow->toFront (true);
+        return;
+    }
+    juce::Component::SafePointer<MainComponent> safe (this);
+    MidiLearnPanel::Hooks hooks;
+    hooks.startLearn = [safe] (std::function<void (int, int)> done)
+    {
+        if (safe == nullptr)
+            return;
+        safe->ccLearnedNumber = -1;
+        safe->onCcLearned = std::move (done);
+        safe->ccLearning = true;
+    };
+    hooks.stopLearn = [safe] { if (safe != nullptr) { safe->ccLearning = false; safe->onCcLearned = nullptr; } };
+    hooks.changed = [safe] { if (safe != nullptr) ++safe->editCounter; };
+    auto closeIt = [safe] { juce::MessageManager::callAsync ([safe] { if (safe != nullptr) { safe->ccLearning = false; safe->onCcLearned = nullptr; safe->learnWindow.reset(); } }); };
+    learnWindow = std::make_unique<MidiLearnWindow> (new MidiLearnPanel (engine, midiMappings, std::move (hooks)), closeIt);
+}
+
 void MainComponent::timerCallback()
 {
+    applyMidiMappings();
     if (++subAutoTicks % 20 == 0)
         autoSubLanes();   // about once a second: a drum plugin may just have been loaded
     {
@@ -6488,6 +6591,13 @@ void MainComponent::saveProject (const juce::File& file, SaveKind kind)
         o->setProperty ("name", t->name);
         if (t->colour != 0)
             o->setProperty ("colour", (juce::int64) t->colour);
+        if (t->scaleType != 0 || t->scaleChord != 0 || t->scaleSnap)   // the key of its piano roll
+        {
+            o->setProperty ("scaleRoot", t->scaleRoot);
+            o->setProperty ("scaleType", t->scaleType);
+            o->setProperty ("scaleChord", t->scaleChord);
+            o->setProperty ("scaleSnap", t->scaleSnap);
+        }
         o->setProperty ("type", t->type == Track::Type::Midi ? "midi" : "audio");
         o->setProperty ("gain", (double) t->gain.load());
         o->setProperty ("pan", (double) t->pan.load());
@@ -6713,6 +6823,21 @@ void MainComponent::saveProject (const juce::File& file, SaveKind kind)
         root->setProperty ("arrangement", arrangementList);
     }
     root->setProperty ("master", juce::var (masterObject));
+    if (! midiMappings.empty())   // MIDI learn: which controller moves which parameter
+    {
+        juce::Array<juce::var> mapList;
+        for (auto& mp : midiMappings)
+            if (mp.cc >= 0)
+            {
+                auto* mo = new juce::DynamicObject();
+                mo->setProperty ("cc", mp.cc);
+                mo->setProperty ("channel", mp.channel);
+                mo->setProperty ("track", mp.trackIndex);
+                mo->setProperty ("id", mp.id);
+                mapList.add (juce::var (mo));
+            }
+        root->setProperty ("midiMap", mapList);
+    }
     if (engine.hasReference())   // the reference track (a file) and how it is heard
     {
         auto* ro = new juce::DynamicObject();
@@ -7174,11 +7299,13 @@ void MainComponent::fileMenu()
     menu.addSeparator();
     menu.addItem (12, "Command palette...   Ctrl+K");
     menu.addItem (13, "Keyboard shortcuts...");
+    menu.addItem (14, "MIDI controllers (MIDI learn)...");
     menu.addItem (10, "Quick tour...");
     menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&railFile), [this, recent] (int result)
     {
         if (result == 12) openPalette();
         else if (result == 13) openShortcuts();
+        else if (result == 14) openMidiLearn();
         if (result == 1) newProject();
         else if (result == 2) openProjectDialog();
         else if (result == 3) saveButton.triggerClick();
@@ -7250,6 +7377,7 @@ void MainComponent::resetToEmptyProject()
     engine.setTempoMap (tempoMap, false);
     engine.setSections ({});
     engine.clearReference();
+    midiMappings.clear();
     engine.metronome = false;
     metroButton.setToggleState (false, juce::dontSendNotification);
     bpmSlider.setValue (120.0, juce::dontSendNotification);
@@ -7373,6 +7501,22 @@ void MainComponent::loadProject (const juce::File& file, bool asTemplate)
     juce::StringArray missing, pluginProblems;
     const auto baseDir = file.getParentDirectory();
 
+    if (! asTemplate)   // MIDI learn
+    {
+        midiMappings.clear();
+        if (auto* list = root["midiMap"].getArray())
+            for (auto& mv : *list)
+            {
+                MidiMapping mp;
+                mp.cc = (int) mv.getProperty ("cc", -1);
+                mp.channel = juce::jlimit (0, 16, (int) mv.getProperty ("channel", 0));
+                mp.trackIndex = (int) mv.getProperty ("track", 0);
+                mp.id = mv.getProperty ("id", "volume").toString();
+                if (mp.cc >= 0 && mp.cc < 128)
+                    midiMappings.push_back (mp);
+            }
+    }
+
     if (! asTemplate)   // the reference track
     {
         engine.clearReference();
@@ -7416,6 +7560,10 @@ void MainComponent::loadProject (const juce::File& file, bool asTemplate)
                             : engine.addTrack (trackName, isMidi ? Track::Type::Midi : Track::Type::Audio,
                                                ! isMidi && (bool) item.getProperty ("bus", false));
         t->colour = (juce::uint32) (juce::int64) item.getProperty ("colour", (juce::int64) 0);
+        t->scaleRoot = juce::jlimit (0, 11, (int) item.getProperty ("scaleRoot", 0));
+        t->scaleType = juce::jmax (0, (int) item.getProperty ("scaleType", 0));
+        t->scaleChord = juce::jlimit (0, 2, (int) item.getProperty ("scaleChord", 0));
+        t->scaleSnap = (bool) item.getProperty ("scaleSnap", false);
 
         if (isSampler)   // the sample and how it plays
         {

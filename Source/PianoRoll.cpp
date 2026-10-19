@@ -1,5 +1,6 @@
 #include "PianoRoll.h"
 #include "MainComponent.h"
+#include "Scales.h"
 
 namespace
 {
@@ -46,6 +47,11 @@ public:
             const bool lit = p == held || sounding.test ((size_t) p);
             g.setColour (lit ? Theme::yellow : black ? Theme::keyBlack : Theme::keyWhite);
             g.fillRect (r.withTrimmedBottom (1));
+            if (auto* tr = roll.getTrack(); tr != nullptr && tr->scaleType > 0 && Scales::contains (p, tr->scaleRoot, tr->scaleType))   // a key of the scale
+            {
+                g.setColour (Scales::isRoot (p, tr->scaleRoot) ? Theme::redBright : Theme::orange);
+                g.fillEllipse ((float) r.getX() + 5.0f, (float) r.getCentreY() - 3.0f, 6.0f, 6.0f);
+            }
 
             g.setColour (lit ? Theme::noteOutline : black ? Theme::textDim : (p % 12 == 0 ? Theme::noteOutline : Theme::textFaint));
             g.drawText (noteName (p), r.withTrimmedRight (6), juce::Justification::centredRight);
@@ -164,6 +170,19 @@ public:
                 continue;
             g.setColour (isBlackKey (p) ? Theme::rowDark : Theme::rowLight);
             g.fillRect (r);
+            if (track != nullptr && track->scaleType > 0)   // the key: rows outside the scale are dimmed, the root is tinted
+            {
+                if (! Scales::contains (p, track->scaleRoot, track->scaleType))
+                {
+                    g.setColour (juce::Colours::black.withAlpha (0.30f));
+                    g.fillRect (r);
+                }
+                else if (Scales::isRoot (p, track->scaleRoot))
+                {
+                    g.setColour (Theme::orange.withAlpha (0.12f));
+                    g.fillRect (r);
+                }
+            }
             g.setColour (p % 12 == 0 ? Theme::gridLineStrong : Theme::gridLine);
             g.drawHorizontalLine (r.getBottom() - 1, 0.0f, (float) getWidth());
         }
@@ -252,10 +271,22 @@ public:
 
             Note n;
             n.pitch = yToPitch (e.y);
+            if (track->scaleSnap && track->scaleType > 0)
+                n.pitch = Scales::nearest (n.pitch, track->scaleRoot, track->scaleType);
             n.start = t;
             n.length = juce::jmin (main.getTempoMap().beatSecondsAt (clip.start + t), clip.length - t);
             main.beginEdit();
             gestureEdited = true;   // adding the note and stretching it afterwards is one undo step
+            if (track->scaleChord > 0)   // a chord: the other notes of it go in as well (the first one is the note that is stretched)
+            {
+                const auto notes = Scales::chord (n.pitch, track->scaleRoot, track->scaleType, track->scaleChord);
+                for (size_t k = 1; k < notes.size(); ++k)
+                {
+                    Note extra = n;
+                    extra.pitch = notes[k];
+                    clip.notes.push_back (extra);
+                }
+            }
             clip.notes.push_back (n);
             selected = (int) clip.notes.size() - 1;
             mode = Mode::Resize;   // dragging right right after clicking stretches the new note
@@ -286,6 +317,8 @@ public:
             const double start = rawOrSnapped (xToTime (e.x) - grabTime, e) - clip.start;
             newStart = juce::jlimit (0.0, juce::jmax (0.0, clip.length - minLen), start);
             newPitch = yToPitch (e.y);
+            if (track->scaleSnap && track->scaleType > 0)
+                newPitch = Scales::nearest (newPitch, track->scaleRoot, track->scaleType);
         }
 
         const bool changed = std::abs (newStart - n.start) > 1.0e-9 || std::abs (newLength - n.length) > 1.0e-9
@@ -716,6 +749,44 @@ PianoRoll::PianoRoll (MainComponent& m) : main (m)
     for (auto* l : { &attackLabel, &releaseLabel, &cutoffLabel })
         addAndMakeVisible (l);
 
+    // the key of the clip: notes outside it are dimmed, new notes can snap to it, a click can add a chord
+    for (int i = 0; i < 12; ++i)
+    {
+        static const char* names[] = { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
+        rootBox.addItem (names[i], i + 1);
+    }
+    for (size_t i = 0; i < Scales::defs().size(); ++i)
+        scaleBox.addItem (Scales::defs()[i].name, (int) i + 1);
+    chordBox.addItem ("Single notes", 1);
+    chordBox.addItem ("Triads on click", 2);
+    chordBox.addItem ("7th chords on click", 3);
+    rootBox.setTooltip ("The root note of the key");
+    scaleBox.setTooltip ("The scale of the key: the rows of its notes stay light, the others are dimmed (the root is tinted)");
+    chordBox.setTooltip ("A click adds a whole chord, built from the notes of the scale (or a major chord when there is no scale)");
+    snapToggle.setTooltip ("New notes and moved notes jump to the nearest note of the scale");
+    fitScaleButton.setTooltip ("Moves every note of this clip that is outside the scale to the nearest note of it");
+    scaleLabel.setText ("Key", juce::dontSendNotification);
+    scaleLabel.setFont (juce::FontOptions (12.0f, juce::Font::bold));
+    scaleLabel.setColour (juce::Label::textColourId, Theme::textDim);
+    auto scaleChanged = [this]
+    {
+        if (track == nullptr)
+            return;
+        main.beginEdit();
+        track->scaleRoot = juce::jmax (0, rootBox.getSelectedId() - 1);
+        track->scaleType = juce::jmax (0, scaleBox.getSelectedId() - 1);
+        track->scaleChord = juce::jmax (0, chordBox.getSelectedId() - 1);
+        track->scaleSnap = snapToggle.getToggleState();
+        repaintGrid();
+    };
+    rootBox.onChange = scaleChanged;
+    scaleBox.onChange = scaleChanged;
+    chordBox.onChange = scaleChanged;
+    snapToggle.onClick = scaleChanged;
+    fitScaleButton.onClick = [this] { fitNotesToScale(); };
+    for (juce::Component* c : std::initializer_list<juce::Component*> { &rootBox, &scaleBox, &chordBox, &snapToggle, &fitScaleButton, &scaleLabel })
+        addAndMakeVisible (c);
+
     closeButton.onClick = [this] { if (onClose) onClose(); };
     addAndMakeVisible (closeButton);
 
@@ -744,6 +815,7 @@ void PianoRoll::showClip (Track* t, int id)
     grid->setClip (t, id);
     velocity->setClip (t, id);
     refreshLaneChoices();
+    refreshScaleControls();
     toolbarShowsPlugin = ! (t != nullptr && (t->instrument != nullptr || t->sampler != nullptr));   // force updateToolbar() to apply
     updateToolbar();
 
@@ -759,6 +831,34 @@ void PianoRoll::showClip (Track* t, int id)
             scrollToNotes();   // (waits for the panel's layout if it is not sized yet)
     }
     repaint();
+}
+
+void PianoRoll::refreshScaleControls()
+{
+    if (track == nullptr)
+        return;
+    rootBox.setSelectedId (track->scaleRoot + 1, juce::dontSendNotification);
+    scaleBox.setSelectedId (juce::jlimit (0, (int) Scales::defs().size() - 1, track->scaleType) + 1, juce::dontSendNotification);
+    chordBox.setSelectedId (juce::jlimit (0, 2, track->scaleChord) + 1, juce::dontSendNotification);
+    snapToggle.setToggleState (track->scaleSnap, juce::dontSendNotification);
+}
+
+// Every note of the clip that is outside the scale goes to the nearest note of it (one undo step)
+void PianoRoll::fitNotesToScale()
+{
+    MidiClip clip;
+    if (track == nullptr || track->scaleType <= 0 || ! main.getEngine().getMidiClip (*track, clipId, clip))
+        return;
+    bool any = false;
+    for (auto& n : clip.notes)
+        any = any || ! Scales::contains (n.pitch, track->scaleRoot, track->scaleType);
+    if (! any)
+        return;
+    main.beginEdit();
+    for (auto& n : clip.notes)
+        n.pitch = Scales::nearest (n.pitch, track->scaleRoot, track->scaleType);
+    main.getEngine().setMidiNotes (*track, clipId, std::move (clip.notes));
+    repaintGrid();
 }
 
 void PianoRoll::refreshLaneChoices()
@@ -847,14 +947,13 @@ void PianoRoll::paint (juce::Graphics& g)
     g.drawHorizontalLine (0, 0.0f, (float) getWidth());
     g.drawHorizontalLine (toolbarHeight - 1, 0.0f, (float) getWidth());
 
-    // how-to in the empty space to the left of the keys
+    // how-to in the empty space to the left of the keys (under the controls of the key)
     g.setColour (Theme::textDim);
-    g.setFont (juce::FontOptions (13.0f));
-    g.drawFittedText ("Click an empty spot to add a note, then drag right to make it longer.\n\n"
-                      "Drag a note to move it, drag its right edge to resize, right-click to delete.\n\n"
-                      "Alt = free (no snapping).   Ctrl + mouse wheel = zoom.",
-                      juce::Rectangle<int> (14, toolbarHeight + 14, MainComponent::controlsWidth - keyWidth - 24, 190),
-                      juce::Justification::topLeft, 12);
+    g.setFont (juce::FontOptions (12.0f));
+    g.drawFittedText ("Click an empty spot to add a note, then drag right to make it longer. Drag a note to move it, its right edge to resize, "
+                      "right-click to delete. Alt = free (no snapping). Ctrl + mouse wheel = zoom.",
+                      juce::Rectangle<int> (14, toolbarHeight + 128, MainComponent::controlsWidth - keyWidth - 24, 110),
+                      juce::Justification::topLeft, 8);
 
     // label for the velocity lane at the bottom
     const juce::Rectangle<int> labelArea (0, getHeight() - velocityHeight, MainComponent::controlsWidth, velocityHeight);
@@ -888,6 +987,18 @@ void PianoRoll::resized()
     cutoffLabel.setBounds (bar.removeFromLeft (46));
     cutoff.setBounds (bar.removeFromLeft (130));
 
+    {   // the key, in the empty space to the left of the keys
+        const int x = 12, w = MainComponent::controlsWidth - keyWidth - 24;
+        int y = toolbarHeight + 10;
+        scaleLabel.setBounds (x, y, 40, 22);
+        rootBox.setBounds (x + 40, y, 54, 24);
+        scaleBox.setBounds (x + 100, y, w - 100, 24);
+        y += 30;
+        chordBox.setBounds (x, y, w, 24);
+        y += 30;
+        snapToggle.setBounds (x, y, 112, 24);
+        fitScaleButton.setBounds (x + 118, y, w - 118, 24);
+    }
     laneBox.setBounds (12, getHeight() - velocityHeight + 8, MainComponent::controlsWidth - 24, 24);
     viewport.setBounds (0, toolbarHeight, getWidth(), juce::jmax (0, getHeight() - toolbarHeight - velocityHeight));
     velocity->setBounds (MainComponent::controlsWidth, getHeight() - velocityHeight,
