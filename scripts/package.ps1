@@ -28,6 +28,8 @@ if (-not $NoAsio -and $asioLine -notmatch 'ASIO support: ON') {
     throw "ASIO is off in this build. Put the Steinberg ASIO SDK in third_party\ (see README, 'Audio interfaces and ASIO'), or run with -NoAsio."
 }
 
+# (the file version of the exe comes from a resource file that is only written when it is missing: write it again from the project version)
+Remove-Item "$root\build\UFODAW_artefacts\JuceLibraryCode\UFODAW_resources.rc" -ErrorAction SilentlyContinue
 & $cmake --build "$root\build" --config Release --parallel
 if ($LASTEXITCODE -ne 0) { throw 'Build failed' }
 

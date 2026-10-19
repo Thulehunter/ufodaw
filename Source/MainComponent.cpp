@@ -7937,6 +7937,7 @@ void MainComponent::fileMenu()
     menu.addItem (15, "Sample browser (starter pack and your folders)...");
     menu.addItem (19, "Clip launcher (start clips live)...");
     menu.addItem (20, "Scripts (Lua)...");
+    menu.addItem (21, "About UFODAW (version)...");
     menu.addSeparator();
     menu.addItem (16, updateVersion.isNotEmpty() ? "Update available: " + updateVersion + "..." : juce::String ("Check for updates..."));
     menu.addItem (17, "Check for updates once a day at start-up", true, UiSettings::autoUpdateCheck);
@@ -7950,6 +7951,11 @@ void MainComponent::fileMenu()
         else if (result == 15) openSampleBrowser();
         else if (result == 19) openClipLauncher();
         else if (result == 20) showScriptMenu();
+        else if (result == 21)
+            juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::InfoIcon, "UFODAW " + juce::String (JUCE_APPLICATION_VERSION_STRING),
+                                                    "Version " + juce::String (JUCE_APPLICATION_VERSION_STRING) + " (built " + juce::String (__DATE__) + ")\n\n"
+                                                    "This copy of the program:\n" + juce::File::getSpecialLocation (juce::File::currentExecutableFile).getFullPathName()
+                                                    + "\n\nFree software (AGPLv3). github.com/Thulehunter/ufodaw");
         else if (result == 16) { if (updateVersion.isNotEmpty()) showUpdateInfo(); else checkForUpdates (true); }
         else if (result == 17) { UiSettings::autoUpdateCheck = ! UiSettings::autoUpdateCheck; saveUiSettings(); }
         else if (result == 18) CrashReport::showProblemDialog();
