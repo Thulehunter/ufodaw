@@ -93,7 +93,7 @@ public:
             box->setSelectedId (track.synth.lfoShape.load() + 1, juce::dontSendNotification);
             box->onChange = [this, box] { begin(); track.synth.lfoShape = juce::jmax (0, box->getSelectedId() - 1); changedFn(); };
             addRow (label, box);
-            lfoShape.reset (box);
+            lfoShape = box;   // (owned by ownedComponents)
         }
         floatSlider ("lfoRate", 0.0, 2.0);
         floatSlider ("lfoPitch");
@@ -246,7 +246,8 @@ private:
     Track& track;
     std::function<void()> begin, changedFn;
     juce::ComboBox presets;
-    std::unique_ptr<juce::ComboBox> wave1, wave2, lfoShape;
+    std::unique_ptr<juce::ComboBox> wave1, wave2;   // (unused holders)
+    juce::ComboBox* lfoShape = nullptr;               // (a child that ownedComponents owns: never delete it here)
     juce::OwnedArray<juce::Component> ownedComponents;
     std::vector<Row> rows;
     std::vector<Heading> headings;
