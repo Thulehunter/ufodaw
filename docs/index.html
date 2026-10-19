@@ -15,7 +15,10 @@
 <meta property="og:image" content="https://ufodaw.eu/icon.png">
 <meta name="twitter:card" content="summary">
 <script type="application/ld+json">
-{"@context":"https://schema.org","@type":"SoftwareApplication","name":"UFODAW","applicationCategory":"MultimediaApplication","applicationSubCategory":"Digital audio workstation","operatingSystem":"Windows","softwareVersion":"0.8.7.3","license":"https://www.gnu.org/licenses/agpl-3.0.html","url":"https://ufodaw.eu/","image":"https://ufodaw.eu/icon.png","downloadUrl":"https://github.com/Thulehunter/ufodaw/releases/latest","offers":{"@type":"Offer","price":"0","priceCurrency":"EUR"}}
+{"@context":"https://schema.org","@type":"SoftwareApplication","name":"UFODAW","applicationCategory":"MultimediaApplication","applicationSubCategory":"Digital audio workstation","operatingSystem":"Windows","softwareVersion":"0.8.8","license":"https://www.gnu.org/licenses/agpl-3.0.html","url":"https://ufodaw.eu/","image":"https://ufodaw.eu/icon.png","downloadUrl":"https://github.com/Thulehunter/ufodaw/releases/latest","offers":{"@type":"Offer","price":"0","priceCurrency":"EUR"}}
+</script>
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"VideoObject","name":"UFODAW demo: record, arrange and mix","description":"A 54-second tour of UFODAW, a free digital audio workstation for Windows.","thumbnailUrl":"https://ufodaw.eu/ufodaw-demo-poster.jpg","contentUrl":"https://ufodaw.eu/ufodaw-demo.mp4","uploadDate":"2026-10-19","duration":"PT54S"}
 </script>
 <link rel="stylesheet" href="style.css">
 </head>
@@ -42,7 +45,7 @@
       <a class="btn primary" href="#download">Download for Windows</a>
       <a class="btn" href="#features">See what it does</a>
     </div>
-    <p class="meta">Version 0.8.7.3 · Free &amp; open source · AGPLv3 · Windows 64-bit · no installation needed</p>
+    <p class="meta">Version 0.8.8 · Free &amp; open source · AGPLv3 · Windows 64-bit · no installation needed</p>
   </section>
 
   <section class="strip" aria-label="Highlights">
@@ -70,7 +73,7 @@
       </article>
       <article>
         <h3 class="c-red">MIDI &amp; synth</h3>
-        <p>Piano roll with velocity editing, quantize, swing and humanize. A built-in polyphonic synth with ADSR and low-pass, or any VST3 instrument.</p>
+        <p>Piano roll with velocity editing, quantize, swing and humanize, plus a scale and chord helper. A built-in polyphonic synth with ADSR and low-pass, or any VST3 instrument. Map your controller with MIDI learn.</p>
       </article>
       <article>
         <h3 class="c-yellow">Drum rack &amp; sampler</h3>
@@ -82,7 +85,7 @@
       </article>
       <article>
         <h3 class="c-red">Mixer &amp; effects</h3>
-        <p>EQ, compressor with sidechain, delay and reverb on every track, plus buses and sends, a master channel, and plugin delay compensation of up to two seconds.</p>
+        <p>A 6-band parametric EQ with a live curve, a compressor with sidechain, soft knee and parallel mix, a ping-pong delay and an 8-line reverb on every track, plus buses and sends, a master channel, and plugin delay compensation of up to two seconds.</p>
       </article>
       <article>
         <h3 class="c-yellow">Automation</h3>
@@ -136,7 +139,11 @@
   <section id="new" class="alt">
     <h2>What's new</h2>
     <div class="log">
-      <div><h3>0.8.7.3 <small>latest</small></h3><ul>
+      <div><h3>0.8.8 <small>latest</small></h3><ul>
+        <li><b>6-band parametric EQ</b> with a draggable frequency curve, a much deeper <b>compressor</b> (soft knee, RMS, parallel mix, presets), a new <b>delay</b> and an 8-line <b>reverb</b>.</li>
+        <li><b>Key and chords</b> in the piano roll: scales, snap to scale, and chords on click.</li>
+        <li><b>MIDI learn</b> for any automatable parameter, and <b>tap tempo</b> (<kbd>T</kbd>).</li></ul></div>
+      <div><h3>0.8.7.3</h3><ul>
         <li>Plugin delay compensation up to <b>2 seconds</b> (was 0.5 s), with a 10 ms crossfade when a plugin changes its latency while playing: no gap or click.</li>
         <li>What you do inside a plugin's own window is now part of <b>undo</b>.</li>
         <li>macOS build can host Audio Units (untested).</li></ul></div>
@@ -151,10 +158,10 @@
 
   <section id="download">
     <h2>Download</h2>
-    <p class="center">Grab <code>UFODAW-0.8.7.3-win64.zip</code> (the latest version) from the Releases page, unzip it and run <code>UFODAW.exe</code>. Double-click any <code>.mdaw</code> file to open a project directly.</p>
+    <p class="center">Grab <code>UFODAW-0.8.8-win64.zip</code> (the latest version) from the Releases page, unzip it and run <code>UFODAW.exe</code>. Double-click any <code>.mdaw</code> file to open a project directly.</p>
     <div class="cta center">
       <!-- TODO: replace # with your GitHub Releases URL -->
-      <a class="btn primary" href="#" id="dl">Download 0.8.7.3 (Windows 64-bit)</a>
+      <a class="btn primary" href="#" id="dl">Download 0.8.8 (Windows 64-bit)</a>
       <a class="btn" href="#" id="src">Source code</a>
     </div>
     <p class="meta center">Releases are not code-signed yet, so Windows SmartScreen may show a warning. Choose “More info” → “Run anyway”.</p>

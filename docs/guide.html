@@ -45,7 +45,9 @@
     <a href="#drums">Drums &amp; sub-tracks</a>
     <a href="#midi">MIDI routing &amp; sequencers</a>
     <a href="#hardware">Hardware &amp; MIDI clock</a>
+    <a href="#learn">MIDI learn, scales &amp; tap tempo</a>
     <a href="#mixing">Buses, sends &amp; sidechain</a>
+    <a href="#effects">EQ, compressor, delay, reverb</a>
     <a href="#metering">Metering &amp; reference</a>
     <a href="#tempo">Tempo map &amp; sections</a>
     <a href="#export">Exporting &amp; stems</a>
@@ -186,6 +188,29 @@
       <p>Under <b>Audio… &gt; MIDI clock</b>, tick the outputs of drum machines or sequencers that should follow UFODAW. They get 24 ticks per quarter note following the tempo map, Start (or Continue with the song position), a new position when you jump, and Stop. <b>Clock shift</b> nudges the clock a few milliseconds to line hardware up with the audio. Exports never play hardware or send clock.</p>
     </section>
 
+    <section id="learn">
+      <h2>MIDI learn, scales and tap tempo</h2>
+
+      <h3>MIDI learn</h3>
+      <ol>
+        <li>Open <b>File &gt; MIDI controllers (MIDI learn)</b>, or find it in the command palette.</li>
+        <li>Add a mapping and choose a track and what to control: volume, pan, mute, solo, or any effect, synth, sampler or plugin parameter that can be automated.</li>
+        <li>Press <b>Learn</b> and move a knob or fader on your controller.</li>
+      </ol>
+      <p>Mappings are saved with the project.</p>
+
+      <h3>Key and chords in the piano roll</h3>
+      <p>Left of the keys, pick a root note and a scale (major, minor, the modes, pentatonics, blues and more). The rows of the scale stay light and the others are dimmed; the root is tinted and the scale's keys get a dot. The setting is stored with the track.</p>
+      <dl>
+        <dt>Snap to scale</dt><dd>New and moved notes jump to the nearest note of the scale.</dd>
+        <dt>Fit notes</dt><dd>Moves the notes of the clip that are outside the scale.</dd>
+        <dt>Triads / 7th chords on click</dt><dd>Adds a whole chord with one click. The chord is built from the scale, so each degree gets the right kind of chord.</dd>
+      </dl>
+
+      <h3>Tap tempo</h3>
+      <p>Press the <b>Tap</b> button next to the tempo, or the key <kbd>T</kbd>, in time with the music. The project tempo follows your taps.</p>
+    </section>
+
     <section id="mixing">
       <h2>Buses, sends and sidechain</h2>
       <h3>Buses and sends</h3>
@@ -198,6 +223,31 @@
       <p>The <b>Mono</b> button on any track, bus or the master sums left and right. Use it to check a source or the whole mix in mono, or to centre a stereo recording.</p>
       <h3>Plugins and CPU</h3>
       <p>VST3 instruments and effects open in their own windows and are saved with the project. A track name turns yellow at 25% and orange at 50% of the audio time, so you can see which plugin is heavy; hover the header for the exact figure. The status line shows the device load.</p>
+    </section>
+
+    <section id="effects">
+      <h2>EQ, compressor, delay and reverb</h2>
+      <p>Open a track's <b>FX</b> panel. Every effect has presets, and every parameter can be automated and MIDI-learned.</p>
+
+      <h3>Six-band parametric EQ</h3>
+      <p>A 24 dB/oct high-pass, low shelf, two peaks (with Q), high shelf and a 24 dB/oct low-pass, drawn as one frequency response curve with a node per band. Drag a node sideways for the frequency and up or down for the gain, scroll over a peak to change its Q, and double-click to reset a band. The selected band also has sliders under the curve.</p>
+
+      <h3>Compressor</h3>
+      <dl>
+        <dt>Soft knee</dt><dd>A gentle transition into compression instead of an abrupt one.</dd>
+        <dt>Peak / RMS</dt><dd>Choose how the level is detected: fast peaks, or the average loudness.</dd>
+        <dt>Sidechain filter</dt><dd>A high-pass on the detector, so low bass does not trigger the compression.</dd>
+        <dt>Dry/wet mix</dt><dd>Blend the compressed and original signal for parallel compression.</dd>
+        <dt>Auto makeup</dt><dd>Compensates the level lost by compressing.</dd>
+        <dt>Presets</dt><dd>Vocal, drums, bass, bus glue, parallel, limiter and ducking.</dd>
+      </dl>
+      <p>A live transfer curve and a gain-reduction meter show what the compressor is doing. The <b>Listens to</b> box still gives you sidechain ducking from another track.</p>
+
+      <h3>Delay</h3>
+      <p>Separate left and right times, a low and high cut inside the feedback so repeats get darker or thinner, ping-pong, tape-style wobble, and tempo sync with note lengths.</p>
+
+      <h3>Reverb</h3>
+      <p>An 8-line feedback delay network with decay time, size, pre-delay, damping, low cut, width and motion. Presets cover room, plate, hall and cathedral. Projects from older versions load as before.</p>
     </section>
 
     <section id="metering">
@@ -262,6 +312,7 @@
         <tr><td>Loop on / off · loop selected clip</td><td><kbd>L</kbd> · <kbd>Shift</kbd>+<kbd>L</kbd></td></tr>
         <tr><td>Punch</td><td><kbd>P</kbd></td></tr>
         <tr><td>Metronome</td><td><kbd>M</kbd></td></tr>
+        <tr><td>Tap tempo</td><td><kbd>T</kbd></td></tr>
         <tr><td>Split at playhead</td><td><kbd>S</kbd></td></tr>
         <tr><td>Quantize MIDI clip</td><td><kbd>Q</kbd></td></tr>
         <tr><td>Automation lane</td><td><kbd>A</kbd></td></tr>
