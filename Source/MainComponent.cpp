@@ -16,6 +16,7 @@
 #include "MasterMeter.h"
 #include "ProjectTemplates.h"
 #include "SampleBrowser.h"
+#include "ClipLauncher.h"
 #include "UpdateCheck.h"
 #include "UpdateInstall.h"
 #include "CrashReport.h"
@@ -3203,6 +3204,7 @@ MainComponent::~MainComponent()
     mixerWindow.reset();
     meterWindow.reset();
     browserWindow.reset();
+    launcherWindow.reset();
     shortcutsWindow.reset();
     palette.reset();
     warpWindow.reset();
@@ -5802,6 +5804,7 @@ void MainComponent::buildCommands()
     add ("mixer", "Open the mixer", "Windows", none, [this] { openMixer(); });
     add ("midilearn", "MIDI controllers: tie knobs and faders to parameters (MIDI learn)...", "Windows", none, [this] { openMidiLearn(); });
     add ("samples", "Sample browser: the starter pack and your own samples, with preview...", "Windows", none, [this] { openSampleBrowser(); });
+    add ("launcher", "Clip launcher: start clips live in a grid...", "Windows", none, [this] { openClipLauncher(); });
     add ("meter", "Master meter: loudness (LUFS) and spectrum...", "Windows", none, [this] { openMasterMeter(); });
     add ("refab", "Reference track: switch between your mix and the reference", "Windows", K ('B'), [this]
         {
@@ -5927,6 +5930,23 @@ void MainComponent::openSampleBrowser()
     hooks.addToProject = [safe] (const juce::File& f) { if (safe != nullptr) safe->importFiles (juce::StringArray (f.getFullPathName()), nullptr, 0.0); };
     auto closeIt = [safe] { juce::MessageManager::callAsync ([safe] { if (safe != nullptr) safe->browserWindow.reset(); }); };
     browserWindow = std::make_unique<SampleBrowserWindow> (new SampleBrowserPanel (engine, std::move (hooks)), closeIt);
+}
+
+void MainComponent::openClipLauncher()
+{
+    if (launcherWindow != nullptr)
+    {
+        launcherWindow->toFront (true);
+        return;
+    }
+    juce::Component::SafePointer<MainComponent> safe (this);
+    ClipLauncherPanel::Hooks hooks;
+    hooks.selectedClip = [safe] { return safe != nullptr ? std::make_pair (safe->selTrack, safe->selClip) : std::make_pair<Track*, int> (nullptr, -1); };
+    hooks.changed = [safe] { if (safe != nullptr) ++safe->editCounter; };
+    hooks.timelineChanged = [safe] { if (safe != nullptr) { ++safe->editCounter; safe->clipsChanged(); } };
+    hooks.playheadSeconds = [safe] { return safe != nullptr ? safe->engine.getPositionSeconds() : 0.0; };
+    auto closeIt = [safe] { juce::MessageManager::callAsync ([safe] { if (safe != nullptr) safe->launcherWindow.reset(); }); };
+    launcherWindow = std::make_unique<ClipLauncherWindow> (new ClipLauncherPanel (engine, std::move (hooks)), closeIt);
 }
 
 void MainComponent::openMasterMeter()
@@ -6579,9 +6599,9 @@ void MainComponent::openRouting (Track& t, juce::Component& anchor)
 class ClipProcessJob : public juce::ThreadWithProgressWindow
 {
 public:
-    ClipProcessJob (MainComponent& m, Engine& e, Track& t, int id, double stretchRatio, double semitoneShift)
+    ClipProcessJob (MainComponent& m, Engine& e, Track& t, int id, double stretchRatio, double semitoneShift, bool keepFormants)
         : juce::ThreadWithProgressWindow ("Processing audio", true, true, 5000, "Cancel", &m),
-          main (&m), engine (e), track (t), clipId (id), stretch (stretchRatio), semitones (semitoneShift)
+          main (&m), engine (e), track (t), clipId (id), stretch (stretchRatio), semitones (semitoneShift), formants (keepFormants)
     {
     }
 
@@ -6614,6 +6634,7 @@ private:
     Track& track;
     int clipId;
     double stretch, semitones;
+    bool formants;
 };
 
 // Warping a clip (stretching the audio between its markers) runs behind a progress window too.
@@ -6758,15 +6779,15 @@ void MainComponent::openClipPanel (Track& t, int clipId)
 
     auto panel = std::make_unique<ClipPanel> (engine, t, clipId, tempoMap.bpmAt (clip.start), [safe] { if (safe != nullptr) safe->beginEdit(); },
                                               [safe] { if (safe != nullptr) safe->clipsChanged(); },
-                                              [safe, tr, clipId] (double stretch, double semitones)
+                                              [safe, tr, clipId] (double stretch, double semitones, bool formants)
     {
         // later, not inside the panel's own button handler (the panel goes away when the progress window takes the focus)
-        juce::MessageManager::callAsync ([safe, tr, clipId, stretch, semitones]
+        juce::MessageManager::callAsync ([safe, tr, clipId, stretch, semitones, formants]
         {
             if (safe == nullptr || safe->engine.indexOfTrack (tr) < 0)
                 return;
             safe->beginEdit();
-            (new ClipProcessJob (*safe, safe->engine, *tr, clipId, stretch, semitones))->launchThread();   // deletes itself when done
+            (new ClipProcessJob (*safe, safe->engine, *tr, clipId, stretch, semitones, formants))->launchThread();   // deletes itself when done
         });
     });
 
@@ -6985,8 +7006,7 @@ void MainComponent::saveProject (const juce::File& file, SaveKind kind)
         if (templateOnly != nullptr && t != templateOnly)
             continue;   // (a template holds just one track)
 
-        juce::Array<juce::var> clipList;
-        for (auto& c : engine.getClips (*t))
+        auto audioClipVar = [&] (const Clip& c)
         {
             auto* co = new juce::DynamicObject();
             co->setProperty ("file", projectFilePath ? projectFilePath (c.sourceFile) : c.sourceFile.getRelativePathFrom (baseDir));
@@ -7006,6 +7026,8 @@ void MainComponent::saveProject (const juce::File& file, SaveKind kind)
             {
                 co->setProperty ("stretch", c.stretch);
                 co->setProperty ("pitch", c.pitch);
+                if (c.formants)
+                    co->setProperty ("formants", true);
                 co->setProperty ("regionStart", c.processedFrom);
                 co->setProperty ("regionLength", c.processedLength);
                 if (! c.warps.empty())   // warp markers: [original seconds, clip seconds] pairs
@@ -7025,10 +7047,62 @@ void MainComponent::saveProject (const juce::File& file, SaveKind kind)
                 co->setProperty ("takeIndex", c.takeIndex);
                 co->setProperty ("takeActive", c.takeActive);
             }
-            clipList.add (juce::var (co));
+            return juce::var (co);
+        };
+        juce::Array<juce::var> clipList;
+        for (auto& c : engine.getClips (*t))
+            clipList.add (audioClipVar (c));
+
+        auto midiClipVar = [] (const MidiClip& m)
+        {
+            juce::Array<juce::var> noteList;
+            for (auto& n : m.notes)
+            {
+                auto* no = new juce::DynamicObject();
+                no->setProperty ("pitch", n.pitch);
+                no->setProperty ("start", n.start);
+                no->setProperty ("length", n.length);
+                no->setProperty ("velocity", (double) n.velocity);
+                noteList.add (juce::var (no));
+            }
+            auto* mo = new juce::DynamicObject();
+            mo->setProperty ("start", m.start);
+            mo->setProperty ("length", m.length);
+            mo->setProperty ("notes", noteList);
+            if (! m.ccs.empty())
+            {
+                juce::Array<juce::var> ccList;   // compact: [time, controller, value] per event
+                for (auto& cc : m.ccs)
+                {
+                    juce::Array<juce::var> e;
+                    e.add (cc.time);
+                    e.add (cc.controller);
+                    e.add ((double) cc.value);
+                    ccList.add (juce::var (e));
+                }
+                mo->setProperty ("ccs", ccList);
+            }
+            return juce::var (mo);
+        };
+
+        // the clip launcher: the cells that hold a clip
+        juce::Array<juce::var> slotList;
+        {
+            const auto slots = engine.getSlots (*t);
+            for (int scene = 0; scene < (int) slots.size(); ++scene)
+                if (slots[(size_t) scene].used)
+                {
+                    auto* so = new juce::DynamicObject();
+                    so->setProperty ("scene", scene);
+                    so->setProperty ("name", slots[(size_t) scene].name);
+                    so->setProperty ("clip", t->type == Track::Type::Midi ? midiClipVar (slots[(size_t) scene].midi) : audioClipVar (slots[(size_t) scene].audio));
+                    slotList.add (juce::var (so));
+                }
         }
 
         auto* o = new juce::DynamicObject();
+        if (! slotList.isEmpty())
+            o->setProperty ("slots", slotList);
         o->setProperty ("name", t->name);
         if (t->colour != 0)
             o->setProperty ("colour", (juce::int64) t->colour);
@@ -7059,36 +7133,7 @@ void MainComponent::saveProject (const juce::File& file, SaveKind kind)
 
             juce::Array<juce::var> midiList;
             for (auto& m : engine.getMidiClips (*t))
-            {
-                juce::Array<juce::var> noteList;
-                for (auto& n : m.notes)
-                {
-                    auto* no = new juce::DynamicObject();
-                    no->setProperty ("pitch", n.pitch);
-                    no->setProperty ("start", n.start);
-                    no->setProperty ("length", n.length);
-                    no->setProperty ("velocity", (double) n.velocity);
-                    noteList.add (juce::var (no));
-                }
-                auto* mo = new juce::DynamicObject();
-                mo->setProperty ("start", m.start);
-                mo->setProperty ("length", m.length);
-                mo->setProperty ("notes", noteList);
-                if (! m.ccs.empty())
-                {
-                    juce::Array<juce::var> ccList;   // compact: [time, controller, value] per event
-                    for (auto& cc : m.ccs)
-                    {
-                        juce::Array<juce::var> e;
-                        e.add (cc.time);
-                        e.add (cc.controller);
-                        e.add ((double) cc.value);
-                        ccList.add (juce::var (e));
-                    }
-                    mo->setProperty ("ccs", ccList);
-                }
-                midiList.add (juce::var (mo));
-            }
+                midiList.add (midiClipVar (m));
             o->setProperty ("midiClips", midiList);
             if (t->subAutoDone)
                 o->setProperty ("subAuto", true);   // (the instrument was looked at: not again)
@@ -7239,7 +7284,8 @@ void MainComponent::saveProject (const juce::File& file, SaveKind kind)
     writeEffectsAndAutomation (*masterObject, engine.getMaster());
 
     auto* root = new juce::DynamicObject();
-    root->setProperty ("version", 3);
+    root->setProperty ("version", projectFormatVersion);
+    root->setProperty ("savedWith", JUCE_APPLICATION_VERSION_STRING);
     root->setProperty ("bpm", (double) engine.bpm.load());   // (the first section's tempo, for older versions)
     {
         juce::Array<juce::var> sectionList;
@@ -7310,6 +7356,8 @@ void MainComponent::saveProject (const juce::File& file, SaveKind kind)
         root->setProperty ("reference", juce::var (ro));
     }
     root->setProperty ("metronome", engine.metronome.load());
+    if (engine.getNumScenes() != 8)
+        root->setProperty ("scenes", engine.getNumScenes());   // the rows of the clip launcher
     root->setProperty ("loopEnabled", engine.loopEnabled.load());
     root->setProperty ("loopStart", engine.loopStart.load());
     root->setProperty ("loopEnd", engine.loopEnd.load());
@@ -7768,6 +7816,7 @@ void MainComponent::fileMenu()
     menu.addItem (13, "Keyboard shortcuts...");
     menu.addItem (14, "MIDI controllers (MIDI learn)...");
     menu.addItem (15, "Sample browser (starter pack and your folders)...");
+    menu.addItem (19, "Clip launcher (start clips live)...");
     menu.addSeparator();
     menu.addItem (16, updateVersion.isNotEmpty() ? "Update available: " + updateVersion + "..." : juce::String ("Check for updates..."));
     menu.addItem (17, "Check for updates once a day at start-up", true, UiSettings::autoUpdateCheck);
@@ -7779,6 +7828,7 @@ void MainComponent::fileMenu()
         else if (result == 13) openShortcuts();
         else if (result == 14) openMidiLearn();
         else if (result == 15) openSampleBrowser();
+        else if (result == 19) openClipLauncher();
         else if (result == 16) { if (updateVersion.isNotEmpty()) showUpdateInfo(); else checkForUpdates (true); }
         else if (result == 17) { UiSettings::autoUpdateCheck = ! UiSettings::autoUpdateCheck; saveUiSettings(); }
         else if (result == 18) CrashReport::showProblemDialog();
@@ -7917,11 +7967,16 @@ void MainComponent::openProjectDialog()
 }
 
 // `asTemplate`: the track(s) of the file are added to the open project (a template): the rest of the file (tempo, master...) is not used.
-void MainComponent::loadProject (const juce::File& file, bool asTemplate)
+void MainComponent::loadProject (const juce::File& file, bool asTemplate, bool relinking)
 {
     auto root = juce::JSON::parse (file);
     if (! root.isObject() || ! root["tracks"].isArray())
     {
+        if (selfTesting)
+        {
+            selfTestProblems.add ("cannot open " + file.getFileName());
+            return;
+        }
         juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon,
                                                 asTemplate ? "Cannot open template" : "Cannot open project", file.getFullPathName());
         return;
@@ -8012,6 +8067,18 @@ void MainComponent::loadProject (const juce::File& file, bool asTemplate)
 
     juce::StringArray missing, pluginProblems;
     const auto baseDir = file.getParentDirectory();
+    // a file of the project: where it is saved, or (after "Find files") where it was found
+    auto resolvePath = [&] (const juce::String& relative)
+    {
+        auto f = baseDir.getChildFile (relative);
+        if (! f.exists())
+            if (auto it = relinkMap.find (f.getFileName()); it != relinkMap.end())
+                return it->second;
+        return f;
+    };
+
+    if (! asTemplate)
+        engine.setNumScenes ((int) root.getProperty ("scenes", 8));   // (the clip launcher's rows; the cells come with the tracks)
 
     if (! asTemplate)   // MIDI learn
     {
@@ -8034,7 +8101,7 @@ void MainComponent::loadProject (const juce::File& file, bool asTemplate)
         engine.clearReference();
         if (const auto ref = root["reference"]; ref.isObject())
         {
-            const auto refFile = baseDir.getChildFile (ref["file"].toString());
+            const auto refFile = resolvePath (ref["file"].toString());
             if (engine.loadReference (refFile))
             {
                 engine.setReferenceGainDb ((float) (double) ref.getProperty ("gainDb", 0.0));
@@ -8083,7 +8150,7 @@ void MainComponent::loadProject (const juce::File& file, bool asTemplate)
             readSamplerParams (sv, t->sampler->params);   // (a fresh sampler's own values are the defaults of anything missing)
             if (sv.hasProperty ("file"))
             {
-                const auto sampleFile = baseDir.getChildFile (sv["file"].toString());
+                const auto sampleFile = resolvePath (sv["file"].toString());
                 if (! engine.loadSamplerSample (*t, sampleFile))
                     missing.add (sampleFile.getFullPathName());
                 else if (const double st = sv.getProperty ("stretch", 1.0); st != 1.0)
@@ -8098,7 +8165,7 @@ void MainComponent::loadProject (const juce::File& file, bool asTemplate)
                     const auto rel = (*padFiles)[pad].toString();
                     if (rel.isEmpty())
                         continue;
-                    const auto sample = baseDir.getChildFile (rel);
+                    const auto sample = resolvePath (rel);
                     if (! engine.loadDrumSample (*t, pad, sample))
                         missing.add (sample.getFullPathName());
                 }
@@ -8122,7 +8189,7 @@ void MainComponent::loadProject (const juce::File& file, bool asTemplate)
                         for (auto& lv : *layerList)
                         {
                             const int slot = juce::jlimit (0, DrumKit::maxLayers - 1, (int) lv.getProperty ("slot", 0));
-                            const auto sampleFile = baseDir.getChildFile (lv["file"].toString());
+                            const auto sampleFile = resolvePath (lv["file"].toString());
                             if (engine.loadDrumLayer (*t, pad, slot, sampleFile))
                             {
                                 pd.layers[(size_t) slot].velLo = (float) (double) lv.getProperty ("velLo", 0.0);
@@ -8140,7 +8207,7 @@ void MainComponent::loadProject (const juce::File& file, bool asTemplate)
 
         auto loadClip = [&] (const juce::var& v)
         {
-            const auto audioFile = baseDir.getChildFile (v["file"].toString());
+            const auto audioFile = resolvePath (v["file"].toString());
             const double start = v.getProperty ("start", 0.0);
             const int id = engine.addClipFromFile (*t, audioFile, start);
             if (id < 0)
@@ -8155,7 +8222,8 @@ void MainComponent::loadProject (const juce::File& file, bool asTemplate)
                         warps.push_back ({ (double) (*pair)[0], (double) (*pair)[1] });
             if (v.hasProperty ("stretch"))   // the stretched / shifted audio is made again (or taken from the cache) before the region is set
                 if (! engine.restoreProcessedClip (*t, id, v.getProperty ("stretch", 1.0), v.getProperty ("pitch", 0.0),
-                                                   v.getProperty ("regionStart", 0.0), v.getProperty ("regionLength", 0.0), nullptr, warps))
+                                                   v.getProperty ("regionStart", 0.0), v.getProperty ("regionLength", 0.0), nullptr, warps,
+                                                   (bool) v.getProperty ("formants", false)))
                     pluginProblems.add ("Could not apply the time-stretch of a clip in " + t->name);
             Clip c;
             engine.getClip (*t, id, c);
@@ -8208,31 +8276,42 @@ void MainComponent::loadProject (const juce::File& file, bool asTemplate)
                 t->subAutoDone = true;
             }
 
+            auto loadMidiClip = [&] (const juce::var& mv)
+            {
+                const int id = engine.addMidiClip (*t, mv.getProperty ("start", 0.0), mv.getProperty ("length", 4.0));
+                std::vector<Note> notes;
+                if (auto* noteArray = mv["notes"].getArray())
+                    for (auto& nv : *noteArray)
+                    {
+                        Note n;
+                        n.pitch = (int) nv.getProperty ("pitch", 60);
+                        n.start = nv.getProperty ("start", 0.0);
+                        n.length = nv.getProperty ("length", 0.5);
+                        n.velocity = (float) (double) nv.getProperty ("velocity", 0.8);
+                        notes.push_back (n);
+                    }
+                engine.setMidiNotes (*t, id, std::move (notes));
+
+                std::vector<CcEvent> ccs;
+                if (auto* ccArray = mv["ccs"].getArray())
+                    for (auto& ev : *ccArray)
+                        if (auto* e = ev.getArray(); e != nullptr && e->size() >= 3)
+                            ccs.push_back ({ (double) (*e)[0], (int) (*e)[1], (float) (double) (*e)[2] });
+                if (! ccs.empty())
+                    engine.setMidiCcs (*t, id, std::move (ccs));
+                return id;
+            };
             if (auto* midiArray = item["midiClips"].getArray())
                 for (auto& mv : *midiArray)
-                {
-                    const int id = engine.addMidiClip (*t, mv.getProperty ("start", 0.0), mv.getProperty ("length", 4.0));
-                    std::vector<Note> notes;
-                    if (auto* noteArray = mv["notes"].getArray())
-                        for (auto& nv : *noteArray)
+                    loadMidiClip (mv);
+            if (! asTemplate)
+                if (auto* slotArray = item["slots"].getArray())   // the clip launcher: a clip is put on the timeline, then moved into its cell
+                    for (auto& sv : *slotArray)
+                        if (const int id = loadMidiClip (sv["clip"]); id >= 0)
                         {
-                            Note n;
-                            n.pitch = (int) nv.getProperty ("pitch", 60);
-                            n.start = nv.getProperty ("start", 0.0);
-                            n.length = nv.getProperty ("length", 0.5);
-                            n.velocity = (float) (double) nv.getProperty ("velocity", 0.8);
-                            notes.push_back (n);
+                            engine.setSlotFromClip (*t, sv.getProperty ("scene", 0), id, true);
+                            engine.renameSlot (*t, sv.getProperty ("scene", 0), sv.getProperty ("name", "Pattern").toString());
                         }
-                    engine.setMidiNotes (*t, id, std::move (notes));
-
-                    std::vector<CcEvent> ccs;
-                    if (auto* ccArray = mv["ccs"].getArray())
-                        for (auto& ev : *ccArray)
-                            if (auto* e = ev.getArray(); e != nullptr && e->size() >= 3)
-                                ccs.push_back ({ (double) (*e)[0], (int) (*e)[1], (float) (double) (*e)[2] });
-                    if (! ccs.empty())
-                        engine.setMidiCcs (*t, id, std::move (ccs));
-                }
 
             // the MIDI input this track listens to; a device that was renamed or got a new identifier is found by its name
             t->midiInputChannel = juce::jlimit (0, 16, (int) item.getProperty ("midiChannel", 0));
@@ -8252,6 +8331,19 @@ void MainComponent::loadProject (const juce::File& file, bool asTemplate)
         {
             for (auto& cv : *clipArray)
                 loadClip (cv);
+            if (! asTemplate)
+                if (auto* slotArray = item["slots"].getArray())   // the clip launcher (see above)
+                    for (auto& sv : *slotArray)
+                    {
+                        const int before = (int) engine.getClips (*t).size();
+                        loadClip (sv["clip"]);
+                        const auto clips = engine.getClips (*t);
+                        if ((int) clips.size() > before)
+                        {
+                            engine.setSlotFromClip (*t, sv.getProperty ("scene", 0), clips.back().id, true);
+                            engine.renameSlot (*t, sv.getProperty ("scene", 0), sv.getProperty ("name", "Clip").toString());
+                        }
+                    }
         }
         else if (item.hasProperty ("file"))   // version 1: one clip per track
         {
@@ -8344,14 +8436,117 @@ void MainComponent::loadProject (const juce::File& file, bool asTemplate)
     }
     clipsChanged();
 
+    juce::String futureNote;
+    if ((int) root.getProperty ("version", 1) > projectFormatVersion)
+        futureNote = "This project was saved by a newer UFODAW (" + root.getProperty ("savedWith", "?").toString() + "). It opens, but anything the newer "
+                     "version added is left out, and saving would drop it. Save under another name, or update UFODAW first.";
+    missing.removeDuplicates (false);
+    showProjectCheck (file, asTemplate, relinking, missing, pluginProblems, futureNote);
+}
+
+// "--selftest": what the open project looks like, and whether it renders. ok = nothing was missing, it has tracks, and the mix is not silent.
+juce::String MainComponent::selfTestReport (bool& ok, bool expectWarning)
+{
+    int clips = 0, slots = 0;
+    for (int i = 0; i < engine.getNumTracks(); ++i)
+    {
+        clips += (int) engine.getClips (*engine.getTrack (i)).size();
+        for (auto& s : engine.getSlots (*engine.getTrack (i)))
+            slots += s.used ? 1 : 0;
+    }
+    if (slots > 0)
+        engine.launchScene (0);   // (the cells play from the start of the render)
+
+    const auto wav = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("ufodaw-selftest.wav");
+    wav.deleteFile();
+    const bool rendered = engine.renderToFile (wav, 3.0, true);   // (with the click: a project that only has empty tracks to record on is not silent)
+    float peak = 0.0f;
+    if (rendered)
+    {
+        juce::AudioFormatManager formats;
+        formats.registerBasicFormats();
+        if (std::unique_ptr<juce::AudioFormatReader> reader (formats.createReaderFor (wav)); reader != nullptr)
+        {
+            juce::AudioBuffer<float> buffer ((int) reader->numChannels, (int) juce::jmin<juce::int64> (reader->lengthInSamples, 400000));
+            reader->read (&buffer, 0, buffer.getNumSamples(), 0, true, true);
+            for (int c = 0; c < buffer.getNumChannels(); ++c)
+                peak = juce::jmax (peak, buffer.getMagnitude (c, 0, buffer.getNumSamples()));
+        }
+    }
+    wav.deleteFile();
+
+    ok = (expectWarning != selfTestProblems.isEmpty()) && engine.getNumTracks() > 0 && rendered && peak > 0.001f;
+    if (slots > 0)
+        engine.stop();
+    return "tracks=" + juce::String (engine.getNumTracks()) + " clips=" + juce::String (clips) + " slots=" + juce::String (slots) + " render=" + (rendered ? "ok" : "FAILED")
+           + " peak=" + juce::String (peak, 3) + (selfTestProblems.isEmpty() ? juce::String() : " problems: " + selfTestProblems.joinIntoString ("; "));
+}
+
+// One dialog for everything that did not come through when a project opened. Missing audio files can be looked for in a folder: the project is
+// opened again with every file that is found there (by name, in the folder and its subfolders) put in its place.
+void MainComponent::showProjectCheck (const juce::File& project, bool asTemplate, bool relinking, const juce::StringArray& missing,
+                                      const juce::StringArray& pluginProblems, const juce::String& futureNote)
+{
+    if (missing.isEmpty() && pluginProblems.isEmpty() && futureNote.isEmpty())
+        return;
+
+    if (selfTesting)   // (no dialogs: the problems go into the report)
+    {
+        for (auto& m : missing) selfTestProblems.add ("missing file " + m);
+        for (auto& p : pluginProblems) selfTestProblems.add (p);
+        if (futureNote.isNotEmpty()) selfTestProblems.add ("newer format");
+        return;
+    }
+
+    juce::String text;
+    if (futureNote.isNotEmpty())
+        text << futureNote << "\n\n";
     if (missing.size() > 0)
-        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon,
-                                                "Some audio files were not found",
-                                                missing.joinIntoString ("\n"));
+    {
+        text << missing.size() << " audio file(s) not found:\n";
+        for (int i = 0; i < juce::jmin (12, missing.size()); ++i)
+            text << "  " << missing[i] << "\n";
+        if (missing.size() > 12)
+            text << "  ... and " << (missing.size() - 12) << " more\n";
+        text << "\n";
+    }
     if (pluginProblems.size() > 0)
-        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon,
-                                                "Some plugins could not be loaded",
-                                                pluginProblems.joinIntoString ("\n"));
+        text << "Not everything could be loaded:\n  " << pluginProblems.joinIntoString ("\n  ") << "\n";
+
+    auto options = juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::WarningIcon).withTitle ("Project check")
+                       .withMessage (text.trim()).withAssociatedComponent (this);
+    const bool canFind = missing.size() > 0 && ! relinking;
+    options = canFind ? options.withButton ("Find the files...").withButton ("Continue") : options.withButton ("OK");
+
+    juce::Component::SafePointer<MainComponent> safe (this);
+    juce::AlertWindow::showAsync (options, [safe, project, asTemplate, missing, canFind] (int result)
+    {
+        if (safe == nullptr || ! canFind || result != 1)
+            return;
+
+        auto chooser = std::make_shared<juce::FileChooser> ("Choose the folder that holds the missing files (subfolders are searched too)",
+                                                            project.getParentDirectory());
+        chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectDirectories,
+                              [safe, chooser, project, asTemplate, missing] (const juce::FileChooser& fc)
+        {
+            const auto folder = fc.getResult();
+            if (safe == nullptr || ! folder.isDirectory())
+                return;
+
+            juce::StringArray names;
+            for (auto& m : missing)
+                names.add (juce::File (m).getFileName());
+
+            relinkMap.clear();
+            for (auto& f : folder.findChildFiles (juce::File::findFiles, true))
+                if (names.contains (f.getFileName()) && relinkMap.find (f.getFileName()) == relinkMap.end())
+                    relinkMap[f.getFileName()] = f;
+
+            safe->loadProject (project, asTemplate, true);   // (again, with the new places; a second dialog lists what is still missing)
+            relinkMap.clear();
+            safe->beginEdit();   // the new places are an unsaved change: saving writes them into the project
+        });
+    });
 }
 
 // Renders one track (with its instrument, effects, plugins, volume and pan) to a WAV file behind a progress window, for Freeze.
@@ -8651,6 +8846,7 @@ void MainComponent::suspendAudio()
     stopTimer();
     if (isDirty())
         autosaveNow();   // (an inactive project's unsaved work is kept as well)
+    launcherWindow.reset();
     samplerWindow.reset();
     padSamplerWindow.reset();
     drumRackWindow.reset();

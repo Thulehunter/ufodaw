@@ -835,7 +835,7 @@ bool Engine::normalizeClip (Track& t, int id, float targetPeak)
 // The processed audio for a region of `src`, from the disk cache when it was made before (also in an earlier session).
 std::shared_ptr<juce::AudioBuffer<float>> Engine::processedAudio (const Clip& c, const juce::AudioBuffer<float>& src, double regionStart,
                                                                   double regionLength, double stretch, double semitones,
-                                                                  const ProgressFn& progress)
+                                                                  const ProgressFn& progress, bool formants)
 {
     const double rate = c.fileRate;
     const int startSample = juce::jlimit (0, src.getNumSamples(), (int) std::llround (regionStart * rate));
@@ -858,7 +858,7 @@ std::shared_ptr<juce::AudioBuffer<float>> Engine::processedAudio (const Clip& c,
 
         const juce::String key = c.sourceFile.getFullPathName() + "|" + juce::String (c.sourceFile.getLastModificationTime().toMilliseconds()) + "|"
                                  + juce::String (c.sourceFile.getSize()) + "|" + juce::String (startSample) + "|" + juce::String (numSamples) + "|"
-                                 + juce::String (rate) + "|" + juce::String (stretch, 6) + "|" + juce::String (semitones, 4) + "|"
+                                 + juce::String (rate) + "|" + juce::String (stretch, 6) + "|" + juce::String (semitones, 4) + (formants && std::abs (semitones) > 1.0e-6 ? "|f|" : "|")
                                  + juce::String (src.getNumChannels());
         // two 64-bit hashes of the description make the file name (a collision would need both to match)
         cacheFile = cacheDir.getChildFile (juce::String::toHexString (key.hashCode64()) + juce::String::toHexString ((key + "#").hashCode64()) + ".wav");
@@ -873,7 +873,7 @@ std::shared_ptr<juce::AudioBuffer<float>> Engine::processedAudio (const Clip& c,
             }
     }
 
-    auto result = Stretch::process (src, startSample, numSamples, rate, stretch, semitones, progress);
+    auto result = Stretch::process (src, startSample, numSamples, rate, stretch, semitones, progress, formants);
     if (result != nullptr && cacheFile != juce::File())
     {
         cacheFile.deleteFile();
@@ -1019,12 +1019,13 @@ bool Engine::warpClip (Track& t, int id, std::vector<WarpMarker> markers, const 
     p->processedLength = regionLength;
     p->stretch = stretch;
     p->pitch = 0.0;
+    p->formants = false;
     p->warps = markers;
     p->audio = result;
     return true;
 }
 
-bool Engine::processClip (Track& t, int id, double stretch, double semitones, const ProgressFn& progress)
+bool Engine::processClip (Track& t, int id, double stretch, double semitones, const ProgressFn& progress, bool formants)
 {
     Clip c;
     {
@@ -1058,6 +1059,7 @@ bool Engine::processClip (Track& t, int id, double stretch, double semitones, co
         p->processedFrom = p->processedLength = 0.0;
         p->stretch = 1.0;
         p->pitch = 0.0;
+        p->formants = false;
         p->warps.clear();
         return true;
     }
@@ -1067,7 +1069,7 @@ bool Engine::processClip (Track& t, int id, double stretch, double semitones, co
     const double regionStart = c.processed() ? c.processedFrom : c.offset;
     const double regionLength = c.processed() ? c.processedLength : c.length;
 
-    auto result = processedAudio (c, *original, regionStart, regionLength, stretch, semitones, progress);
+    auto result = processedAudio (c, *original, regionStart, regionLength, stretch, semitones, progress, formants);
     if (result == nullptr)
         return false;   // cancelled
 
@@ -1099,13 +1101,14 @@ bool Engine::processClip (Track& t, int id, double stretch, double semitones, co
     p->processedLength = regionLength;
     p->stretch = stretch;
     p->pitch = semitones;
+    p->formants = formants;
     p->warps.clear();
     p->audio = result;
     return true;
 }
 
 bool Engine::restoreProcessedClip (Track& t, int id, double stretch, double semitones, double sourceStart, double sourceLength,
-                                   const ProgressFn& progress, const std::vector<WarpMarker>& warps)
+                                   const ProgressFn& progress, const std::vector<WarpMarker>& warps, bool formants)
 {
     Clip c;
     {
@@ -1123,7 +1126,7 @@ bool Engine::restoreProcessedClip (Track& t, int id, double stretch, double semi
         result = warpedAudio (*c.audio, c.fileRate, sourceStart, sourceLength, warps, total, progress);
     }
     else
-        result = processedAudio (c, *c.audio, sourceStart, sourceLength, stretch, semitones, progress);
+        result = processedAudio (c, *c.audio, sourceStart, sourceLength, stretch, semitones, progress, formants);
     if (result == nullptr)
         return false;
 
@@ -1137,6 +1140,7 @@ bool Engine::restoreProcessedClip (Track& t, int id, double stretch, double semi
     p->processedLength = sourceLength;
     p->stretch = stretch;
     p->pitch = semitones;
+    p->formants = formants;
     p->audio = result;
     return true;
 }
@@ -2798,34 +2802,67 @@ void Engine::collectNoteEvents (Track& t, int n, juce::int64 pos, bool running)
     if (running)
     {
         const double blockEnd = (double) (pos + n);
-        for (auto& clip : t.midiClips)
+
+        // The start times of a clip that count for something that lies `reach` seconds after the clip's start: one for an ordinary clip,
+        // one per repeat of a launched (looping) clip.
+        auto forBases = [&] (const MidiClip& clip, double reach, auto&& fn)
         {
+            if (clip.loopLength <= 0.0)
+            {
+                fn (clip.start);
+                return;
+            }
+            const double a = (double) pos / sampleRate, b = blockEnd / sampleRate;
+            long long k = (long long) std::floor ((a - clip.start - reach) / clip.loopLength);
+            for (k = juce::jmax<long long> (0, k);; ++k)
+            {
+                const double base = clip.start + (double) k * clip.loopLength;
+                if (base >= clip.end() || base > b)
+                    break;
+                fn (base);
+            }
+        };
+
+        auto collect = [&] (const MidiClip& clip)
+        {
+            const double limit = clip.loopLength > 0.0 ? clip.loopLength : clip.length;   // (notes after the end of the pattern do not play)
             for (auto& note : clip.notes)
             {
-                if (note.start >= clip.length || ! t.pitchAudible (note.pitch))   // (a muted sub-track, or another one is soloed)
+                if (note.start >= limit || ! t.pitchAudible (note.pitch))   // (a muted sub-track, or another one is soloed)
                     continue;
 
-                const double on = (clip.start + note.start) * sampleRate;
-                const double off = on + note.length * sampleRate;
-                if (on >= (double) pos && on < blockEnd)
+                forBases (clip, note.start + note.length, [&] (double base)
                 {
-                    const float vel = juce::jlimit (0.0f, 1.0f, note.velocity * t.pitchGain (note.pitch));
-                    t.work.noteEvents.push_back ({ (int) (on - (double) pos), true, note.pitch, vel });
-                    t.noteSeen (note.pitch, vel);
-                }
-                if (off >= (double) pos && off < blockEnd)
-                    t.work.noteEvents.push_back ({ (int) (off - (double) pos), false, note.pitch, 0.0f });
+                    const double on = (base + note.start) * sampleRate;
+                    const double off = on + note.length * sampleRate;
+                    if (on >= (double) pos && on < blockEnd)
+                    {
+                        const float vel = juce::jlimit (0.0f, 1.0f, note.velocity * t.pitchGain (note.pitch));
+                        t.work.noteEvents.push_back ({ (int) (on - (double) pos), true, note.pitch, vel });
+                        t.noteSeen (note.pitch, vel);
+                    }
+                    if (off >= (double) pos && off < blockEnd)
+                        t.work.noteEvents.push_back ({ (int) (off - (double) pos), false, note.pitch, 0.0f });
+                });
             }
 
             for (auto& cc : clip.ccs)   // controller moves recorded or drawn in the clip
             {
-                if (cc.time >= clip.length)
+                if (cc.time >= limit)
                     continue;
-                const double at = (clip.start + cc.time) * sampleRate;
-                if (at >= (double) pos && at < blockEnd)
-                    t.work.ccEvents.push_back ({ (int) (at - (double) pos), cc.controller, cc.value });
+                forBases (clip, cc.time, [&] (double base)
+                {
+                    const double at = (base + cc.time) * sampleRate;
+                    if (at >= (double) pos && at < blockEnd)
+                        t.work.ccEvents.push_back ({ (int) (at - (double) pos), cc.controller, cc.value });
+                });
             }
-        }
+        };
+
+        for (auto& clip : t.midiClips)
+            collect (clip);
+        for (auto& clip : t.launchedMidi)
+            collect (clip);
     }
 
     // notes that other tracks (a plugin sequencer) routed here during this block
@@ -3287,7 +3324,8 @@ void Engine::renderTrackSignal (Track& t, int n, juce::int64 pos, bool running, 
         return;
     }
 
-    for (auto& c : t.clips)
+    for (int pass = 0; pass < 2; ++pass)   // the clips on the timeline, then what the clip launcher plays
+    for (auto& c : (pass == 0 ? t.clips : t.launchedAudio))
     {
         if (! running)
             break;   // stopped: only a monitored input is heard
@@ -3309,6 +3347,7 @@ void Engine::renderTrackSignal (Track& t, int n, juce::int64 pos, bool running, 
         const double regionSamples = c.length * c.fileRate;   // where the clip's region of the source ends (for reverse)
         const double fadeInSamples = juce::jmin (c.fadeIn, c.length) * sampleRate;
         const double fadeOutSamples = juce::jmin (c.fadeOut, c.length) * sampleRate;
+        const double loopSamples = c.loopLength * sampleRate;   // (launched clips repeat their region)
         const int len = c.audio->getNumSamples();
         const auto* srcL = c.audio->getReadPointer (0);
         const auto* srcR = c.audio->getNumChannels() > 1 ? c.audio->getReadPointer (1) : srcL;
@@ -3319,8 +3358,9 @@ void Engine::renderTrackSignal (Track& t, int n, juce::int64 pos, bool running, 
             if (tl < clipStart || tl >= clipEnd)
                 continue;
 
+            const double rel = loopSamples > 0.0 ? std::fmod (tl - clipStart, loopSamples) : tl - clipStart;
             const double sp = c.reverse ? offsetSamples + regionSamples - (tl - clipStart) * ratio
-                                        : (tl - clipStart) * ratio + offsetSamples;
+                                        : rel * ratio + offsetSamples;
             if (sp < 0.0 || sp >= len - 1)
                 continue;
 
@@ -3506,6 +3546,13 @@ void Engine::mixBlock (float* outL, float* outR, int n, juce::int64 pos, bool wi
     // Denormal numbers (the tails of filters, reverbs and plugin effects fading to nothing) make some CPUs many times slower;
     // flush them to zero for everything that runs inside the mix, plugins included.
     juce::ScopedNoDenormals noDenormals;
+
+    if (launcherClear.exchange (false))   // the transport was stopped: what the clip launcher played is over
+        for (auto& t : tracks)
+        {
+            t->launchedAudio.clear();
+            t->launchedMidi.clear();
+        }
 
     bool anySolo = false;
     for (auto& t : tracks)

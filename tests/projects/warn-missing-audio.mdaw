@@ -1,0 +1,9 @@
+{
+  "version": 3,
+  "bpm": 120.0,
+  "tracks": [
+    { "name": "Gone", "type": "audio", "clips": [ { "file": "does-not-exist.wav", "start": 0.0 } ], "midiClips": [] },
+    { "name": "Synth", "type": "midi", "clips": [],
+      "midiClips": [ { "start": 0.0, "length": 4.0, "notes": [ { "pitch": 60, "start": 0.0, "length": 1.0, "velocity": 0.9 } ] } ] }
+  ]
+}

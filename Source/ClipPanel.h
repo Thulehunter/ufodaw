@@ -12,7 +12,7 @@ public:
     // `projectBpm` is the tempo at the clip, for "Fit to project tempo". `process(stretch, semitones)` does the work behind a progress
     // window; `beginEdit` is called before every change (undo), `changed` after it (repaint).
     ClipPanel (Engine& e, Track& t, int clip, double projectBpm, std::function<void()> beginEdit, std::function<void()> changed,
-               std::function<void (double, double)> process)
+               std::function<void (double, double, bool)> process)
         : engine (e), track (t), clipId (clip), bpm (projectBpm), begin (std::move (beginEdit)), changedFn (std::move (changed)),
           processFn (std::move (process))
     {
@@ -95,18 +95,22 @@ public:
         };
         addAndMakeVisible (fit);
 
-        apply.onClick = [this] { processFn (length.getValue() / 100.0, pitch.getValue()); };
+        apply.onClick = [this] { processFn (length.getValue() / 100.0, pitch.getValue(), formants.getToggleState()); };
+        formants.setToggleState (c.processed() && c.formants, juce::dontSendNotification);
+        formants.setTooltip ("When the pitch changes: keeps the character of the voice or instrument (so a voice does not sound like a chipmunk or a giant). "
+                             "Good for vocals; leave it off for drums and effects.");
+        addAndMakeVisible (formants);
         addAndMakeVisible (apply);
 
         reset.onClick = [this]
         {
             length.setValue (100.0, juce::dontSendNotification);
             pitch.setValue (0.0, juce::dontSendNotification);
-            processFn (1.0, 0.0);
+            processFn (1.0, 0.0, false);
         };
         addAndMakeVisible (reset);
 
-        setSize (400, 262);
+        setSize (400, 292);
     }
 
     void paint (juce::Graphics& g) override { g.fillAll (Theme::panel); }
@@ -132,6 +136,8 @@ public:
         r.removeFromTop (6);
         row (pitchLabel, pitch);
         row (lengthLabel, length);
+        formants.setBounds (r.removeFromTop (24).withTrimmedLeft (84));
+        r.removeFromTop (4);
 
         auto bpmLine = r.removeFromTop (26);
         bpmLabel.setBounds (bpmLine.removeFromLeft (84));
@@ -154,10 +160,11 @@ private:
     int clipId;
     double bpm;
     std::function<void()> begin, changedFn;
-    std::function<void (double, double)> processFn;
+    std::function<void (double, double, bool)> processFn;
 
     juce::Label gainLabel, pitchLabel, lengthLabel, bpmLabel, note;
     juce::Slider gain, pitch, length;
     juce::TextEditor originalBpm;
+    juce::ToggleButton formants { "Keep the voice character (formants)" };
     juce::TextButton normalize { "Normalize" }, fit { "Fit to project tempo" }, apply { "Apply stretch and pitch" }, reset { "Reset" };
 };

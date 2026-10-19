@@ -5,7 +5,7 @@
 namespace
 {
     using juce::var;
-    constexpr int templatesVersion = 1;
+    constexpr int templatesVersion = 2;
 
     var obj (std::initializer_list<std::pair<const char*, var>> props)
     {
@@ -157,6 +157,50 @@ namespace
                arr (section ("Groove", 0, 4), section ("Groove 2", 4, 4)));
     }
 
+    // The cells of the clip launcher: [scene, name, clip] per track
+    var slotCell (int scene, const char* name, var clip) { return obj ({ { "scene", scene }, { "name", name }, { "clip", clip } }); }
+
+    // a jam for the clip launcher: four rows (intro, groove, lift, break) of drums, bass, chords and a lead; the timeline is empty
+    void launcherJam()
+    {
+        const double bpm = 100;
+        const int roots[4] = { 45, 41, 48, 43 };   // Am F C G
+        const std::vector<std::vector<int>> chords = { { 57, 60, 64 }, { 53, 57, 60 }, { 55, 60, 64 }, { 55, 59, 62 } };
+        std::vector<N> pad, bass, bassBusy, lead, arp;
+        for (int b = 0; b < 4; ++b)
+        {
+            append (pad, chordNotes ({ chords[(size_t) b][0], chords[(size_t) b][1], chords[(size_t) b][2] }, b * 4.0, 3.8, 0.55f));
+            bass.push_back ({ roots[b], b * 4.0, 3.5, 0.85f });
+            for (int i = 0; i < 8; ++i) bassBusy.push_back ({ roots[b] + (i % 4 == 3 ? 12 : 0), b * 4.0 + i * 0.5, 0.4, 0.85f });
+            for (int i = 0; i < 4; ++i) lead.push_back ({ chords[(size_t) b][(size_t) (i % 3)] + 12, b * 4.0 + i, 0.8, 0.6f });
+            for (int i = 0; i < 16; ++i) arp.push_back ({ chords[(size_t) b][(size_t) (i % 3)] + 12 * (i % 2), b * 4.0 + i * 0.25, 0.2, 0.5f });
+        }
+        auto withSlots = [] (var track, juce::Array<var> cells) { track.getDynamicObject()->setProperty ("slots", cells); return track; };
+
+        auto drums = drumTrack ("Drums", 0, {});
+        drums = withSlots (drums, arr (slotCell (0, "Hats", drumClip (bpm, 0, 4, { { 42, "x.x.x.x.x.x.x.xo" } })),
+                                       slotCell (1, "Groove", drumClip (bpm, 0, 4, { { 36, "X.....X..X......" }, { 38, "....X.......X..." }, { 42, "x.x.x.x.x.x.x.xo" } })),
+                                       slotCell (2, "Drive", drumClip (bpm, 0, 4, { { 36, "X...X...X...X..." }, { 38, "....X.......X..o" }, { 42, "xxxxxxxxxxxxxxxx" } })),
+                                       slotCell (3, "Break", drumClip (bpm, 0, 4, { { 36, "X..............." }, { 38, "............X..." } }))));
+        auto bassTrack = withSlots (synthTrack ("Bass", sSub, {}),
+                                    arr (slotCell (1, "Root", midiClip (bpm, 0, 4, bass)), slotCell (2, "Busy", midiClip (bpm, 0, 4, bassBusy))));
+        auto padTrack = withSlots (synthTrack ("Chords", sPad, {}, 0.6),
+                                   arr (slotCell (0, "Pad", midiClip (bpm, 0, 4, pad)), slotCell (1, "Pad", midiClip (bpm, 0, 4, pad)),
+                                        slotCell (2, "Pad", midiClip (bpm, 0, 4, pad)), slotCell (3, "Pad", midiClip (bpm, 0, 4, pad))));
+        auto leadTrack = withSlots (synthTrack ("Lead", sPluck, {}, 0.5, 0,
+                                                obj ({ { "delayOn", true }, { "delayTime", 450.0 }, { "delayFeedback", 0.35 }, { "delayMix", 0.3 } })),
+                                    arr (slotCell (2, "Melody", midiClip (bpm, 0, 4, lead)), slotCell (3, "Arp", midiClip (bpm, 0, 4, arp))));
+        auto* root = new juce::DynamicObject();
+        root->setProperty ("version", 3);
+        root->setProperty ("bpm", bpm);
+        root->setProperty ("masterGain", 0.9);
+        root->setProperty ("scenes", 6);
+        root->setProperty ("tracks", arr (drums, bassTrack, padTrack, leadTrack));
+        const auto file = StarterPack::folder().getChildFile ("Projects").getChildFile ("Launcher jam.mdaw");
+        file.getParentDirectory().createDirectory();
+        file.replaceWithText (juce::JSON::toString (var (root)));
+    }
+
     void lofi()
     {
         const double bpm = 80;
@@ -297,6 +341,7 @@ namespace ProjectTemplates
         if (marker().existsAsFile() && marker().loadFileAsString().trim().getIntValue() == templatesVersion)
             return;
         beatStarter();
+        launcherJam();
         lofi();
         house();
         trap();
@@ -309,6 +354,7 @@ namespace ProjectTemplates
     {
         return {
             { "Beat starter",     "A groove at 95 BPM with drums, bass and chords in A minor", StarterPack::folder().getChildFile ("Projects/Beat starter.mdaw") },
+            { "Launcher jam",     "Clip launcher: four rows of drums, bass, chords and a lead to start live (open Clip launcher in the File menu)", StarterPack::folder().getChildFile ("Projects/Launcher jam.mdaw") },
             { "Lo-fi hip hop",    "80 BPM: dusty drums, jazzy keys, a sub bass and vinyl crackle", StarterPack::folder().getChildFile ("Projects/Lo-fi hip hop.mdaw") },
             { "House 124",        "Four on the floor with an offbeat bass, stabs and a lead, in sections", StarterPack::folder().getChildFile ("Projects/House 124.mdaw") },
             { "Trap 140",         "808 drums with hat rolls, a long sub bass and a bell", StarterPack::folder().getChildFile ("Projects/Trap 140.mdaw") },

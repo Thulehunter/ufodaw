@@ -7,7 +7,7 @@ namespace Stretch
 {
     std::shared_ptr<juce::AudioBuffer<float>> process (const juce::AudioBuffer<float>& in, int startSample, int numSamples,
                                                        double sampleRate, double timeRatio, double semitones,
-                                                       const std::function<bool (double)>& progress)
+                                                       const std::function<bool (double)>& progress, bool formants)
     {
         using RB = RubberBand::RubberBandStretcher;
 
@@ -16,7 +16,9 @@ namespace Stretch
         if (numSamples <= 0 || timeRatio <= 0.0)
             return std::make_shared<juce::AudioBuffer<float>> (channels, 1);
 
-        const int options = RB::OptionProcessOffline | RB::OptionEngineFiner | RB::OptionPitchHighQuality | RB::OptionChannelsTogether;
+        int options = RB::OptionProcessOffline | RB::OptionEngineFiner | RB::OptionPitchHighQuality | RB::OptionChannelsTogether;
+        if (formants)
+            options |= RB::OptionFormantPreserved;   // the voice keeps its character when the pitch moves
         RB stretcher ((size_t) sampleRate, (size_t) channels, options, timeRatio, std::pow (2.0, semitones / 12.0));
         stretcher.setExpectedInputDuration ((size_t) numSamples);
 

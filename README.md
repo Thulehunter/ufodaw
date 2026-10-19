@@ -123,6 +123,8 @@ New to it? The [guide](https://ufodaw.eu/guide.html) explains the deeper feature
 
 ### MIDI and instruments
 
+- **Clip launcher** - *File > Clip launcher* (or the command palette) opens a grid: a column per track, a row ("scene") per idea. Click a cell to start its clip, a row number to start the whole row. Clips repeat until another cell of the track is started, and everything starts on the next bar (or beat, or at once; your choice) so it stays in time; the transport starts by itself. Fill a cell with right-click: an audio file, a new 4-bar pattern, or the clip that is selected in the arrangement; *Move to the arrangement* puts a cell's clip on the timeline to edit it. The cells are saved in the project; the *Launcher jam* template shows it working. (Clips in the grid are not on the timeline: they play on their own while the transport runs; the loop region does not repeat them.)
+- **Keep the voice character** - the clip panel's pitch shift has a *formants* option (Rubber Band's formant preservation): a vocal pitched up or down keeps its character instead of sounding like a chipmunk or a giant.
 - **MIDI tracks** with a built-in polyphonic synth (sine / saw / square / triangle, ADSR, low-pass) and a **piano roll**
   that names every key and note, lights up the keys that sound (live or during playback) and scrolls to the clip's notes
   ("Show notes" brings them back).
@@ -190,6 +192,7 @@ New to it? The [guide](https://ufodaw.eu/guide.html) explains the deeper feature
 
 ### Projects, files and export
 
+- **Project check and format versions** - when a project opens, one dialog lists what did not come through (missing audio files, plugins that could not load, a project saved by a newer UFODAW). *Find the files...* searches a folder (and its subfolders) for the missing files by name and opens the project again with them in place. Old projects always open (a missing property takes its default); the file records the format number and the program version (`version`, `savedWith`).
 - **Collect, versions and backups** - **Save As** (button) opens a menu: *Save a new version* (jam, jam v2, jam v3...), and *Save with all
   audio in one folder*, which copies every audio file the project uses into `<folder>Audio` and opens the project from there, so the
   whole folder can be moved to another disk or PC. Every normal save also leaves a time-stamped copy in `<project> backups` (the newest
@@ -380,6 +383,20 @@ powershell -ExecutionPolicy Bypass -File scripts\package.ps1
 
 builds Release and writes `dist\UFODAW-<version>-win64.zip`. For a regular installer, install [Inno Setup](https://jrsoftware.org/isinfo.php) and compile `installer\UFODAW.iss` (after running the script above).
 
+## Tests
+
+Every push runs `.github/workflows/tests.yml` on GitHub: it builds the program and the engine tests, then runs
+
+```
+cmake -S . -B build -DUFODAW_BUILD_TESTS=ON
+cmake --build build --config Release
+build\EngineTest_artefacts\Release\EngineTest.exe 3
+powershell -ExecutionPolicy Bypass -File scripts\selftest.ps1
+```
+
+- `EngineTest` (`tests/engine/EngineTest.cpp`) renders a project with synth, drums, audio, a plugin with latency, buses, sends and a sidechain, in real time and offline, once on one thread and once with worker threads: the results must be identical. It also checks pitch shifting and the clip launcher.
+- `scripts/selftest.ps1` starts the program with `--selftest`, which opens every project in `tests/projects/` (an old format, a newer format, a missing file, launcher cells) and the starter-pack projects without dialogs, renders a few seconds of each and checks the result.
+
 ## Project layout
 
 | File | What it does |
@@ -397,6 +414,8 @@ builds Release and writes `dist\UFODAW-<version>-win64.zip`. For a regular insta
 | `Source/SyncPanels.h` | The latency and MIDI clock tabs of the audio settings |
 | `Source/RoutingPanel.h`, `Source/MidiTools.h` | Output and sends of a track; quantize / swing / humanize |
 | `Source/FxPanel.*`, `Source/PluginPanel.*` | Per-track effect and plugin panels |
+| `Source/EngineLauncher.cpp`, `Source/ClipLauncher.h` | The clip launcher: cells, quantized launching, and its window |
+| `Source/PluginCrash.h`, `Source/CrashReport.h`, `Source/UpdateInstall.h` | Plugin crash handling, problem reports, in-program updates |
 
 The audio thread never blocks: the UI edits the project under a lock that the audio callback only *tries* to take. Undo works with cheap snapshots of the whole project (sample data is shared, not copied).
 

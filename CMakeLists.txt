@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.22)
 # Link the C++ runtime statically so UFODAW.exe runs on a PC without the Visual C++ Redistributable.
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
-project(UFODAW VERSION 0.9.0 LANGUAGES C CXX)
+project(UFODAW VERSION 0.9.1 LANGUAGES C CXX)
 
 # /EHa: catch(...) also catches access violations, so a crash in a plugin's window (or another callback from the message loop) is caught by JUCE's
 # loop and handled by UFODAWApplication::unhandledException instead of ending the program.
@@ -63,6 +63,7 @@ juce_add_gui_app(UFODAW PRODUCT_NAME "UFODAW"
 target_sources(UFODAW PRIVATE
     Source/Main.cpp
     Source/Engine.cpp
+    Source/EngineLauncher.cpp
     Source/Theme.cpp
     Source/ExternalMidi.cpp
     Source/Tuner.cpp
@@ -135,3 +136,20 @@ target_link_libraries(UFODAW
         juce::juce_recommended_config_flags
         juce::juce_recommended_lto_flags
         juce::juce_recommended_warning_flags)
+
+# Automatic tests (cmake -DUFODAW_BUILD_TESTS=ON): EngineTest renders a project serial and with worker threads and checks the results are identical.
+option(UFODAW_BUILD_TESTS "Build the engine tests" OFF)
+if(UFODAW_BUILD_TESTS)
+    juce_add_console_app(EngineTest PRODUCT_NAME "EngineTest")
+    target_sources(EngineTest PRIVATE
+        tests/engine/EngineTest.cpp
+        Source/Engine.cpp Source/EngineLauncher.cpp Source/ExternalMidi.cpp Source/Tuner.cpp Source/Synth.cpp Source/Fx.cpp Source/DrumKit.cpp
+        Source/Stretch.cpp Source/Sampler.cpp Source/StarterPack.cpp Source/ProjectTemplates.cpp Source/AudioExport.cpp
+        ${SHINE_SOURCES}
+        "${rubberband_SOURCE_DIR}/single/RubberBandSingle.cpp")
+    target_include_directories(EngineTest PRIVATE Source "${rubberband_SOURCE_DIR}" "${shine_SOURCE_DIR}/src/lib")
+    target_compile_definitions(EngineTest PRIVATE ENGINE_HAS_THREADS=1 JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_PLUGINHOST_VST3=1)
+    target_link_libraries(EngineTest PRIVATE
+        juce::juce_audio_formats juce::juce_audio_devices juce::juce_audio_processors juce::juce_gui_basics
+        juce::juce_recommended_config_flags)
+endif()

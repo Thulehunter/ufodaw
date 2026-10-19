@@ -1,0 +1,16 @@
+{
+  "bpm": 100.0,
+  "tracks": [
+    {
+      "name": "Old lead",
+      "type": "midi",
+      "clips": [],
+      "midiClips": [
+        { "start": 0.0, "length": 4.0, "notes": [
+          { "pitch": 60, "start": 0.0, "length": 0.5, "velocity": 0.8 },
+          { "pitch": 64, "start": 0.6, "length": 0.5, "velocity": 0.8 },
+          { "pitch": 67, "start": 1.2, "length": 0.5, "velocity": 0.8 } ] }
+      ]
+    }
+  ]
+}

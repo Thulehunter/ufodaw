@@ -89,6 +89,11 @@ struct Clip
     std::shared_ptr<const juce::AudioBuffer<float>> source;
     double processedFrom = 0.0, processedLength = 0.0;
     double stretch = 1.0, pitch = 0.0;
+    bool formants = false;   // the pitch shift kept the formants (the voice character)
+
+    // Clip launcher: a clip that was launched repeats its region every `loopLength` seconds (0 = plays once, as an ordinary clip) for as long as it lasts
+    double loopLength = 0.0;
+    int launchScene = -1;     // the scene (row) of the launcher it came from
     bool processed() const { return source != nullptr; }
 
     // Takes: clips of one group are alternatives for the same spot (a loop recording makes one per pass); only the
@@ -128,11 +133,22 @@ struct MidiClip
     double length = 4.0;
     std::vector<Note> notes;
     std::vector<CcEvent> ccs;   // sorted by time
+    double loopLength = 0.0;    // clip launcher: repeats every loopLength seconds (see Clip::loopLength)
+    int launchScene = -1;
 
     double end() const { return start + length; }
 };
 
 struct Track;
+
+// One cell of the clip launcher: a clip (audio on an audio track, MIDI on a MIDI track) that can be started at any time and then repeats.
+struct LaunchSlot
+{
+    bool used = false;
+    Clip audio;
+    MidiClip midi;
+    juce::String name;
+};
 
 // Notes from a sequencer plugin go to `target`. channel 0 passes every MIDI channel through unchanged;
 // 1..16 passes only that channel and delivers it to the target as channel 1 (what single-voice synths listen to).
@@ -262,6 +278,9 @@ struct Track
     Type type = Type::Audio;
     std::vector<Clip> clips;            // audio tracks, guarded by Engine::lock
     std::vector<MidiClip> midiClips;    // MIDI tracks, guarded by Engine::lock
+    std::vector<LaunchSlot> slots;      // clip launcher: one cell per scene (the message thread changes it under Engine::lock)
+    std::vector<Clip> launchedAudio;    // what the launcher plays or has queued: looping copies of slot clips placed on the timeline, guarded by Engine::lock
+    std::vector<MidiClip> launchedMidi;
     std::vector<SubLane> subLanes;      // MIDI tracks: sub-tracks by pitch (message thread; changed under Engine::lock)
     bool subLanesOpen = false;          // UI: the sub-tracks are shown under the track
     bool subAutoDone = false;           // the program already looked at this track's instrument (a drum plugin gets its sub-tracks once, by itself)
@@ -552,10 +571,10 @@ public:
     // false to cancel). stretch 2.0 = twice as long. The clip's length, fades and volume curve follow the new length. stretch 1 and pitch 0
     // put the original back. Results are cached on disk, so loading a project does not process them again.
     using ProgressFn = std::function<bool (double)>;
-    bool processClip (Track&, int clipId, double stretch, double semitones, const ProgressFn& progress);
+    bool processClip (Track&, int clipId, double stretch, double semitones, const ProgressFn& progress, bool formants = false);
     // Loading a project: processes the saved region of the clip's (just loaded, unprocessed) audio; the caller then sets offset and length.
     bool restoreProcessedClip (Track&, int clipId, double stretch, double semitones, double sourceStart, double sourceLength, const ProgressFn& progress,
-                               const std::vector<WarpMarker>& warps = {});
+                               const std::vector<WarpMarker>& warps = {}, bool formants = false);
     // Warps the clip: every marker pins a moment of the original audio to a place in the clip, the audio in between is time-stretched
     // (pitch kept). No markers put the original back. Like processClip this works on the clip's current region (or the region that was
     // processed before) of the original audio, and `progress` can cancel.
@@ -762,8 +781,30 @@ public:
     int getTunerChannel() const { return tunerChannel.load(); }
     bool readTunerSamples (float* dest, int n) const;   // the newest n samples, oldest first; false when the tuner is off
 
+
+    // ---- Clip launcher (see EngineLauncher.cpp). Every track has one cell per scene; a cell holds a clip that is started with launchSlot()
+    // and then repeats until another cell of the track is launched or the track is stopped. A launch waits for the next beat or bar
+    // (the quantum), so everything stays in time. A launch also starts the transport when it is stopped. Stopping the transport ends all clips.
+    enum class LaunchQuantum { None, Beat, Bar };
+    std::atomic<int> launchQuantum { (int) LaunchQuantum::Bar };
+    int getNumScenes() const;
+    void setNumScenes (int);
+    // fill / empty a cell. A clip from the timeline is copied into the cell (removeOriginal: moved).
+    bool setSlotFromClip (Track&, int scene, int clipId, bool removeOriginal);
+    bool setSlotFromFile (Track&, int scene, const juce::File&);
+    bool newSlotMidi (Track&, int scene, double lengthSeconds);   // an empty MIDI pattern of that length
+    bool moveSlotToTimeline (Track&, int scene, double atSeconds);   // the cell is emptied; the clip is on the timeline for editing
+    void clearSlot (Track&, int scene);
+    void renameSlot (Track&, int scene, const juce::String&);
+    void launchSlot (Track&, int scene);
+    void launchScene (int scene);
+    void stopTrackSlots (Track&);
+    void stopAllSlots();
+    struct SlotState { int playing = -1; int queued = -1; bool stopQueued = false; double startsInSeconds = 0.0; double loopPosition = 0.0; };
+    SlotState getSlotState (const Track&) const;
+    std::vector<LaunchSlot> getSlots (const Track&) const;   // a copy, one per scene
     void play()  { playing = true; }
-    void stop()  { playing = false; countInRemaining = 0; }
+    void stop()  { playing = false; countInRemaining = 0; launcherClear = true; }
     void silenceEverything();   // transport stops, every note of every instrument is cut at once (the "STOP ALL" button)
     bool isPlaying() const { return playing; }
 
@@ -810,7 +851,7 @@ public:
 
 private:
     std::shared_ptr<juce::AudioBuffer<float>> processedAudio (const Clip& c, const juce::AudioBuffer<float>& src, double regionStart,
-                                                              double regionLength, double stretch, double semitones, const ProgressFn&);
+                                                              double regionLength, double stretch, double semitones, const ProgressFn&, bool formants);
 
     struct PreviewEvent
     {
@@ -901,6 +942,10 @@ private:
     TempoMap tempoMap;                              // guarded by `lock`
     std::unique_ptr<Track> master;
     int nextClipId = 1;
+    int numScenes = 8;                              // clip launcher rows, guarded by `lock`
+    std::atomic<bool> launcherClear { false };      // the transport was stopped: the audio thread drops what the launcher was playing before it next runs
+    double launchBoundary (double now, LaunchQuantum q) const;   // lock held: the time (seconds) of the next beat / bar / now
+    void endLaunchedAt (Track&, double at);        // lock held: what plays on the track ends at `at`, what was queued after it is dropped
 
     juce::TimeSliceThread writerThread { "UFODAW audio writer" };
     struct Recorder

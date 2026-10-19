@@ -51,6 +51,7 @@
     <a href="#mixing">Buses, sends &amp; sidechain</a>
     <a href="#effects">EQ, compressor, delay, reverb, more</a>
     <a href="#freeze">Freeze, groups &amp; plugin safety</a>
+    <a href="#launcher">Clip launcher</a>
     <a href="#starter">Starter pack &amp; templates</a>
     <a href="#metering">Metering &amp; reference</a>
     <a href="#tempo">Tempo map &amp; sections</a>
@@ -305,6 +306,19 @@
       </ul>
     </section>
 
+    <section id="launcher">
+      <h2>Clip launcher</h2>
+      <p>The clip launcher is for playing and trying ideas live instead of laying them out on the timeline. Open it from <b>File &gt; Clip launcher</b> or the command palette (<kbd>Ctrl</kbd>+<kbd>K</kbd>). The <b>Launcher jam</b> template (<i>File &gt; New from a template</i>) is a project with four rows of drums, bass, chords and a lead, ready to play.</p>
+      <video controls preload="metadata" width="100%" src="launcher-tutorial.mp4" style="max-width:900px;border-radius:8px">Your browser cannot play the video; the text below tells the same.</video>
+      <h3>The grid</h3>
+      <p>Every track is a column and every idea is a row (a "scene"). Click a <b>cell</b> to start its clip; click a <b>row number</b> to start the whole row. A clip repeats until you start another cell of the same track or press the small stop square under the track name. <b>Stop all</b> ends everything. The transport starts by itself, and stops ending the clips.</p>
+      <h3>Staying in time</h3>
+      <p>A start or stop waits for the next <b>bar</b> by default, so clips always fall on the beat. The box at the top changes that to the next beat or to at once. While a start is waiting, the cell blinks; a playing cell shows its position in the loop.</p>
+      <h3>Filling cells</h3>
+      <p>Right-click a cell: <b>Load an audio file</b> (audio tracks), <b>New 4-bar pattern</b> (MIDI tracks), or <b>Use the clip that is selected in the arrangement</b> (with or without taking it off the arrangement). To edit a clip, right-click it and choose <b>Move to the arrangement</b>: it lands at the playhead and the cell is emptied; put it back the same way. <b>+ Row</b> adds rows. The cells are saved in the project.</p>
+      <p class="tip">Clips in the grid are not on the timeline: they play on their own while the transport runs, next to what is on the timeline. The loop region of the arrangement does not repeat them.</p>
+    </section>
+
     <section id="starter">
       <h2>Starter pack, templates and the sample browser</h2>
       <h3>The starter pack</h3>
@@ -312,7 +326,7 @@
       <h3>Drum kits and synth sounds</h3>
       <p>The drum rack has a box at the top that fills all 16 pads from a kit: <b>Punch</b>, <b>808</b>, <b>Lo-fi</b>, <b>House</b> and <b>Tight</b>. Undo brings your own samples back. In the piano roll of a synth track, the <b>Sounds</b> box sets the wave, the envelope and the filter: pluck, warm pad, strings, brass, lead, keys, bell, sub bass and fat bass.</p>
       <h3>New from a template</h3>
-      <p><b>File &gt; New from a template</b> opens a finished starting point as a new, unsaved project, so the template itself is never overwritten: <i>Beat starter</i>, <i>Lo-fi hip hop</i>, <i>House 124</i>, <i>Trap 140</i>, <i>Song sketch</i> (named sections and empty tracks for guitar and vocals) and <i>Vocal recording</i> (a vocal track with a ready effects chain and a reverb bus, and the click on).</p>
+      <p><b>File &gt; New from a template</b> opens a finished starting point as a new, unsaved project, so the template itself is never overwritten: <i>Launcher jam</i> (for the clip launcher), <i>Beat starter</i>, <i>Lo-fi hip hop</i>, <i>House 124</i>, <i>Trap 140</i>, <i>Song sketch</i> (named sections and empty tracks for guitar and vocals) and <i>Vocal recording</i> (a vocal track with a ready effects chain and a reverb bus, and the click on).</p>
       <h3>The sample browser</h3>
       <p>Open it from the File menu or the command palette (<kbd>Ctrl</kbd>+<kbd>K</kbd>). It lists the starter pack by category and any folders you add. Click a sound to hear it (through the master output, apart from your project); double-click, or press <b>Add to project</b>, to put it on a new audio track; or drag it onto a track, a drum pad or the sampler. The search box looks in all folders.</p>
       <h3>Updates</h3>
@@ -358,6 +372,7 @@
     <section id="projects">
       <h2>Projects, tabs and safety</h2>
       <ul>
+        <li><b>Project check.</b> When a project opens, one dialog lists what did not come through: missing audio files, plugins that could not load, or a project saved by a newer UFODAW. <b>Find the files...</b> searches a folder (and its subfolders) for the missing files by name and opens the project again with them in place; save to keep the new places.</li>
         <li><b>Project tabs.</b> Open several projects at once (<kbd>Ctrl</kbd>+<kbd>N</kbd>, <kbd>Ctrl</kbd>+<kbd>W</kbd>, <kbd>Ctrl</kbd>+<kbd>Tab</kbd>). All tabs share one audio device; only the visible tab is connected to it and to MIDI, so switching is instant. Unsaved tabs have a yellow dot.</li>
         <li><b>Copy between projects.</b> The clipboard is shared by all tabs.</li>
         <li><b>Autosave.</b> Every two minutes, when something changed, a recovery file is written. After a crash, the next start offers to restore it.</li>
@@ -453,7 +468,7 @@
   ["fr-nav", "fr-link"].forEach(function (id) {
     var a = document.getElementById(id); a.href = fr; a.target = "_blank"; a.rel = "noopener";
   });
-  var VERSION = "0.9.0";   // (update with every release)
+  var VERSION = "0.9.1";   // (update with every release)
   var body = "**What happened?**\n\n\n**What did you expect?**\n\n\n**How can it be repeated?**\n1. \n2. \n3. \n\n**Version:** UFODAW " + VERSION + "\n**Windows version:**\n**Audio device and driver (ASIO / WASAPI):**\n**Plugins involved (name, maker):**\n";
   var bug = REPO + "/issues/new?labels=bug&title=" + encodeURIComponent("Bug: ") + "&body=" + encodeURIComponent(body);
   ["bug-nav", "bug-link"].forEach(function (id) {

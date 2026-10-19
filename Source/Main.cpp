@@ -32,6 +32,16 @@ public:
         juce::LookAndFeel::setDefaultLookAndFeel (&lookAndFeel);   // the warm red/orange/yellow theme
         window = std::make_unique<MainWindow> (getApplicationName());
 
+        // "UFODAW.exe --selftest result.txt a.mdaw b.mdaw": opens each project without dialogs, renders a few seconds and writes one line per
+        // project to result.txt (and exit code 1 if any failed). The automatic tests use it to see that old and new project files keep opening.
+        if (commandLine.trim().startsWith ("--selftest"))
+        {
+            auto args = juce::StringArray::fromTokens (commandLine.trim(), true);
+            args.removeRange (0, 1);
+            juce::MessageManager::callAsync ([this, args] { runSelfTest (args); });
+            return;
+        }
+
         // "UFODAW.exe project.mdaw" (or double-clicking a project file) opens that project in a tab
         const juce::File project (commandLine.trim().unquoted().trim());
         if (auto* tabs = dynamic_cast<ProjectTabs*> (window->getContentComponent()))
@@ -51,6 +61,37 @@ public:
         }
         PluginCrash::crashedLastTime = false;
         PluginCrash::pendingNotice.clear();
+    }
+
+    void runSelfTest (juce::StringArray args)
+    {
+        const juce::File resultFile (args[0].unquoted());
+        args.remove (0);
+        juce::String report;
+        bool all = true;
+        auto* tabs = dynamic_cast<ProjectTabs*> (window->getContentComponent());
+        MainComponent::selfTesting = true;
+        for (auto& a : args)
+        {
+            const juce::File project (a.unquoted());
+            bool ok = false;
+            juce::String line;
+            if (tabs == nullptr || tabs->getActive() == nullptr)
+                line = "no window";
+            else if (! project.existsAsFile())
+                line = "file not found";
+            else
+            {
+                MainComponent::selfTestProblems.clear();
+                tabs->getActive()->openFileHere (project);
+                line = tabs->getActive()->selfTestReport (ok, project.getFileName().startsWith ("warn-"));
+            }
+            all = all && ok;
+            report << (ok ? "PASS " : "FAIL ") << project.getFileName() << ": " << line << "\n";
+        }
+        resultFile.replaceWithText (report + (all ? "ALL PASSED\n" : "FAILED\n"));
+        setApplicationReturnValue (all ? 0 : 1);
+        quit();
     }
 
     // With /EHa the access violations in a plugin's window or callbacks end up here instead of ending the program: close the plugin windows,

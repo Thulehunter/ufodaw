@@ -24,6 +24,9 @@ class ShortcutsWindow;
 class VersionHistoryWindow;   // (VersionHistory.h)
 
 // Settings shared by the track headers and the lanes
+// The project file format: older files always open (a missing property takes its default); a file with a higher number was saved by a newer UFODAW.
+constexpr int projectFormatVersion = 3;
+
 namespace UiSettings
 {
     inline bool panSnap = true;        // pan sliders and pan envelopes snap to panStep (Alt while dragging flips it)
@@ -100,6 +103,7 @@ class SubLaneRow;
 class SubLaneHeader;
 class GroupHeader;
 class SampleBrowserWindow;
+class ClipLauncherWindow;
 class SubLaneFooter;
 class TimeRuler;
 class PianoRoll;
@@ -232,6 +236,10 @@ public:
     std::function<void (int)> requestSwitchTab;   // Ctrl+Tab / Ctrl+Shift+Tab: +1 or -1
     std::function<void (const juce::File&)> requestOpenInTab;
     void openFileHere (const juce::File& f) { loadProject (f); }
+    // Command line "--selftest": open a project without any dialogs and report what came out (see Main.cpp)
+    static inline bool selfTesting = false;
+    static inline juce::StringArray selfTestProblems;
+    juce::String selfTestReport (bool& ok, bool expectWarning);
     void openTemplateHere (const juce::File& templateFile);   // a project from the starter pack: opened as a new, unsaved project (it is named after the template)
     std::function<void (const juce::File&)> requestOpenTemplate;
     juce::String untitledTitle;
@@ -370,11 +378,13 @@ private:
     std::unique_ptr<WarpWindow> warpWindow;
     std::unique_ptr<MasterMeterWindow> meterWindow;
     std::unique_ptr<SampleBrowserWindow> browserWindow;
+    std::unique_ptr<ClipLauncherWindow> launcherWindow;
     // Updates: the latest release on GitHub. A button in the top bar appears when a newer version exists.
     juce::TextButton updateButton { "Update available" };
     static inline juce::String updateVersion, updateNotes, updateDownload, updateSha;   // (empty version: none; shared by all the tabs)
     void checkForUpdates (bool userAsked);                      // File > Check for updates; also once a day at start-up
     void showUpdateInfo();
+    void openClipLauncher();                          // the grid of clips that are started live
     void openSampleBrowser();                         // the starter pack and your own folders, with preview
     void openMasterMeter();                           // loudness, spectrum and the reference track
     std::unique_ptr<VersionHistoryWindow> historyWindow;
@@ -496,7 +506,9 @@ private:
     juce::File autosaveInfoFile() const;
     void autosaveNow();
     void clearAutosave();
-    void loadProject (const juce::File&, bool asTemplate = false);
+    void loadProject (const juce::File&, bool asTemplate = false, bool relinking = false);
+    static inline std::map<juce::String, juce::File> relinkMap;   // missing file name -> where "Find files" found it (only while a project is re-opened)
+    void showProjectCheck (const juce::File& project, bool asTemplate, bool relinking, const juce::StringArray& missing, const juce::StringArray& pluginProblems, const juce::String& futureNote);
     void openProjectDialog();
     void newProject();                                // an empty project (asks first when there are unsaved changes)
     void fileMenu();                                  // the "File" button: new, open, recent, save, export

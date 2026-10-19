@@ -1,0 +1,29 @@
+# Runs on every push and pull request: builds UFODAW and runs the automatic tests.
+#  - EngineTest: the mixing engine gives identical results serial and with worker threads (real time and offline), and pitch shifting works
+#  - scripts/selftest.ps1: the program opens the test projects (old formats, a newer format, a missing file) and the starter-pack projects
+#    without dialogs, renders them and checks the result
+name: Tests
+
+on:
+  push:
+    branches: [dev, main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S . -B build -A x64 -DUFODAW_BUILD_TESTS=ON
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Engine tests
+        run: build/EngineTest_artefacts/Release/EngineTest.exe 3
+
+      - name: Open the test projects in the program
+        shell: pwsh
+        run: scripts/selftest.ps1

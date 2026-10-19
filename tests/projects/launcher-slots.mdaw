@@ -1,0 +1,31 @@
+{
+  "version": 3,
+  "savedWith": "0.9.1",
+  "bpm": 120.0,
+  "scenes": 4,
+  "tracks": [
+    {
+      "name": "Chords", "type": "midi", "clips": [],
+      "midiClips": [],
+      "slots": [
+        { "scene": 0, "name": "Am", "clip": { "start": 0.0, "length": 2.0, "notes": [
+          { "pitch": 57, "start": 0.0, "length": 1.9, "velocity": 0.8 },
+          { "pitch": 60, "start": 0.0, "length": 1.9, "velocity": 0.8 },
+          { "pitch": 64, "start": 0.0, "length": 1.9, "velocity": 0.8 } ] } },
+        { "scene": 1, "name": "F", "clip": { "start": 0.0, "length": 2.0, "notes": [
+          { "pitch": 53, "start": 0.0, "length": 1.9, "velocity": 0.8 },
+          { "pitch": 57, "start": 0.0, "length": 1.9, "velocity": 0.8 },
+          { "pitch": 60, "start": 0.0, "length": 1.9, "velocity": 0.8 } ] } }
+      ]
+    },
+    {
+      "name": "Bass", "type": "midi", "clips": [],
+      "midiClips": [],
+      "slots": [
+        { "scene": 0, "name": "A", "clip": { "start": 0.0, "length": 2.0, "notes": [
+          { "pitch": 33, "start": 0.0, "length": 0.4, "velocity": 0.9 },
+          { "pitch": 33, "start": 1.0, "length": 0.4, "velocity": 0.9 } ] } }
+      ]
+    }
+  ]
+}
