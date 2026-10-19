@@ -3,7 +3,25 @@ cmake_minimum_required(VERSION 3.22)
 # Link the C++ runtime statically so UFODAW.exe runs on a PC without the Visual C++ Redistributable.
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
-project(UFODAW VERSION 0.8.8.3 LANGUAGES C CXX)
+project(UFODAW VERSION 0.8.9 LANGUAGES C CXX)
+
+# /EHa: catch(...) also catches access violations, so a crash in a plugin's window (or another callback from the message loop) is caught by JUCE's
+# loop and handled by UFODAWApplication::unhandledException instead of ending the program.
+if(MSVC)
+    string(REPLACE "/EHsc" "/EHa" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
+endif()
+
+# (JUCE's recommended flags add /EHsc themselves, after ours: make that /EHa as well, once JUCE is available)
+function(ufodaw_use_async_exceptions)
+    if(NOT MSVC)
+        return()
+    endif()
+    get_target_property(opts juce_recommended_config_flags INTERFACE_COMPILE_OPTIONS)
+    if(opts)
+        string(REPLACE "/EHsc" "/EHa" opts "${opts}")
+        set_property(TARGET juce_recommended_config_flags PROPERTY INTERFACE_COMPILE_OPTIONS "${opts}")
+    endif()
+endfunction()
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -74,6 +92,7 @@ target_compile_definitions(UFODAW PRIVATE
     JUCE_WEB_BROWSER=0
     JUCE_USE_CURL=0
     JUCE_PLUGINHOST_VST3=1
+    JUCE_CATCH_UNHANDLED_EXCEPTIONS=1
     JUCE_APPLICATION_NAME_STRING="$<TARGET_PROPERTY:UFODAW,JUCE_PRODUCT_NAME>"
     JUCE_APPLICATION_VERSION_STRING="$<TARGET_PROPERTY:UFODAW,JUCE_VERSION>")
 if(APPLE)   # on a Mac the Audio Units that are installed can be hosted, next to VST3
@@ -101,6 +120,8 @@ if(ASIO_SDK_DIR AND EXISTS "${ASIO_SDK_DIR}/common/iasiodrv.h")
 else()
     message(STATUS "ASIO support: off (set ASIO_SDK_DIR to the ASIO SDK folder to switch it on)")
 endif()
+
+ufodaw_use_async_exceptions()
 
 target_link_libraries(UFODAW
     PRIVATE

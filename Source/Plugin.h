@@ -22,6 +22,7 @@ struct PluginSlot
     std::atomic<bool> bypass { false };
     std::atomic<bool> editorOpen { false };   // its editor window is open: the engine keeps the plugin processing (many plugins say "audio engine inactive" otherwise)
     juce::AudioBuffer<float> scratch;   // processing buffer sized for the plugin's channel count
+    juce::MidiBuffer emptyMidi;         // for effects: no notes (every plugin has its own, so tracks can be processed at the same time)
 
     // Set when the plugin crashed while it was processing sound (see guardedProcess): it is switched off for good (until the project is opened again).
     std::atomic<bool> crashed { false };

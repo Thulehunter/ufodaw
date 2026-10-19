@@ -1,6 +1,7 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 #include "ProjectTabs.h"
 #include "PluginScan.h"
+#include "PluginCrash.h"
 #include "ProjectTemplates.h"
 #include "StarterPack.h"
 #if JUCE_WINDOWS
@@ -22,6 +23,8 @@ public:
         scanWorker.reset();
 
         migrateOldSettings();
+        PluginCrash::processLastCrash();   // the plugin that closed the program last time is blocked now
+        PluginCrash::install();
         registerProjectFileType();
         StarterPack::ensureInstalled();      // the sounds, drum kits and project templates that are made by the program (a fraction of a second, once)
         ProjectTemplates::ensureWritten();
@@ -32,6 +35,45 @@ public:
         const juce::File project (commandLine.trim().unquoted().trim());
         if (auto* tabs = dynamic_cast<ProjectTabs*> (window->getContentComponent()))
             tabs->start (project);
+
+        if (PluginCrash::pendingNotice.isNotEmpty())
+            juce::MessageManager::callAsync ([notice = PluginCrash::pendingNotice]
+            {
+                juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::WarningIcon)
+                                                  .withTitle ("A plugin crashed").withMessage (notice).withButton ("OK"), nullptr);
+            });
+        PluginCrash::pendingNotice.clear();
+    }
+
+    // With /EHa the access violations in a plugin's window or callbacks end up here instead of ending the program: close the plugin windows,
+    // block the plugin that did it and carry on.
+    void unhandledException (const std::exception*, const juce::String&, int) override
+    {
+        static juce::int64 lastShown = 0;
+        juce::String name;
+       #if JUCE_WINDOWS
+        name = PluginCrash::blockModule (PluginCrash::takeRecentFaultModule());
+       #endif
+        juce::MessageManager::callAsync ([this]
+        {
+            if (auto* tabs = dynamic_cast<ProjectTabs*> (window != nullptr ? window->getContentComponent() : nullptr))
+                if (auto* tab = tabs->getActive())
+                    tab->closePluginEditors();
+        });
+
+        const auto now = juce::Time::currentTimeMillis();
+        if (now - lastShown < 5000)
+            return;
+        lastShown = now;
+        const auto message = name.isNotEmpty() ? PluginCrash::noticeFor (name)
+                                               : juce::String ("Something went wrong inside the program or a plugin and was caught. "
+                                                               "It is safest to save your work now.");
+        const bool plugin = name.isNotEmpty();
+        juce::MessageManager::callAsync ([message, plugin]
+        {
+            juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::WarningIcon)
+                                              .withTitle (plugin ? "A plugin crashed" : "Something went wrong").withMessage (message).withButton ("OK"), nullptr);
+        });
     }
 
     // Windows: .mdaw files get the UFODAW icon and open in UFODAW when double-clicked (for the current user; the installer does the same).

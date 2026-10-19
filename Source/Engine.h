@@ -7,6 +7,7 @@
 #include <vector>
 #include "Synth.h"
 #include "Fx.h"
+#include "ParallelRunner.h"
 #include "Plugin.h"
 #include "DrumKit.h"
 #include "ExternalMidi.h"
@@ -220,6 +221,24 @@ struct SubLane
     bool covers (int pitch) const { return pitch >= pitchLo && pitch <= pitchHi; }
 };
 
+// A note (on or off) inside the block that is being rendered
+struct NoteEvent
+{
+    int offset;     // sample offset inside the block
+    bool on;
+    int pitch;
+    float velocity;
+    int channel = 1;   // MIDI channel 1..16; clip notes use 1, notes from sequencer plugins keep theirs
+};
+
+// Controller events of the clips (and nothing else) in the block being rendered, like NoteEvent.
+struct CcBlockEvent
+{
+    int offset;
+    int controller;
+    float value;
+};
+
 struct Track
 {
     enum class Type { Audio, Midi };
@@ -321,6 +340,19 @@ struct Track
     };
     std::vector<Send> sends;
     std::vector<float> busInL, busInR;                    // bus tracks: what arrived during the current block
+
+    // What rendering this track in one block needs and makes. Every track has its own, so tracks can be rendered at the same time on several threads.
+    struct Work
+    {
+        std::vector<NoteEvent> noteEvents;      // the notes of the block (clips, routed notes, MIDI effects)
+        std::vector<CcBlockEvent> ccEvents;
+        juce::MidiBuffer midiScratch;
+        std::vector<float> outL, outR;          // the track's stereo signal after its effects, before fader and pan
+        bool rendered = false;                  // something was made this block
+        bool audible = false;
+        float peak = 0.0f;
+        float gl0 = 1.0f, gr0 = 1.0f, gl1 = 1.0f, gr1 = 1.0f, g = 1.0f;   // the fader and pan at both ends of the block
+    } work;
     bool busFed = false;                                  // an audible track wrote into the bus during this block
 };
 
@@ -675,6 +707,12 @@ public:
     bool isPreviewing() const { return previewActive.load(); }
     double getPreviewPosition() const { return previewPosition.load(); }   // seconds into the sound
 
+    // Several CPU cores: the tracks of a block are rendered at the same time by this many worker threads (and the audio thread itself). 0 = all on the
+    // audio thread. It is only used when the tracks together take a noticeable part of the block time (or when rendering to a file).
+    void setWorkerThreads (int numWorkers);
+    int getWorkerThreads() const { return workerThreads.load(); }
+    std::atomic<bool> forceParallel { false };   // (tests) always use the workers when there are some
+
     // Message thread: true once when a plugin crashed while it was playing (it is switched off), with its name
     bool takeCrashedPlugin (juce::String& name);
     bool trackHasOutput (const Track&) const;       // whether the track would give a non-empty stem
@@ -774,15 +812,6 @@ private:
     std::shared_ptr<juce::AudioBuffer<float>> processedAudio (const Clip& c, const juce::AudioBuffer<float>& src, double regionStart,
                                                               double regionLength, double stretch, double semitones, const ProgressFn&);
 
-    struct NoteEvent
-    {
-        int offset;     // sample offset inside the block
-        bool on;
-        int pitch;
-        float velocity;
-        int channel = 1;   // MIDI channel 1..16; clip notes use 1, notes from sequencer plugins keep theirs
-    };
-
     struct PreviewEvent
     {
         const Track* track = nullptr;
@@ -792,20 +821,21 @@ private:
         int controller = -1;   // >= 0: a controller message (CcEvent numbering) with `velocity` as its value, not a note
     };
 
-    // Controller events of the clips (and nothing else) in the block being rendered, like noteEvents.
-    struct CcBlockEvent
-    {
-        int offset;
-        int controller;
-        float value;
-    };
-    std::vector<CcBlockEvent> ccEvents;
     static juce::MidiMessage controllerMessage (int channel, int controller, float value01);
 
     // Caller must hold `lock`; adds into outL/outR (which must be pre-cleared).
     // `running` is false when only synth tails/previews should be rendered.
     void mixBlock (float* outL, float* outR, int numSamples, juce::int64 pos, bool withMetronome, bool running);
     void renderMidiTrack (Track&, int numSamples, juce::int64 pos, bool running, float* scratch);
+    // The mix of one block, track by track (see mixBlock): stage one makes a track's sound in its own buffers, stage two adds it to the master or a bus.
+    void renderTrackSignal (Track&, int numSamples, juce::int64 pos, bool running, bool anySolo, int maxLatency);
+    void sumTrack (Track&, int numSamples, float* outL, float* outR);
+    void renderGroup (std::vector<Track*>&, bool mayRunInParallel, int numSamples, juce::int64 pos, bool running, bool anySolo, int maxLatency, float* outL, float* outR);
+    std::vector<Track*> groupTapped, groupPlain, groupBuses;
+    ParallelRunner runner;
+    std::atomic<int> workerThreads { 0 };
+    std::vector<int> jobOrder;            // (the tracks of a group, the heaviest first)
+    bool parallelOn = false;              // (audio thread) the workers were used in the last block   // (the tracks of the block, by group; reserved up front)
     void drainPreviewEvents();
     bool anySynthActive() const;
     void silenceSynths();
@@ -931,10 +961,8 @@ private:
     juce::AbstractFifo previewFifo { previewQueueSize };
     std::array<PreviewEvent, previewQueueSize> previewQueue;
 
-    juce::MidiBuffer midiScratch, emptyMidi;
     int maxBlock = 4096;                   // largest block hosted plugins are prepared for
 
-    std::vector<NoteEvent> noteEvents;     // reused every block, reserved up front
     std::vector<float> synthScratch;       // mono synth output
     std::vector<float> trackL, trackR;     // one track's stereo signal before fader/pan
     juce::int64 lastBlockEnd = -1;

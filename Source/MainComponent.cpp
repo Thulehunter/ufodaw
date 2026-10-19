@@ -2707,11 +2707,58 @@ private:
     bool showsHint = false;
 };
 
-// The audio settings window has three tabs: the device, the recording latency compensation, and MIDI clock to hardware.
+// How many CPU cores help with the audio (the tracks of one block are mixed side by side when the project is heavy).
+class CpuPanel : public juce::Component
+{
+public:
+    CpuPanel (std::function<void()> onChanged)
+    {
+        text.setText ("Heavy projects (many tracks with effects or plugins) are mixed on several CPU cores at once. "
+                      "The result is identical to single-core mixing; it only gives more headroom before the audio crackles. "
+                      "\"Automatic\" uses about a third of your cores. Light projects stay on one core either way.",
+                      juce::dontSendNotification);
+        text.setFont (juce::FontOptions (13.5f));
+        text.setMinimumHorizontalScale (1.0f);
+        text.setJustificationType (juce::Justification::topLeft);
+        addAndMakeVisible (text);
+
+        label.setText ("Helper threads", juce::dontSendNotification);
+        addAndMakeVisible (label);
+
+        box.addItem ("Automatic", 1);
+        box.addItem ("Off (one core)", 2);
+        for (int i = 1; i <= juce::jmin (16, juce::SystemStats::getNumCpus() - 1); ++i)
+            box.addItem (juce::String (i) + (i == 1 ? " helper" : " helpers"), 100 + i);
+        box.setSelectedId (UiSettings::cpuThreads < 0 ? 1 : UiSettings::cpuThreads == 0 ? 2 : 100 + UiSettings::cpuThreads, juce::dontSendNotification);
+        box.onChange = [this, onChanged]
+        {
+            const int id = box.getSelectedId();
+            UiSettings::cpuThreads = id == 1 ? -1 : id == 2 ? 0 : id - 100;
+            onChanged();
+        };
+        addAndMakeVisible (box);
+        setSize (560, 530);
+    }
+
+    void resized() override
+    {
+        auto area = getLocalBounds().reduced (16);
+        text.setBounds (area.removeFromTop (110));
+        auto row = area.removeFromTop (28);
+        label.setBounds (row.removeFromLeft (130));
+        box.setBounds (row.removeFromLeft (220));
+    }
+
+private:
+    juce::Label text, label;
+    juce::ComboBox box;
+};
+
+// The audio settings window has four tabs: the device, the recording latency compensation, MIDI clock to hardware, and the CPU cores.
 class AudioSettingsPanel : public juce::TabbedComponent
 {
 public:
-    AudioSettingsPanel (juce::AudioDeviceManager& dm, Engine& engine, std::function<void()> onSettingsChanged)
+    AudioSettingsPanel (juce::AudioDeviceManager& dm, Engine& engine, std::function<void()> onSettingsChanged, std::function<void()> onCpuChanged)
         : juce::TabbedComponent (juce::TabbedButtonBar::TabsAtTop)
     {
         setTabBarDepth (32);
@@ -2719,11 +2766,13 @@ public:
         auto* device = new AudioDeviceTab (dm);
         auto* latency = new LatencyPanel (dm, engine, onSettingsChanged);
         auto* clock = new ClockPanel (engine, onSettingsChanged);
+        auto* cpu = new CpuPanel ([onSettingsChanged, onCpuChanged] { onCpuChanged(); onSettingsChanged(); });
         const int width = juce::jmax (device->getWidth(), latency->getWidth(), clock->getWidth());   // (adding a tab resizes it)
         const int height = juce::jmax (device->getHeight(), latency->getHeight(), clock->getHeight());
         addTab ("Audio device", Theme::panel, device, true);
         addTab ("Recording latency", Theme::panel, latency, true);
         addTab ("MIDI clock", Theme::panel, clock, true);
+        addTab ("CPU", Theme::panel, cpu, true);
         setSize (width, height + getTabBarDepth());
     }
 };
@@ -3436,6 +3485,7 @@ void MainComponent::loadUiSettings()
         UiSettings::autoUpdateCheck = xml->getBoolAttribute ("autoUpdateCheck", true);
         UiSettings::lastUpdateCheck = (juce::int64) xml->getDoubleAttribute ("lastUpdateCheck", 0.0);
         UiSettings::tourDone = xml->getBoolAttribute ("tourDone", true);   // (settings from before the tour existed: no tour)
+        UiSettings::cpuThreads = juce::jlimit (-1, 32, xml->getIntAttribute ("cpuThreads", -1));
         UiSettings::latencyMode = juce::jlimit (0, 2, xml->getIntAttribute ("latencyMode", 0));
         UiSettings::latencyMeasuredMs = xml->getDoubleAttribute ("latencyMeasuredMs", 0.0);
         UiSettings::latencyExtraMs = xml->getDoubleAttribute ("latencyExtraMs", 0.0);
@@ -3445,6 +3495,7 @@ void MainComponent::loadUiSettings()
             UiSettings::clockDevices.add (e->getStringAttribute ("id"));
     }
     updateCountInButton();
+    applyCpuThreads();
     engine.setClockOffsetMs (UiSettings::clockOffsetMs);
     engine.setClockOutputs (UiSettings::clockDevices);   // the hardware that follows UFODAW's tempo
 }
@@ -3459,6 +3510,7 @@ void MainComponent::saveUiSettings()
     xml.setAttribute ("tourDone", UiSettings::tourDone);
     xml.setAttribute ("autoUpdateCheck", UiSettings::autoUpdateCheck);
     xml.setAttribute ("lastUpdateCheck", (double) UiSettings::lastUpdateCheck);
+    xml.setAttribute ("cpuThreads", UiSettings::cpuThreads);
     xml.setAttribute ("latencyMode", UiSettings::latencyMode);
     xml.setAttribute ("latencyMeasuredMs", UiSettings::latencyMeasuredMs);
     xml.setAttribute ("latencyExtraMs", UiSettings::latencyExtraMs);
@@ -3466,6 +3518,15 @@ void MainComponent::saveUiSettings()
     for (auto& id : UiSettings::clockDevices)
         xml.createNewChildElement ("CLOCKOUT")->setAttribute ("id", id);
     xml.writeTo (uiSettingsFile());
+}
+
+// Automatic: about a third of the logical cores (at most 6) help the audio thread; the rest stay free for the interface and plugins' own threads.
+void MainComponent::applyCpuThreads()
+{
+    int n = UiSettings::cpuThreads;
+    if (n < 0)
+        n = juce::jlimit (0, 6, juce::SystemStats::getNumCpus() / 3);
+    engine.setWorkerThreads (n);
 }
 
 // How much earlier a recording is placed on the timeline: the round trip through the interface, plus the extra offset.
@@ -3536,7 +3597,7 @@ void MainComponent::updateAudioInfo()
 void MainComponent::openAudioSettings()
 {
     juce::DialogWindow::LaunchOptions options;
-    options.content.setOwned (new AudioSettingsPanel (deviceManager, engine, [this] { saveUiSettings(); }));
+    options.content.setOwned (new AudioSettingsPanel (deviceManager, engine, [this] { saveUiSettings(); }, [this] { applyCpuThreads(); }));
     options.dialogTitle = "Audio settings";
     options.dialogBackgroundColour = Theme::panel;
     options.componentToCentreAround = this;
@@ -8586,6 +8647,7 @@ void MainComponent::resumeAudio()
     deviceManager.addAudioCallback (&player);
     deviceManager.addMidiInputDeviceCallback ({}, &midiForwarder);
     enableAllMidiInputs();
+    applyCpuThreads();
     updateAudioInfo();
     startTimerHz (30);
     resized();

@@ -32,7 +32,8 @@ namespace UiSettings
     inline bool autoUpdateCheck = true;     // look for a new version once a day at start-up (one small request to GitHub)
     inline juce::int64 lastUpdateCheck = 0; // when (milliseconds since 1970)
     inline bool tourDone = false;      // the first-run tour was shown (or skipped); not shown again for people who already had settings
-    inline int exportChoice = 0;       // the last audio format chosen for an export (an index into AudioExport::choices())
+    inline int cpuThreads = -1;        // helper threads for the audio engine: -1 = automatic, 0 = none, else that many
+    inline int exportChoice = 0;      // the last audio format chosen for an export (an index into AudioExport::choices())
 
     // Recorded audio is placed this much earlier, to undo the round trip through the interface: 0 = the latency the driver
     // reports, 1 = what the latency test measured, 2 = none. Plus a manual extra offset.
@@ -218,7 +219,8 @@ public:
     void offerRecovery();   // at start-up: if an autosave from an unfinished session exists, ask whether to restore it
 
     // ---- Project tabs
-    void suspendAudio();     // another tab takes the audio device: stop, close editors, let go of the device and the MIDI inputs
+    void closePluginEditors() { pluginHost.closeAllEditors(); }
+    void suspendAudio();    // another tab takes the audio device: stop, close editors, let go of the device and the MIDI inputs
     void resumeAudio();      // this tab is shown again and takes the device back
     juce::String getTitle() const { return currentProject != juce::File() ? currentProject.getFileNameWithoutExtension() : untitledTitle.isNotEmpty() ? untitledTitle : juce::String ("Untitled"); }
     bool hasUnsavedChanges() const { return editCounter != savedEdit; }
@@ -394,6 +396,7 @@ private:
     static juce::File uiSettingsFile();
     void loadUiSettings();
     void saveUiSettings();
+    void applyCpuThreads();
 
     // ---- Audio device: choose driver / interface, remembered between runs
     void changeListenerCallback (juce::ChangeBroadcaster*) override;   // the audio device setup changed

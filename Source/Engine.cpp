@@ -6,9 +6,18 @@
 
 namespace
 {
-    // Room for two seconds of plugin delay compensation per track
-    void sizeDelayBuffers (Track& t, double rate)
+    // Room for two seconds of plugin delay compensation per track, and the buffers the track is rendered with (one block each)
+    void sizeDelayBuffers (Track& t, double rate, size_t blockSize)
     {
+        if (t.work.outL.size() != blockSize)
+        {
+            t.work.outL.assign (blockSize, 0.0f);
+            t.work.outR.assign (blockSize, 0.0f);
+        }
+        t.work.noteEvents.reserve (2048);
+        t.work.ccEvents.reserve (256);
+        t.work.midiScratch.ensureSize (16384);
+
         const size_t size = (size_t) (rate * 2.0) + 2;
         if (t.pdcL.size() != size)
         {
@@ -26,12 +35,13 @@ Engine::Engine()
 {
     formats.registerBasicFormats();
     writerThread.startThread();
-    noteEvents.reserve (2048);
-    midiScratch.ensureSize (16384);
-    emptyMidi.ensureSize (64);
     synthScratch.assign (16384, 0.0f);
     trackL.assign (16384, 0.0f);
     trackR.assign (16384, 0.0f);
+    groupTapped.reserve (256);
+    groupPlain.reserve (256);
+    groupBuses.reserve (256);
+    jobOrder.reserve (256);
     inputBuf.setSize (64, 16384);   // room for the input channels of the biggest interfaces
     inputBuf.clear();
 
@@ -98,7 +108,7 @@ void Engine::prepareToPlay (int samplesPerBlock, double newRate)
             t->kit->prepare (newRate);
         if (t->sampler != nullptr)
             t->sampler->prepare (newRate);
-        sizeDelayBuffers (*t, newRate);
+        sizeDelayBuffers (*t, newRate, trackL.size());
         t->fxState->prepare (newRate);
         if (t->instrument != nullptr)
             preparePlugin (*t->instrument);
@@ -409,7 +419,7 @@ Track* Engine::addTrack (const juce::String& name, Track::Type type, bool asBus)
         track->busInR.assign (trackL.size(), 0.0f);
     }
     track->routedMidi.ensureSize (4096);
-    sizeDelayBuffers (*track, sampleRate);
+    sizeDelayBuffers (*track, sampleRate, trackL.size());
     track->fxState = std::make_unique<TrackFx>();
     track->fxState->prepare (sampleRate);
     if (type == Track::Type::Midi)
@@ -2162,7 +2172,7 @@ void Engine::restoreState (const ProjectState& s)
             t->voices->prepare (sampleRate);
         }
         t->routedMidi.ensureSize (4096);
-        sizeDelayBuffers (*t, sampleRate);
+        sizeDelayBuffers (*t, sampleRate, trackL.size());
         if (t->bus)
         {
             t->busInL.assign (trackL.size(), 0.0f);
@@ -2782,8 +2792,8 @@ void Engine::addCountInClicks (float* outL, float* outR, int n)
 // Fills noteEvents with the note-ons/offs of a track's MIDI clips that fall inside [pos, pos + n).
 void Engine::collectNoteEvents (Track& t, int n, juce::int64 pos, bool running)
 {
-    noteEvents.clear();
-    ccEvents.clear();
+    t.work.noteEvents.clear();
+    t.work.ccEvents.clear();
 
     if (running)
     {
@@ -2800,11 +2810,11 @@ void Engine::collectNoteEvents (Track& t, int n, juce::int64 pos, bool running)
                 if (on >= (double) pos && on < blockEnd)
                 {
                     const float vel = juce::jlimit (0.0f, 1.0f, note.velocity * t.pitchGain (note.pitch));
-                    noteEvents.push_back ({ (int) (on - (double) pos), true, note.pitch, vel });
+                    t.work.noteEvents.push_back ({ (int) (on - (double) pos), true, note.pitch, vel });
                     t.noteSeen (note.pitch, vel);
                 }
                 if (off >= (double) pos && off < blockEnd)
-                    noteEvents.push_back ({ (int) (off - (double) pos), false, note.pitch, 0.0f });
+                    t.work.noteEvents.push_back ({ (int) (off - (double) pos), false, note.pitch, 0.0f });
             }
 
             for (auto& cc : clip.ccs)   // controller moves recorded or drawn in the clip
@@ -2813,7 +2823,7 @@ void Engine::collectNoteEvents (Track& t, int n, juce::int64 pos, bool running)
                     continue;
                 const double at = (clip.start + cc.time) * sampleRate;
                 if (at >= (double) pos && at < blockEnd)
-                    ccEvents.push_back ({ (int) (at - (double) pos), cc.controller, cc.value });
+                    t.work.ccEvents.push_back ({ (int) (at - (double) pos), cc.controller, cc.value });
             }
         }
     }
@@ -2823,25 +2833,25 @@ void Engine::collectNoteEvents (Track& t, int n, juce::int64 pos, bool running)
     {
         const auto m = meta.getMessage();
         const int offset = juce::jlimit (0, juce::jmax (0, n - 1), meta.samplePosition);
-        if (m.isNoteOn())       { noteEvents.push_back ({ offset, true, m.getNoteNumber(), m.getFloatVelocity(), m.getChannel() }); t.noteSeen (m.getNoteNumber(), m.getFloatVelocity()); }
-        else if (m.isNoteOff()) noteEvents.push_back ({ offset, false, m.getNoteNumber(), 0.0f, m.getChannel() });
+        if (m.isNoteOn())       { t.work.noteEvents.push_back ({ offset, true, m.getNoteNumber(), m.getFloatVelocity(), m.getChannel() }); t.noteSeen (m.getNoteNumber(), m.getFloatVelocity()); }
+        else if (m.isNoteOff()) t.work.noteEvents.push_back ({ offset, false, m.getNoteNumber(), 0.0f, m.getChannel() });
     }
 
     // note-offs go first at the same sample so a repeated pitch retriggers cleanly
-    std::sort (noteEvents.begin(), noteEvents.end(), [] (const NoteEvent& a, const NoteEvent& b)
+    std::sort (t.work.noteEvents.begin(), t.work.noteEvents.end(), [] (const NoteEvent& a, const NoteEvent& b)
                { return a.offset != b.offset ? a.offset < b.offset : (! a.on && b.on); });
 
-    if (! t.midiFx.empty() && (running || ! noteEvents.empty()))
+    if (! t.midiFx.empty() && (running || ! t.work.noteEvents.empty()))
         applyMidiFx (t, n);
 
     // A track without a plugin instrument that sends to hardware: its notes (after the MIDI effects) go out here.
     // (With a plugin instrument it is the plugin's output that goes out, see runMidiSource.)
     if (t.instrument == nullptr && ! t.externalOuts.empty())
     {
-        for (auto& e : noteEvents)
+        for (auto& e : t.work.noteEvents)
             forwardExternal (t, e.on ? juce::MidiMessage::noteOn (e.channel, e.pitch, e.velocity)
                                      : juce::MidiMessage::noteOff (e.channel, e.pitch), e.offset);
-        for (auto& c : ccEvents)
+        for (auto& c : t.work.ccEvents)
             forwardExternal (t, controllerMessage (1, c.controller, c.value), c.offset);
     }
 }
@@ -2914,9 +2924,9 @@ void Engine::applyDelay (Track& t, float* l, float* r, int n, int delay)
 // MIDI plugins in a track (arpeggiators, chord generators...): the notes pass through each of them in turn.
 void Engine::applyMidiFx (Track& t, int n)
 {
-    midiScratch.clear();
-    for (auto& e : noteEvents)
-        midiScratch.addEvent (e.on ? juce::MidiMessage::noteOn (e.channel, e.pitch, e.velocity)
+    t.work.midiScratch.clear();
+    for (auto& e : t.work.noteEvents)
+        t.work.midiScratch.addEvent (e.on ? juce::MidiMessage::noteOn (e.channel, e.pitch, e.velocity)
                                    : juce::MidiMessage::noteOff (e.channel, e.pitch), e.offset);
 
     for (auto& slot : t.midiFx)
@@ -2928,19 +2938,19 @@ void Engine::applyMidiFx (Track& t, int n)
 
         buf.clear (0, n);
         juce::AudioBuffer<float> view (buf.getArrayOfWritePointers(), channels, n);
-        if (! processPlugin (*slot, view, midiScratch))   // notes in, notes out (in place)
-            midiScratch.clear();
+        if (! processPlugin (*slot, view, t.work.midiScratch))   // notes in, notes out (in place)
+            t.work.midiScratch.clear();
     }
 
-    noteEvents.clear();
-    for (const auto meta : midiScratch)
+    t.work.noteEvents.clear();
+    for (const auto meta : t.work.midiScratch)
     {
         const auto m = meta.getMessage();
         const int offset = juce::jlimit (0, juce::jmax (0, n - 1), meta.samplePosition);
-        if (m.isNoteOn())       noteEvents.push_back ({ offset, true, m.getNoteNumber(), m.getFloatVelocity(), m.getChannel() });
-        else if (m.isNoteOff()) noteEvents.push_back ({ offset, false, m.getNoteNumber(), 0.0f, m.getChannel() });
+        if (m.isNoteOn())       t.work.noteEvents.push_back ({ offset, true, m.getNoteNumber(), m.getFloatVelocity(), m.getChannel() });
+        else if (m.isNoteOff()) t.work.noteEvents.push_back ({ offset, false, m.getNoteNumber(), 0.0f, m.getChannel() });
     }
-    std::sort (noteEvents.begin(), noteEvents.end(), [] (const NoteEvent& a, const NoteEvent& b)
+    std::sort (t.work.noteEvents.begin(), t.work.noteEvents.end(), [] (const NoteEvent& a, const NoteEvent& b)
                { return a.offset != b.offset ? a.offset < b.offset : (! a.on && b.on); });
 }
 
@@ -2952,6 +2962,13 @@ bool Engine::processPlugin (PluginSlot& slot, juce::AudioBuffer<float>& buffer, 
     PluginSlot* expected = nullptr;
     crashedPlugin.compare_exchange_strong (expected, &slot);
     return false;
+}
+
+void Engine::setWorkerThreads (int numWorkers)
+{
+    const juce::ScopedLock sl (lock);   // (the audio thread holds the lock while it mixes: the workers are not busy when this runs)
+    runner.setThreads (numWorkers);
+    workerThreads = runner.getThreads();
 }
 
 void Engine::startPreview (std::shared_ptr<const juce::AudioBuffer<float>> buffer, double bufferRate, float gain)
@@ -3002,18 +3019,18 @@ void Engine::renderPluginInstrument (Track& t, int n, float* outL, float* outR)
     if (channels < 1 || n > buf.getNumSamples())
         return;
 
-    midiScratch.clear();
-    midiScratch.addEvents (t.liveMidi, 0, n, 0);
+    t.work.midiScratch.clear();
+    t.work.midiScratch.addEvents (t.liveMidi, 0, n, 0);
     t.liveMidi.clear();
-    for (auto& e : noteEvents)
-        midiScratch.addEvent (e.on ? juce::MidiMessage::noteOn (e.channel, e.pitch, e.velocity)
+    for (auto& e : t.work.noteEvents)
+        t.work.midiScratch.addEvent (e.on ? juce::MidiMessage::noteOn (e.channel, e.pitch, e.velocity)
                                    : juce::MidiMessage::noteOff (e.channel, e.pitch), e.offset);
-    for (auto& c : ccEvents)
-        midiScratch.addEvent (controllerMessage (1, c.controller, c.value), c.offset);
+    for (auto& c : t.work.ccEvents)
+        t.work.midiScratch.addEvent (controllerMessage (1, c.controller, c.value), c.offset);
 
     buf.clear (0, n);
     juce::AudioBuffer<float> view (buf.getArrayOfWritePointers(), channels, n);   // wraps, no allocation
-    if (! processPlugin (slot, view, midiScratch))
+    if (! processPlugin (slot, view, t.work.midiScratch))
         buf.clear (0, n);   // (a crashed instrument is silent)
 
     std::copy (buf.getReadPointer (0), buf.getReadPointer (0) + n, outL);
@@ -3030,19 +3047,19 @@ void Engine::runMidiSource (Track& t, int n)
     if (channels < 1 || n > buf.getNumSamples())
         return;
 
-    midiScratch.clear();
-    midiScratch.addEvents (t.liveMidi, 0, n, 0);
+    t.work.midiScratch.clear();
+    t.work.midiScratch.addEvents (t.liveMidi, 0, n, 0);
     t.liveMidi.clear();
-    for (auto& e : noteEvents)
-        midiScratch.addEvent (e.on ? juce::MidiMessage::noteOn (e.channel, e.pitch, e.velocity)
+    for (auto& e : t.work.noteEvents)
+        t.work.midiScratch.addEvent (e.on ? juce::MidiMessage::noteOn (e.channel, e.pitch, e.velocity)
                                    : juce::MidiMessage::noteOff (e.channel, e.pitch), e.offset);
 
     buf.clear (0, n);
     juce::AudioBuffer<float> view (buf.getArrayOfWritePointers(), channels, n);
-    if (! processPlugin (slot, view, midiScratch))   // the MIDI buffer now holds what the plugin sent out
-        midiScratch.clear();
+    if (! processPlugin (slot, view, t.work.midiScratch))   // the MIDI buffer now holds what the plugin sent out
+        t.work.midiScratch.clear();
 
-    for (const auto meta : midiScratch)
+    for (const auto meta : t.work.midiScratch)
     {
         const auto m = meta.getMessage();
         if (! m.isNoteOnOrOff())
@@ -3078,9 +3095,9 @@ void Engine::processInsert (PluginSlot& slot, float* l, float* r, int n)
     std::copy (l, l + n, buf.getWritePointer (0));
     std::copy (r, r + n, buf.getWritePointer (1));
 
-    emptyMidi.clear();
+    slot.emptyMidi.clear();
     juce::AudioBuffer<float> view (buf.getArrayOfWritePointers(), channels, n);
-    if (! processPlugin (slot, view, emptyMidi))
+    if (! processPlugin (slot, view, slot.emptyMidi))
         return;   // a crashed effect: the sound goes through untouched
 
     std::copy (buf.getReadPointer (0), buf.getReadPointer (0) + n, l);
@@ -3094,7 +3111,7 @@ void Engine::renderDrumTrack (Track& t, int n, juce::int64 pos, bool running, fl
     collectNoteEvents (t, n, pos, running);
 
     int done = 0;
-    for (auto& e : noteEvents)
+    for (auto& e : t.work.noteEvents)
     {
         if (e.offset > done)
         {
@@ -3114,7 +3131,7 @@ void Engine::renderSamplerTrack (Track& t, int n, juce::int64 pos, bool running,
     collectNoteEvents (t, n, pos, running);
 
     int done = 0;
-    for (auto& e : noteEvents)
+    for (auto& e : t.work.noteEvents)
     {
         if (e.offset > done)
         {
@@ -3133,7 +3150,7 @@ void Engine::renderMidiTrack (Track& t, int n, juce::int64 pos, bool running, fl
     collectNoteEvents (t, n, pos, running);
 
     int done = 0;
-    for (auto& e : noteEvents)
+    for (auto& e : t.work.noteEvents)
     {
         if (e.offset > done)
         {
@@ -3146,6 +3163,344 @@ void Engine::renderMidiTrack (Track& t, int n, juce::int64 pos, bool running, fl
         t.voices->render (scratch + done, n - done, t.synth);
 }
 
+// Stage one of a track in a block: its sound (instrument, clips, monitored input), effects, plugins, mono, delay compensation and the copy for sidechains,
+// in the track's own buffers (Track::work). It touches nothing of any other track except the sound that a sidechain listens to, so tracks of one group can
+// be rendered at the same time on several threads (see renderGroup). Stage two (sumTrack) adds the result to the master or a bus, in a fixed order.
+void Engine::renderTrackSignal (Track& t, int n, juce::int64 pos, bool running, bool anySolo, int maxLatency)
+{
+    constexpr double fadeSamples = 48.0;   // tiny fade at clip edges to avoid clicks
+    auto& w = t.work;
+    w.rendered = false;
+
+    // How long this track took, as a share of the time the block lasts (smoothed): shown in the track header, so it is
+    // clear which plugin or effect is the expensive one.
+    struct TrackTimer
+    {
+        Track& track;
+        double blockSeconds;
+        juce::int64 started = juce::Time::getHighResolutionTicks();
+        ~TrackTimer()
+        {
+            if (blockSeconds <= 0.0)
+                return;
+            const double used = juce::Time::highResolutionTicksToSeconds (juce::Time::getHighResolutionTicks() - started);
+            track.dspLoad = 0.92f * track.dspLoad.load() + 0.08f * (float) (used / blockSeconds);
+        }
+    } timer { t, (double) n / sampleRate };
+
+    if (renderOnly != nullptr && &t != renderOnly && ! t.sidechainTapped.load())   // exporting one stem: the other tracks stay out of it
+    {
+        t.level = 0.0f;
+        return;   // (except one that a compressor of the stem listens to: it is made, not heard)
+    }
+
+    if (t.frozen.load() && ! t.sidechainTapped.load())   // frozen: its bounce plays instead, nothing of this track runs
+    {
+        t.level = 0.0f;
+        return;
+    }
+
+    // (a bus is heard when something audible feeds it, so soloing a track also lets its bus through)
+    w.audible = renderOnly != nullptr ? &t == renderOnly
+                                      : (! t.mute && (! anySolo || t.solo || (t.bus && t.busFed)));
+
+    // Fader and pan, possibly automated: evaluated at both ends of the block and ramped in between.
+    const double t0 = (double) pos / sampleRate, t1 = (double) (pos + n) / sampleRate;
+    const bool autoVol = t.autoVolume.active && ! t.autoVolume.points.empty() && ! t.autoVolume.override;
+    const bool autoPan = t.autoPan.active && ! t.autoPan.points.empty() && ! t.autoPan.override;
+    const float gain0 = autoVol ? evalAutomation (t.autoVolume.points, t0, t.gain) : t.gain.load();
+    const float gain1 = autoVol ? evalAutomation (t.autoVolume.points, t1, t.gain) : gain0;
+    const float pan0 = autoPan ? evalAutomation (t.autoPan.points, t0, t.pan) : t.pan.load();
+    const float pan1 = autoPan ? evalAutomation (t.autoPan.points, t1, t.pan) : pan0;
+    t.effGain = gain0;
+    t.effPan = pan0;
+    if (running)
+        applyAutomation (t, t0);
+
+    auto panGains = [] (float g, float p, float& l, float& r)
+    {
+        const float angle = (p + 1.0f) * juce::MathConstants<float>::pi * 0.25f;
+        l = std::cos (angle) * juce::MathConstants<float>::sqrt2 * g;
+        r = std::sin (angle) * juce::MathConstants<float>::sqrt2 * g;
+    };
+    panGains (gain0, pan0, w.gl0, w.gr0);
+    panGains (gain1, pan1, w.gl1, w.gr1);
+    w.g = gain1;
+
+    // Each track is built in its own stereo buffer, then goes through its effects.
+    float* const bufL = w.outL.data();
+    float* const bufR = w.outR.data();
+    const int nn = juce::jmin (n, (int) w.outL.size());
+    std::fill (bufL, bufL + nn, 0.0f);
+    std::fill (bufR, bufR + nn, 0.0f);
+
+    if (t.bus && (int) t.busInL.size() >= nn)   // a bus starts from what was sent and routed to it
+    {
+        std::copy (t.busInL.begin(), t.busInL.begin() + nn, bufL);
+        std::copy (t.busInR.begin(), t.busInR.begin() + nn, bufR);
+    }
+
+    const bool monitoring = t.type == Track::Type::Audio && t.recordArmed && t.monitor
+                            && ! offlineRendering && inputChannelsCopied > 0;
+
+    if (t.type == Track::Type::Midi)
+    {
+        if (t.instrument != nullptr && t.routesElsewhere())
+        {
+            // sequencer track: it makes no sound itself, its notes were routed to another track above
+        }
+        else if (t.instrument != nullptr)
+        {
+            // the instrument keeps running for a while after the transport stops, so its tail can ring out
+            if (running || t.instrument->editorOpen.load())   // (with its editor open it keeps processing: drum plugins report "audio engine inactive" otherwise)
+                t.pluginTailSamples = 3.0 * sampleRate;
+            if (t.pluginTailSamples > 0.0)
+            {
+                collectNoteEvents (t, nn, pos, running);
+                renderPluginInstrument (t, nn, bufL, bufR);
+                if (! running)
+                    t.pluginTailSamples -= nn;
+            }
+        }
+        else if (! t.externalOuts.empty())
+        {
+            // plays hardware instead of the built-in sound: just send this block's notes out
+            collectNoteEvents (t, nn, pos, running);
+        }
+        else if (t.sampler != nullptr)
+        {
+            renderSamplerTrack (t, nn, pos, running, bufL, bufR);   // (stereo: a stereo sample keeps its image)
+        }
+        else if (t.kit != nullptr)
+        {
+            renderDrumTrack (t, nn, pos, running, bufL, bufR);   // (stereo: pads have their own pan and stereo samples)
+        }
+        else if (t.voices != nullptr)
+        {
+            renderMidiTrack (t, nn, pos, running, bufL);
+            std::copy (bufL, bufL + nn, bufR);
+        }
+    }
+    else if (! running && ! monitoring && ! (t.bus && t.busFed))
+    {
+        t.level = 0.0f;
+        return;
+    }
+
+    for (auto& c : t.clips)
+    {
+        if (! running)
+            break;   // stopped: only a monitored input is heard
+        if (! c.audible())
+            continue;   // an inactive take
+        const double clipStart = c.start * sampleRate;
+        const double clipEnd = c.end() * sampleRate;
+        if ((double) (pos + n) <= clipStart || (double) pos >= clipEnd || c.audio == nullptr)
+            continue;
+
+        // clip gain and volume curve, evaluated at both ends of the block and ramped in between
+        const double tb0 = (double) pos / sampleRate - c.start, tb1 = (double) (pos + nn) / sampleRate - c.start;
+        const float gainA = c.gain * (c.envelope.empty() ? 1.0f : evalAutomation (c.envelope, tb0, 1.0f));
+        const float gainB = c.gain * (c.envelope.empty() ? 1.0f : evalAutomation (c.envelope, tb1, 1.0f));
+        const float gainStep = nn > 0 ? (gainB - gainA) / (float) nn : 0.0f;
+
+        const double ratio = c.fileRate / sampleRate;
+        const double offsetSamples = c.offset * c.fileRate;
+        const double regionSamples = c.length * c.fileRate;   // where the clip's region of the source ends (for reverse)
+        const double fadeInSamples = juce::jmin (c.fadeIn, c.length) * sampleRate;
+        const double fadeOutSamples = juce::jmin (c.fadeOut, c.length) * sampleRate;
+        const int len = c.audio->getNumSamples();
+        const auto* srcL = c.audio->getReadPointer (0);
+        const auto* srcR = c.audio->getNumChannels() > 1 ? c.audio->getReadPointer (1) : srcL;
+
+        for (int i = 0; i < nn; ++i)
+        {
+            const double tl = (double) (pos + i);
+            if (tl < clipStart || tl >= clipEnd)
+                continue;
+
+            const double sp = c.reverse ? offsetSamples + regionSamples - (tl - clipStart) * ratio
+                                        : (tl - clipStart) * ratio + offsetSamples;
+            if (sp < 0.0 || sp >= len - 1)
+                continue;
+
+            const int i0 = (int) sp;
+            const float frac = (float) (sp - i0);
+            float edge = (float) juce::jmin (1.0, juce::jmin ((tl - clipStart) / fadeSamples,
+                                                              (clipEnd - tl) / fadeSamples));
+            if (fadeInSamples > 0.0 && tl - clipStart < fadeInSamples)   // equal-power fades: a crossfade keeps the level
+                edge *= (float) std::sin ((tl - clipStart) / fadeInSamples * juce::MathConstants<double>::halfPi);
+            if (fadeOutSamples > 0.0 && clipEnd - tl < fadeOutSamples)
+                edge *= (float) std::sin ((clipEnd - tl) / fadeOutSamples * juce::MathConstants<double>::halfPi);
+            edge *= gainA + gainStep * (float) i;
+            const float l = (srcL[i0] + frac * (srcL[i0 + 1] - srcL[i0])) * edge;
+            const float r = (srcR[i0] + frac * (srcR[i0 + 1] - srcR[i0])) * edge;
+            bufL[i] += l;
+            bufR[i] += r;
+        }
+    }
+
+    // Input monitoring: the armed track's input channels play live, through its effects, fader and pan.
+    if (monitoring)
+    {
+        const int c0 = juce::jmin (t.inputFirst, inputChannelsCopied - 1);
+        const int c1 = t.inputCount > 1 ? juce::jmin (t.inputFirst + 1, inputChannelsCopied - 1) : c0;   // mono: left = right
+        const float* inL = inputBuf.getReadPointer (c0) + inputOffset;
+        const float* inR = inputBuf.getReadPointer (c1) + inputOffset;
+        for (int i = 0; i < nn; ++i)
+        {
+            bufL[i] += inL[i];
+            bufR[i] += inR[i];
+        }
+    }
+
+    // Effects and inserts run in slices of 64 samples when this track has automation on them, so the
+    // envelope is followed smoothly instead of once per audio block.
+    bool sliced = false;
+    if (running)
+        for (auto& lane : t.autoLanes)
+            sliced = sliced || (lane->active && ! lane->points.empty());
+    const int slice = sliced ? 64 : juce::jmax (1, nn);
+    for (int s = 0; s < nn; s += slice)
+    {
+        const int len = juce::jmin (slice, nn - s);
+        if (sliced)
+            applyAutomation (t, (double) (pos + s) / sampleRate);
+        if (t.fx.anyOn())
+        {
+            const float* keyL = nullptr;
+            const float* keyR = nullptr;
+            if (t.fx.compOn)
+                if (auto* src = t.sidechainSource.load(); src != nullptr && src != &t && src->sidechainTapped.load() && (int) src->scL.size() >= nn)
+                {
+                    keyL = src->scL.data() + s;   // the sound of the other track in this block
+                    keyR = src->scR.data() + s;
+                }
+            t.fxState->process (bufL + s, bufR + s, len, t.fx, keyL, keyR);
+        }
+        for (auto& p : t.inserts)
+            if (! p->bypass)
+                processInsert (*p, bufL + s, bufR + s, len);
+    }
+
+    if (t.fx.mono)   // a mono channel: left and right summed (after its effects and plugins)
+        for (int i = 0; i < nn; ++i)
+            bufL[i] = bufR[i] = 0.5f * (bufL[i] + bufR[i]);
+
+    // plugin delay compensation: tracks without (or with less) plugin latency wait for the slowest one
+    const int delay = renderNoPdc ? 0 : maxLatency - trackLatency (t);   // (a freeze is made without it: the bounce is compensated when it plays)
+    if (! t.bus && (delay > 0 || t.pdcDelay != 0 || t.pdcFade > 0))
+        applyDelay (t, bufL, bufR, nn, delay);
+
+    if (t.sidechainTapped.load() && (int) t.scL.size() >= nn)   // what the compressors that listen to this track hear
+    {
+        std::copy (bufL, bufL + nn, t.scL.begin());
+        std::copy (bufR, bufR + nn, t.scR.begin());
+    }
+
+    float peak = 0.0f;
+    for (int i = 0; i < nn; ++i)
+        peak = juce::jmax (peak, std::abs (bufL[i]), std::abs (bufR[i]));
+    w.peak = peak;
+    w.rendered = true;
+}
+
+// Stage two: the result of a track goes to the master or to the bus it plays into, through its fader and pan, and to the buses it sends to.
+// This is done one track after the other in a fixed order, so the sums are always the same whatever the threads did.
+void Engine::sumTrack (Track& t, int n, float* outL, float* outR)
+{
+    auto& w = t.work;
+    if (! w.rendered)
+        return;
+
+    const float* const bufL = w.outL.data();
+    const float* const bufR = w.outR.data();
+    const int nn = juce::jmin (n, (int) w.outL.size());
+
+    // Where it goes: the master, or the bus this track plays into (stems always go straight to the master).
+    Track* const target = renderOnly == nullptr && ! t.bus && t.output != nullptr && t.output->bus
+                          && (int) t.output->busInL.size() >= nn ? t.output : nullptr;
+    float* const dstL = target != nullptr ? target->busInL.data() : outL;
+    float* const dstR = target != nullptr ? target->busInR.data() : outR;
+
+    const float gl0 = w.gl0, gr0 = w.gr0, gl1 = w.gl1, gr1 = w.gr1;
+    const float ramp = nn > 0 ? 1.0f / (float) nn : 0.0f;
+    if (w.audible)
+    {
+        for (int i = 0; i < nn; ++i)
+        {
+            const float f = (float) i * ramp;
+            dstL[i] += bufL[i] * (gl0 + (gl1 - gl0) * f);
+            if (dstR) dstR[i] += bufR[i] * (gr0 + (gr1 - gr0) * f);
+        }
+        if (target != nullptr)
+            target->busFed = true;
+    }
+
+    // sends: a share of the sound goes to buses as well (muted tracks send nothing; stems are dry)
+    if (w.audible && renderOnly == nullptr && ! t.bus)
+        for (auto& send : t.sends)
+        {
+            auto* b = send.bus;
+            if (b == nullptr || ! b->bus || b == &t || (int) b->busInL.size() < nn)
+                continue;
+            float* sl = b->busInL.data();
+            float* sr = b->busInR.data();
+            const float lv = send.level;
+            if (send.preFader)
+                for (int i = 0; i < nn; ++i)
+                {
+                    sl[i] += bufL[i] * lv;
+                    sr[i] += bufR[i] * lv;
+                }
+            else
+                for (int i = 0; i < nn; ++i)
+                {
+                    const float f = (float) i * ramp;
+                    sl[i] += bufL[i] * (gl0 + (gl1 - gl0) * f) * lv;
+                    sr[i] += bufR[i] * (gr0 + (gr1 - gr0) * f) * lv;
+                }
+            b->busFed = true;
+        }
+    t.level = w.peak * w.g;
+    if (w.audible && w.peak * w.g >= 1.0f)
+        t.clipped = true;   // this track's own output reaches digital full scale (shown until cleared)
+}
+
+// Renders a group of tracks (stage one, on several threads when that is on and worth it) and adds them up (stage two, in order).
+void Engine::renderGroup (std::vector<Track*>& group, bool mayRunInParallel, int n, juce::int64 pos, bool running, bool anySolo, int maxLatency, float* outL, float* outR)
+{
+    if (group.empty())
+        return;
+
+    bool parallel = false;
+    if (mayRunInParallel && runner.getThreads() > 0 && group.size() >= 2)
+    {
+        float load = 0.0f;   // what the tracks of the group took in the last blocks, as a share of the block time
+        for (auto* t : group)
+            load += t->dspLoad.load();
+        parallel = forceParallel.load() || offlineRendering.load() || load > (parallelOn ? 0.05f : 0.10f);   // (a little hysteresis)
+        parallelOn = parallel;
+    }
+
+    if (parallel)
+    {
+        jobOrder.clear();
+        for (int i = 0; i < (int) group.size(); ++i)
+            jobOrder.push_back (i);
+        std::sort (jobOrder.begin(), jobOrder.end(), [&] (int a, int b) { return group[(size_t) a]->dspLoad.load() > group[(size_t) b]->dspLoad.load(); });   // heaviest first
+        runner.run ((int) group.size(), [&] (int k)
+        {
+            renderTrackSignal (*group[(size_t) jobOrder[(size_t) k]], n, pos, running, anySolo, maxLatency);
+        });
+    }
+    else
+        for (auto* t : group)
+            renderTrackSignal (*t, n, pos, running, anySolo, maxLatency);
+
+    for (auto* t : group)
+        sumTrack (*t, n, outL, outR);
+}
 void Engine::mixBlock (float* outL, float* outR, int n, juce::int64 pos, bool withMetronome, bool running)
 {
     // Denormal numbers (the tails of filters, reverbs and plugin effects fading to nothing) make some CPUs many times slower;
@@ -3155,8 +3510,6 @@ void Engine::mixBlock (float* outL, float* outR, int n, juce::int64 pos, bool wi
     bool anySolo = false;
     for (auto& t : tracks)
         anySolo = anySolo || t->solo;
-
-    constexpr double fadeSamples = 48.0;   // tiny fade at clip edges to avoid clicks
 
     playHead.samples = pos;
     playHead.playing = running;
@@ -3209,296 +3562,18 @@ void Engine::mixBlock (float* outL, float* outR, int n, juce::int64 pos, bool wi
             }
         }
 
-    // Two passes: ordinary tracks first (they fill the buses), then the buses, which play into the master. In the first pass the tracks that
-    // the compressor of another track listens to (sidechain) go before the others, so their sound is ready for them.
-    for (int pass = 0; pass < 2; ++pass)
-    for (int sub = 0; sub < 2; ++sub)
+    // Three groups, one after the other: the tracks that the compressor of another track listens to (sidechain; their sound must be ready first),
+    // then the ordinary tracks (they fill the buses), then the buses, which play into the master. Within a group the tracks only depend on the
+    // groups before it, so they can be rendered on several threads at the same time; their results are added up afterwards in the track order.
+    groupTapped.clear();
+    groupPlain.clear();
+    groupBuses.clear();
     for (auto& t : tracks)
-    {
-        if ((t->bus ? 1 : 0) != pass)
-            continue;
-        if ((pass == 0 && (t->sidechainTapped.load() ? 0 : 1) != sub) || (pass == 1 && sub == 1))
-            continue;
+        (t->bus ? groupBuses : t->sidechainTapped.load() ? groupTapped : groupPlain).push_back (t.get());
 
-        // How long this track took, as a share of the time the block lasts (smoothed): shown in the track header, so it is
-        // clear which plugin or effect is the expensive one.
-        struct TrackTimer
-        {
-            Track& track;
-            double blockSeconds;
-            juce::int64 started = juce::Time::getHighResolutionTicks();
-            ~TrackTimer()
-            {
-                if (blockSeconds <= 0.0)
-                    return;
-                const double used = juce::Time::highResolutionTicksToSeconds (juce::Time::getHighResolutionTicks() - started);
-                track.dspLoad = 0.92f * track.dspLoad.load() + 0.08f * (float) (used / blockSeconds);
-            }
-        } timer { *t, (double) n / sampleRate };
-
-        if (renderOnly != nullptr && t.get() != renderOnly && ! t->sidechainTapped.load())   // exporting one stem: the other tracks stay out of it
-        {
-            t->level = 0.0f;
-            continue;   // (except one that a compressor of the stem listens to: it is made, not heard)
-        }
-
-        if (t->frozen.load() && ! t->sidechainTapped.load())   // frozen: its bounce plays instead, nothing of this track runs
-        {
-            t->level = 0.0f;
-            continue;
-        }
-
-        float peak = 0.0f;
-        // (a bus is heard when something audible feeds it, so soloing a track also lets its bus through)
-        const bool audible = renderOnly != nullptr ? t.get() == renderOnly
-                                                   : (! t->mute && (! anySolo || t->solo || (t->bus && t->busFed)));
-
-        // Fader and pan, possibly automated: evaluated at both ends of the block and ramped in between.
-        const double t0 = (double) pos / sampleRate, t1 = (double) (pos + n) / sampleRate;
-        const bool autoVol = t->autoVolume.active && ! t->autoVolume.points.empty() && ! t->autoVolume.override;
-        const bool autoPan = t->autoPan.active && ! t->autoPan.points.empty() && ! t->autoPan.override;
-        const float gain0 = autoVol ? evalAutomation (t->autoVolume.points, t0, t->gain) : t->gain.load();
-        const float gain1 = autoVol ? evalAutomation (t->autoVolume.points, t1, t->gain) : gain0;
-        const float pan0 = autoPan ? evalAutomation (t->autoPan.points, t0, t->pan) : t->pan.load();
-        const float pan1 = autoPan ? evalAutomation (t->autoPan.points, t1, t->pan) : pan0;
-        t->effGain = gain0;
-        t->effPan = pan0;
-        if (running)
-            applyAutomation (*t, t0);
-
-        auto panGains = [] (float g, float p, float& l, float& r)
-        {
-            const float angle = (p + 1.0f) * juce::MathConstants<float>::pi * 0.25f;
-            l = std::cos (angle) * juce::MathConstants<float>::sqrt2 * g;
-            r = std::sin (angle) * juce::MathConstants<float>::sqrt2 * g;
-        };
-        float gl0, gr0, gl1, gr1;
-        panGains (gain0, pan0, gl0, gr0);
-        panGains (gain1, pan1, gl1, gr1);
-        const float g = gain1;
-
-        // Each track is built in its own stereo buffer, then goes through its effects
-        // and the fader/pan on the way into the master mix.
-        float* const bufL = trackL.data();
-        float* const bufR = trackR.data();
-        const int nn = juce::jmin (n, (int) trackL.size());
-        std::fill (bufL, bufL + nn, 0.0f);
-        std::fill (bufR, bufR + nn, 0.0f);
-
-        if (t->bus && (int) t->busInL.size() >= nn)   // a bus starts from what was sent and routed to it
-        {
-            std::copy (t->busInL.begin(), t->busInL.begin() + nn, bufL);
-            std::copy (t->busInR.begin(), t->busInR.begin() + nn, bufR);
-        }
-
-        const bool monitoring = t->type == Track::Type::Audio && t->recordArmed && t->monitor
-                                && ! offlineRendering && inputChannelsCopied > 0;
-
-        if (t->type == Track::Type::Midi)
-        {
-            if (t->instrument != nullptr && t->routesElsewhere())
-            {
-                // sequencer track: it makes no sound itself, its notes were routed to another track above
-            }
-            else if (t->instrument != nullptr)
-            {
-                // the instrument keeps running for a while after the transport stops, so its tail can ring out
-                if (running || t->instrument->editorOpen.load())   // (with its editor open it keeps processing: drum plugins report "audio engine inactive" otherwise)
-                    t->pluginTailSamples = 3.0 * sampleRate;
-                if (t->pluginTailSamples > 0.0)
-                {
-                    collectNoteEvents (*t, nn, pos, running);
-                    renderPluginInstrument (*t, nn, bufL, bufR);
-                    if (! running)
-                        t->pluginTailSamples -= nn;
-                }
-            }
-            else if (! t->externalOuts.empty())
-            {
-                // plays hardware instead of the built-in sound: just send this block's notes out
-                collectNoteEvents (*t, nn, pos, running);
-            }
-            else if (t->sampler != nullptr)
-            {
-                renderSamplerTrack (*t, nn, pos, running, bufL, bufR);   // (stereo: a stereo sample keeps its image)
-            }
-            else if (t->kit != nullptr)
-            {
-                renderDrumTrack (*t, nn, pos, running, bufL, bufR);   // (stereo: pads have their own pan and stereo samples)
-            }
-            else if (t->voices != nullptr)
-            {
-                renderMidiTrack (*t, nn, pos, running, bufL);
-                std::copy (bufL, bufL + nn, bufR);
-            }
-        }
-        else if (! running && ! monitoring && ! (t->bus && t->busFed))
-        {
-            t->level = 0.0f;
-            continue;
-        }
-
-        for (auto& c : t->clips)
-        {
-            if (! running)
-                break;   // stopped: only a monitored input is heard
-            if (! c.audible())
-                continue;   // an inactive take
-            const double clipStart = c.start * sampleRate;
-            const double clipEnd = c.end() * sampleRate;
-            if ((double) (pos + n) <= clipStart || (double) pos >= clipEnd || c.audio == nullptr)
-                continue;
-
-            // clip gain and volume curve, evaluated at both ends of the block and ramped in between
-            const double tb0 = (double) pos / sampleRate - c.start, tb1 = (double) (pos + nn) / sampleRate - c.start;
-            const float gainA = c.gain * (c.envelope.empty() ? 1.0f : evalAutomation (c.envelope, tb0, 1.0f));
-            const float gainB = c.gain * (c.envelope.empty() ? 1.0f : evalAutomation (c.envelope, tb1, 1.0f));
-            const float gainStep = nn > 0 ? (gainB - gainA) / (float) nn : 0.0f;
-
-            const double ratio = c.fileRate / sampleRate;
-            const double offsetSamples = c.offset * c.fileRate;
-            const double regionSamples = c.length * c.fileRate;   // where the clip's region of the source ends (for reverse)
-            const double fadeInSamples = juce::jmin (c.fadeIn, c.length) * sampleRate;
-            const double fadeOutSamples = juce::jmin (c.fadeOut, c.length) * sampleRate;
-            const int len = c.audio->getNumSamples();
-            const auto* srcL = c.audio->getReadPointer (0);
-            const auto* srcR = c.audio->getNumChannels() > 1 ? c.audio->getReadPointer (1) : srcL;
-
-            for (int i = 0; i < nn; ++i)
-            {
-                const double tl = (double) (pos + i);
-                if (tl < clipStart || tl >= clipEnd)
-                    continue;
-
-                const double sp = c.reverse ? offsetSamples + regionSamples - (tl - clipStart) * ratio
-                                            : (tl - clipStart) * ratio + offsetSamples;
-                if (sp < 0.0 || sp >= len - 1)
-                    continue;
-
-                const int i0 = (int) sp;
-                const float frac = (float) (sp - i0);
-                float edge = (float) juce::jmin (1.0, juce::jmin ((tl - clipStart) / fadeSamples,
-                                                                  (clipEnd - tl) / fadeSamples));
-                if (fadeInSamples > 0.0 && tl - clipStart < fadeInSamples)   // equal-power fades: a crossfade keeps the level
-                    edge *= (float) std::sin ((tl - clipStart) / fadeInSamples * juce::MathConstants<double>::halfPi);
-                if (fadeOutSamples > 0.0 && clipEnd - tl < fadeOutSamples)
-                    edge *= (float) std::sin ((clipEnd - tl) / fadeOutSamples * juce::MathConstants<double>::halfPi);
-                edge *= gainA + gainStep * (float) i;
-                const float l = (srcL[i0] + frac * (srcL[i0 + 1] - srcL[i0])) * edge;
-                const float r = (srcR[i0] + frac * (srcR[i0 + 1] - srcR[i0])) * edge;
-                bufL[i] += l;
-                bufR[i] += r;
-            }
-        }
-
-        // Input monitoring: the armed track's input channels play live, through its effects, fader and pan.
-        if (monitoring)
-        {
-            const int c0 = juce::jmin (t->inputFirst, inputChannelsCopied - 1);
-            const int c1 = t->inputCount > 1 ? juce::jmin (t->inputFirst + 1, inputChannelsCopied - 1) : c0;   // mono: left = right
-            const float* inL = inputBuf.getReadPointer (c0) + inputOffset;
-            const float* inR = inputBuf.getReadPointer (c1) + inputOffset;
-            for (int i = 0; i < nn; ++i)
-            {
-                bufL[i] += inL[i];
-                bufR[i] += inR[i];
-            }
-        }
-
-        // Effects and inserts run in slices of 64 samples when this track has automation on them, so the
-        // envelope is followed smoothly instead of once per audio block.
-        bool sliced = false;
-        if (running)
-            for (auto& lane : t->autoLanes)
-                sliced = sliced || (lane->active && ! lane->points.empty());
-        const int slice = sliced ? 64 : juce::jmax (1, nn);
-        for (int s = 0; s < nn; s += slice)
-        {
-            const int len = juce::jmin (slice, nn - s);
-            if (sliced)
-                applyAutomation (*t, (double) (pos + s) / sampleRate);
-            if (t->fx.anyOn())
-            {
-                const float* keyL = nullptr;
-                const float* keyR = nullptr;
-                if (t->fx.compOn)
-                    if (auto* src = t->sidechainSource.load(); src != nullptr && src != t.get() && src->sidechainTapped.load() && (int) src->scL.size() >= nn)
-                    {
-                        keyL = src->scL.data() + s;   // the sound of the other track in this block
-                        keyR = src->scR.data() + s;
-                    }
-                t->fxState->process (bufL + s, bufR + s, len, t->fx, keyL, keyR);
-            }
-            for (auto& p : t->inserts)
-                if (! p->bypass)
-                    processInsert (*p, bufL + s, bufR + s, len);
-        }
-
-        if (t->fx.mono)   // a mono channel: left and right summed (after its effects and plugins)
-            for (int i = 0; i < nn; ++i)
-                bufL[i] = bufR[i] = 0.5f * (bufL[i] + bufR[i]);
-
-        // plugin delay compensation: tracks without (or with less) plugin latency wait for the slowest one
-        const int delay = renderNoPdc ? 0 : maxLatency - trackLatency (*t);   // (a freeze is made without it: the bounce is compensated when it plays)
-        if (! t->bus && (delay > 0 || t->pdcDelay != 0 || t->pdcFade > 0))
-            applyDelay (*t, bufL, bufR, nn, delay);
-
-        if (t->sidechainTapped.load() && (int) t->scL.size() >= nn)   // what the compressors that listen to this track hear
-        {
-            std::copy (bufL, bufL + nn, t->scL.begin());
-            std::copy (bufR, bufR + nn, t->scR.begin());
-        }
-
-        // Where it goes: the master, or the bus this track plays into (stems always go straight to the master).
-        Track* const target = renderOnly == nullptr && ! t->bus && t->output != nullptr && t->output->bus
-                              && (int) t->output->busInL.size() >= nn ? t->output : nullptr;
-        float* const dstL = target != nullptr ? target->busInL.data() : outL;
-        float* const dstR = target != nullptr ? target->busInR.data() : outR;
-
-        const float ramp = nn > 0 ? 1.0f / (float) nn : 0.0f;
-        for (int i = 0; i < nn; ++i)
-        {
-            peak = juce::jmax (peak, std::abs (bufL[i]), std::abs (bufR[i]));
-            if (audible)
-            {
-                const float f = (float) i * ramp;
-                dstL[i] += bufL[i] * (gl0 + (gl1 - gl0) * f);
-                if (dstR) dstR[i] += bufR[i] * (gr0 + (gr1 - gr0) * f);
-            }
-        }
-        if (audible && target != nullptr)
-            target->busFed = true;
-
-        // sends: a share of the sound goes to buses as well (muted tracks send nothing; stems are dry)
-        if (audible && renderOnly == nullptr && ! t->bus)
-            for (auto& send : t->sends)
-            {
-                auto* b = send.bus;
-                if (b == nullptr || ! b->bus || b == t.get() || (int) b->busInL.size() < nn)
-                    continue;
-                float* sl = b->busInL.data();
-                float* sr = b->busInR.data();
-                const float lv = send.level;
-                if (send.preFader)
-                    for (int i = 0; i < nn; ++i)
-                    {
-                        sl[i] += bufL[i] * lv;
-                        sr[i] += bufR[i] * lv;
-                    }
-                else
-                    for (int i = 0; i < nn; ++i)
-                    {
-                        const float f = (float) i * ramp;
-                        sl[i] += bufL[i] * (gl0 + (gl1 - gl0) * f) * lv;
-                        sr[i] += bufR[i] * (gr0 + (gr1 - gr0) * f) * lv;
-                    }
-                b->busFed = true;
-            }
-        t->level = peak * g;
-        if (audible && peak * g >= 1.0f)
-            t->clipped = true;   // this track's own output reaches digital full scale (shown until cleared)
-    }
-
+    renderGroup (groupTapped, false, n, pos, running, anySolo, maxLatency, outL, outR);   // (one after the other: one may listen to another)
+    renderGroup (groupPlain, true, n, pos, running, anySolo, maxLatency, outL, outR);
+    renderGroup (groupBuses, true, n, pos, running, anySolo, maxLatency, outL, outR);
     // ---- Master channel: effects and plugin inserts on the summed tracks, run in slices while its parameters
     // are automated. Stems skip it (renderMaster == false) so they add up to the mix.
     if (renderMaster && outR != nullptr)

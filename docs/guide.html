@@ -384,7 +384,7 @@
         <li>Delay compensation covers audio plugins (instrument and effect inserts) up to 2 s. When a plugin reports another latency while playing, the compensation crossfades over about 10 ms.</li>
         <li>What you do inside a plugin's own window is one undo step, taken when you open the window. Plugins that keep state outside what they save (a sample loaded by hand, say) may not go back completely.</li>
         <li>Effect and plugin parameter automation is applied every 64 samples (volume and pan are ramped); synth parameters once per audio block. While a parameter is automated, the envelope wins during playback.</li>
-        <li>The crash protection covers a plugin while it processes sound. A crash inside a plugin's own window can still end the program; the autosave then offers to restore your work.</li>
+         <li>The crash protection covers a plugin while it processes sound and in its own window: its windows close, it is blocked and named, and the program goes on. If the program is closed anyway, that plugin is blocked at the next start and the autosave offers to restore your work. Heavy projects are mixed on several CPU cores (Audio settings, CPU tab).</li>
         <li>VST3 on Windows. VST2 cannot be hosted (Steinberg no longer licenses it) and CLAP is not supported by the hosting code UFODAW is built on. A macOS build can host Audio Units, but it is untested.</li>
         <li>Windows only so far.</li>
       </ul>
@@ -405,7 +405,7 @@
   ["fr-nav", "fr-link"].forEach(function (id) {
     var a = document.getElementById(id); a.href = fr; a.target = "_blank"; a.rel = "noopener";
   });
-  var VERSION = "0.8.8.3";   // (update with every release)
+  var VERSION = "0.8.9";   // (update with every release)
   var body = "**What happened?**\n\n\n**What did you expect?**\n\n\n**How can it be repeated?**\n1. \n2. \n3. \n\n**Version:** UFODAW " + VERSION + "\n**Windows version:**\n**Audio device and driver (ASIO / WASAPI):**\n**Plugins involved (name, maker):**\n";
   var bug = REPO + "/issues/new?labels=bug&title=" + encodeURIComponent("Bug: ") + "&body=" + encodeURIComponent(body);
   ["bug-nav", "bug-link"].forEach(function (id) {
