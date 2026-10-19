@@ -30,6 +30,12 @@ public:
 
     MainComponent* getActive() const { return tabs.empty() ? nullptr : tabs[(size_t) active].get(); }
 
+    // The tab strip is also the title bar of the window (it has no Windows title bar): drag the empty part to move the window, double-click to
+    // maximise, and the three buttons on the right minimise, maximise and close. The window sets these.
+    std::function<void()> onMinimise, onToggleMaximise, onClose;
+    std::function<bool()> isMaximised;
+    std::function<void (const juce::MouseEvent&)> onDragStart, onDragMove;
+
     // At start-up: restore work from sessions that did not end properly (one recovery file per tab slot), or open a project file
     void start (const juce::File& projectToOpen)
     {
@@ -209,6 +215,37 @@ public:
         g.setColour (hoverPlus ? Theme::yellow : Theme::orange);
         g.setFont (juce::FontOptions (20.0f));
         g.drawText ("+", plusRect(), juce::Justification::centred);
+
+        // window buttons: minimise, maximise / restore, close
+        for (int k = 0; k < 3; ++k)
+        {
+            const auto r = controlRect (k);
+            if (hoverControl == k)
+            {
+                g.setColour (k == 2 ? Theme::redBright : Theme::rowLight);
+                g.fillRect (r);
+            }
+            g.setColour (hoverControl == k && k == 2 ? juce::Colours::white : Theme::text);
+            const auto c = r.getCentre().toFloat();
+            if (k == 0)
+                g.drawLine (c.x - 5.0f, c.y + 0.5f, c.x + 5.0f, c.y + 0.5f, 1.2f);
+            else if (k == 1)
+            {
+                if (isMaximised && isMaximised())
+                {
+                    g.drawRect (c.x - 5.0f, c.y - 2.0f, 7.0f, 7.0f, 1.2f);
+                    g.drawLine (c.x - 2.0f, c.y - 5.0f, c.x + 5.0f, c.y - 5.0f, 1.2f);
+                    g.drawLine (c.x + 5.0f, c.y - 5.0f, c.x + 5.0f, c.y + 2.0f, 1.2f);
+                }
+                else
+                    g.drawRect (c.x - 5.0f, c.y - 5.0f, 10.0f, 10.0f, 1.2f);
+            }
+            else
+            {
+                g.drawLine (c.x - 5.0f, c.y - 5.0f, c.x + 5.0f, c.y + 5.0f, 1.3f);
+                g.drawLine (c.x - 5.0f, c.y + 5.0f, c.x + 5.0f, c.y - 5.0f, 1.3f);
+            }
+        }
     }
 
     void resized() override
@@ -219,8 +256,17 @@ public:
 
     void mouseDown (const juce::MouseEvent& e) override
     {
+        dragging = false;
         if (e.y >= barHeight)
             return;
+        for (int k = 0; k < 3; ++k)
+            if (controlRect (k).contains (e.getPosition()))
+            {
+                auto& action = k == 0 ? onMinimise : k == 1 ? onToggleMaximise : onClose;
+                if (action)
+                    juce::MessageManager::callAsync ([action] { action(); });
+                return;
+            }
         if (plusRect().contains (e.getPosition()))
         {
             newTab();
@@ -235,6 +281,32 @@ public:
                     setActive (i);
                 return;
             }
+        if (onDragStart)   // the empty part of the bar: move the window
+        {
+            dragging = true;
+            onDragStart (e);
+        }
+    }
+
+    void mouseDrag (const juce::MouseEvent& e) override
+    {
+        if (dragging && onDragMove)
+            onDragMove (e);
+    }
+
+    void mouseDoubleClick (const juce::MouseEvent& e) override
+    {
+        if (e.y >= barHeight || ! onToggleMaximise)
+            return;
+        for (int i = 0; i < (int) tabs.size(); ++i)
+            if (tabRect (i).contains (e.getPosition()))
+                return;
+        if (plusRect().contains (e.getPosition()))
+            return;
+        for (int k = 0; k < 3; ++k)
+            if (controlRect (k).contains (e.getPosition()))
+                return;
+        juce::MessageManager::callAsync ([action = onToggleMaximise] { action(); });
     }
 
     void mouseMove (const juce::MouseEvent& e) override
@@ -244,15 +316,20 @@ public:
             if (closeRect (i).contains (e.getPosition()))
                 c = i;
         const bool p = plusRect().contains (e.getPosition());
-        if (c != hoverClose || p != hoverPlus)
+        int ctl = -1;
+        for (int k = 0; k < 3; ++k)
+            if (controlRect (k).contains (e.getPosition()))
+                ctl = k;
+        if (c != hoverClose || p != hoverPlus || ctl != hoverControl)
         {
             hoverClose = c;
             hoverPlus = p;
+            hoverControl = ctl;
             repaint (0, 0, getWidth(), barHeight);
         }
     }
 
-    void mouseExit (const juce::MouseEvent&) override { hoverClose = -1; hoverPlus = false; repaint (0, 0, getWidth(), barHeight); }
+    void mouseExit (const juce::MouseEvent&) override { hoverClose = -1; hoverPlus = false; hoverControl = -1; repaint (0, 0, getWidth(), barHeight); }
 
 private:
     int indexOf (MainComponent* tab) const
@@ -305,12 +382,14 @@ private:
 
     int tabWidth() const
     {
-        const int available = getWidth() - 60;
+        const int available = getWidth() - 60 - 3 * controlWidth;
         return juce::jlimit (90, 210, tabs.empty() ? 210 : available / (int) tabs.size());
     }
 
     juce::Rectangle<int> tabRect (int i) const { return { 8 + i * (tabWidth() + 3), 5, tabWidth(), barHeight - 5 }; }
     juce::Rectangle<int> closeRect (int i) const { return tabRect (i).removeFromRight (30); }
+    static constexpr int controlWidth = 46;
+    juce::Rectangle<int> controlRect (int k) const { return { getWidth() - (3 - k) * controlWidth, 0, controlWidth, barHeight - 1 }; }
     juce::Rectangle<int> plusRect() const { return { 8 + (int) tabs.size() * (tabWidth() + 3) + 4, 3, 30, barHeight - 6 }; }
 
     void refreshTitle()
@@ -325,6 +404,6 @@ private:
     std::vector<std::unique_ptr<MainComponent>> tabs;
     int active = 0;
     int preferredW = 1400, preferredH = 760;
-    int hoverClose = -1;
-    bool hoverPlus = false;
+    int hoverClose = -1, hoverControl = -1;
+    bool hoverPlus = false, dragging = false;
 };
