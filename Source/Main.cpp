@@ -1,5 +1,6 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 #include "ProjectTabs.h"
+#include "PluginScan.h"
 #if JUCE_WINDOWS
  #include <shlobj.h>
 #endif
@@ -12,6 +13,12 @@ public:
 
     void initialise (const juce::String& commandLine) override
     {
+        // Started by the plugin scan as its helper process: no window, it only answers the scan (and ends with the program that started it)
+        scanWorker = std::make_unique<PluginScan::Worker>();
+        if (scanWorker->initialiseFromCommandLine (commandLine, PluginScan::commandLineId))
+            return;
+        scanWorker.reset();
+
         migrateOldSettings();
         registerProjectFileType();
         juce::LookAndFeel::setDefaultLookAndFeel (&lookAndFeel);   // the warm red/orange/yellow theme
@@ -61,6 +68,7 @@ public:
 
     void shutdown() override
     {
+        scanWorker = nullptr;
         window = nullptr;
         juce::LookAndFeel::setDefaultLookAndFeel (nullptr);
     }
@@ -69,6 +77,7 @@ public:
 
 private:
     WarmLookAndFeel lookAndFeel;
+    std::unique_ptr<PluginScan::Worker> scanWorker;
 
     class MainWindow : public juce::DocumentWindow
     {

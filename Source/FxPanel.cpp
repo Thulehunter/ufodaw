@@ -37,14 +37,6 @@ namespace
     }
 
     // Three columns: the EQ, the compressor, and the delay above the reverb
-    juce::Rectangle<int> sectionRect (const juce::Rectangle<int>& b, int i)
-    {
-        const int colW = b.getWidth() / 3;
-        const int column = i < 3 ? i : 2;
-        const int y = i == 3 ? b.getY() + titleHeight + bottomRows * rowHeight + gap : b.getY();
-        return { b.getX() + column * colW + 2, y, colW - 4, titleHeight + (i < 2 ? topRows : bottomRows) * rowHeight + 6 };
-    }
-
     juce::String hzText (float f) { return f >= 1000.0f ? juce::String (f / 1000.0f, f >= 10000.0f ? 1 : 2) + " kHz" : juce::String ((int) std::round (f)) + " Hz"; }
 }
 
@@ -53,11 +45,15 @@ namespace
 class EqCurveView : public juce::Component, private juce::Timer
 {
 public:
-    EqCurveView (FxParams& p, std::function<void()> beginEdit, std::function<void (int)> select, std::function<void()> changed)
-        : fx (p), onBegin (std::move (beginEdit)), onSelect (std::move (select)), onChanged (std::move (changed))
+    EqCurveView (FxParams& p, const SpectrumTap* spectrumTap, std::function<void()> beginEdit, std::function<void (int)> select, std::function<void()> changed)
+        : fx (p), tap (spectrumTap), onBegin (std::move (beginEdit)), onSelect (std::move (select)), onChanged (std::move (changed))
     {
-        startTimerHz (15);
+        fx.analyse = tap != nullptr;   // (the audio thread keeps a copy of the sound while this is open)
+        bars.assign ((size_t) numBars, -120.0f);
+        startTimerHz (20);
     }
+
+    ~EqCurveView() override { fx.analyse = false; }
 
     void setSelected (int b) { selected = b; repaint(); }
 
@@ -87,6 +83,24 @@ public:
                 g.setColour (Theme::textFaint);
                 g.drawText (f >= 1000.0 ? juce::String ((int) (f / 1000.0)) + "k" : juce::String ((int) f), (int) x - 14, (int) plot.getBottom() + 1, 28, 10, juce::Justification::centred);
             }
+        }
+
+        // the spectrum of the sound (after the EQ) behind the curve: -80 dB at the bottom, -10 dB at the top
+        if (tap != nullptr)
+        {
+            juce::Path spectrum;
+            spectrum.startNewSubPath (plot.getX(), plot.getBottom());
+            for (int b = 0; b < numBars; ++b)
+            {
+                const float level = juce::jlimit (0.0f, 1.0f, (bars[(size_t) b] + 80.0f) / 70.0f);
+                spectrum.lineTo (plot.getX() + plot.getWidth() * ((float) b + 0.5f) / (float) numBars, plot.getBottom() - level * plot.getHeight());
+            }
+            spectrum.lineTo (plot.getRight(), plot.getBottom());
+            spectrum.closeSubPath();
+            g.setColour (Theme::orange.withAlpha (0.22f));
+            g.fillPath (spectrum);
+            g.setColour (Theme::orange.withAlpha (0.5f));
+            g.strokePath (spectrum, juce::PathStrokeType (1.0f));
         }
 
         EqCoef coefs[eqNumSections];
@@ -243,9 +257,39 @@ private:
         return plot.getX() + (float) (std::log (juce::jmax (20.0, hz) / 20.0) / std::log (1000.0)) * plot.getWidth();
     }
     static float yOf (float db, const juce::Rectangle<float>& plot) { return plot.getCentreY() - (db / 18.0f) * plot.getHeight() * 0.5f; }
-    void timerCallback() override { repaint(); }
+    void timerCallback() override
+    {
+        if (tap != nullptr)
+        {
+            constexpr int n = 4096;
+            float samples[n];
+            std::vector<float> db;
+            if (tap->readLatest (samples, n))
+                spectrumDb (samples, n, db);
+            else
+                db.assign (n / 2, -120.0f);
 
+            const double binHz = lastRate / n;
+            for (int b = 0; b < numBars; ++b)
+            {
+                const double f0 = frequencyOf ((double) b / numBars), f1 = frequencyOf ((double) (b + 1) / numBars);
+                const int i0 = juce::jlimit (1, n / 2 - 1, (int) std::floor (f0 / binHz)), i1 = juce::jlimit (i0, n / 2 - 1, (int) std::ceil (f1 / binHz));
+                float m = -120.0f;
+                for (int i = i0; i <= i1; ++i)
+                    m = juce::jmax (m, db[(size_t) i]);
+                bars[(size_t) b] = m > bars[(size_t) b] ? m : juce::jmax (m, bars[(size_t) b] - 3.0f);   // (rises at once, falls smoothly)
+            }
+        }
+        repaint();
+    }
+
+    static constexpr int numBars = 120;
+    std::vector<float> bars;
+public:
+    double lastRate = 48000.0;
+private:
     FxParams& fx;
+    const SpectrumTap* tap = nullptr;
     std::function<void()> onBegin;
     std::function<void (int)> onSelect;
     std::function<void()> onChanged;
@@ -395,7 +439,8 @@ FxPanel::FxPanel (Track& t, std::function<void()> onBeginEdit, Engine* e) : trac
     // ---- EQ: the curve, then the sliders of the selected band, then presets
     auto& eq = addSection ("EQ", fx.eqOn);
     eqSection = &eq;
-    eqCurve = std::make_unique<EqCurveView> (fx, [this] { if (beginEdit) beginEdit(); },
+    eqCurve = std::make_unique<EqCurveView> (fx, track.fxState != nullptr ? &track.fxState->getSpectrumTap() : nullptr,
+                                             [this] { if (beginEdit) beginEdit(); },
                                              [this] (int b) { selectBand (b); },
                                              [this]
                                              {
@@ -403,6 +448,8 @@ FxPanel::FxPanel (Track& t, std::function<void()> onBeginEdit, Engine* e) : trac
                                                  syncFromParams();
                                              });
     addAndMakeVisible (*eqCurve);
+    if (engine != nullptr)
+        static_cast<EqCurveView*> (eqCurve.get())->lastRate = engine->getSampleRate();
 
     const char* bandNames[3] = { "Gain", "Freq", "Q" };
     for (int i = 0; i < 3; ++i)
@@ -603,6 +650,157 @@ FxPanel::FxPanel (Track& t, std::function<void()> onBeginEdit, Engine* e) : trac
     };
     addAndMakeVisible (reverbPresets);
 
+
+    // ---- page 2: gate, de-esser, multiband compressor, limiter
+    auto& gate = addSection ("Gate", fx.gateOn);
+    gate.page = 1;
+    addRow (gate, "Threshold", -80.0, 0.0, -40.0, " dB", 1, fx.gateThreshold);
+    addRow (gate, "Hysteresis", 0.0, 12.0, 4.0,   " dB", 1, fx.gateHyst);
+    addRow (gate, "Range",     0.0, 80.0, 40.0,   " dB", 0, fx.gateRange);
+    addRow (gate, "Attack",    0.1, 50.0, 5.0,    " ms", 1, fx.gateAttack);
+    addRow (gate, "Hold",      0.0, 500.0, 80.0,  " ms", 0, fx.gateHold);
+    addRow (gate, "Release",   10.0, 1000.0, 150.0, " ms", 0, fx.gateRelease);
+    addRow (gate, "SC low cut", 20.0, 2000.0, 200.0, " Hz", 0, fx.gateScHpf);
+    addRow (gate, "SC high cut", 1000.0, 20000.0, 6000.0, " Hz", 0, fx.gateScLpf);
+    gate.rows[0]->slider.setTooltip ("The gate opens when the sound goes over this level (cuts noise and bleed between notes)");
+    gate.rows[1]->slider.setTooltip ("It closes this many dB lower than where it opens: no chattering around the threshold");
+    gate.rows[2]->slider.setTooltip ("How far the gate turns the sound down when it is closed");
+    gate.rows[6]->slider.setTooltip ("A filter in front of the detector (20 Hz = off): the gate ignores sound below this frequency (rumble, kick bleed)");
+    gate.rows[7]->slider.setTooltip ("A filter in front of the detector (20 kHz = off): the gate ignores sound above this frequency (hats bleeding into a snare)");
+    addMeter (gate, [&fx] { return fx.gateGr.load(); }, "closed", 60.0f);
+    addPresets (gate, fx.gateOn, {
+        { "Default",        { { &fx.gateThreshold, -50.0f }, { &fx.gateHyst, 4.0f }, { &fx.gateRange, 40.0f }, { &fx.gateAttack, 1.0f }, { &fx.gateHold, 50.0f }, { &fx.gateRelease, 150.0f }, { &fx.gateScHpf, 20.0f }, { &fx.gateScLpf, 20000.0f } }, {} },
+        { "Tight drums",    { { &fx.gateThreshold, -35.0f }, { &fx.gateHyst, 5.0f }, { &fx.gateRange, 60.0f }, { &fx.gateAttack, 0.3f }, { &fx.gateHold, 30.0f }, { &fx.gateRelease, 80.0f }, { &fx.gateScHpf, 80.0f }, { &fx.gateScLpf, 20000.0f } }, {} },
+        { "Vocal, noise between phrases", { { &fx.gateThreshold, -45.0f }, { &fx.gateHyst, 6.0f }, { &fx.gateRange, 20.0f }, { &fx.gateAttack, 3.0f }, { &fx.gateHold, 120.0f }, { &fx.gateRelease, 250.0f }, { &fx.gateScHpf, 120.0f }, { &fx.gateScLpf, 20000.0f } }, {} },
+        { "Guitar, no hum", { { &fx.gateThreshold, -48.0f }, { &fx.gateHyst, 4.0f }, { &fx.gateRange, 45.0f }, { &fx.gateAttack, 1.0f }, { &fx.gateHold, 60.0f }, { &fx.gateRelease, 120.0f }, { &fx.gateScHpf, 200.0f }, { &fx.gateScLpf, 8000.0f } }, {} },
+    });
+
+    auto& deess = addSection ("De-esser", fx.deEssOn);
+    deess.page = 1;
+    addRow (deess, "Frequency", 2000.0, 14000.0, 6000.0, " Hz", 0, fx.deEssFreq);
+    addRow (deess, "Width",     0.3, 6.0, 1.5,    "", 1, fx.deEssQ);
+    addRow (deess, "Threshold", -60.0, 0.0, -30.0, " dB", 1, fx.deEssThreshold);
+    addRow (deess, "Amount",    0.0, 20.0, 8.0,   " dB", 1, fx.deEssAmount);
+    deess.rows[0]->slider.setTooltip ("Where the harsh 's' sounds are (usually 5-9 kHz)");
+    deess.rows[1]->slider.setTooltip ("Q of the band the de-esser listens to (and, in split mode, lowers): a lower number is a wider band");
+    deess.rows[3]->slider.setTooltip ("The most the de-esser takes off");
+    addToggle (deess, fx.deEssWide, "Whole sound", "Off: only the 's' band is turned down (natural). On: the whole sound is turned down, like a compressor that hears only the band");
+    addToggle (deess, fx.deEssListen, "Listen", "Hear only the band the de-esser listens to: sweep the frequency until the 's' sounds are loudest", true);
+    addMeter (deess, [&fx] { return fx.deEssGr.load(); }, "reduction", 20.0f);
+    addPresets (deess, fx.deEssOn, {
+        { "Default",        { { &fx.deEssFreq, 6500.0f }, { &fx.deEssQ, 1.5f }, { &fx.deEssThreshold, -28.0f }, { &fx.deEssAmount, 8.0f } }, { { &fx.deEssWide, false } } },
+        { "Male vocal",     { { &fx.deEssFreq, 5500.0f }, { &fx.deEssQ, 1.5f }, { &fx.deEssThreshold, -28.0f }, { &fx.deEssAmount, 8.0f } }, { { &fx.deEssWide, false } } },
+        { "Female vocal",   { { &fx.deEssFreq, 7500.0f }, { &fx.deEssQ, 1.5f }, { &fx.deEssThreshold, -28.0f }, { &fx.deEssAmount, 9.0f } }, { { &fx.deEssWide, false } } },
+        { "Harsh cymbals",  { { &fx.deEssFreq, 9500.0f }, { &fx.deEssQ, 0.8f }, { &fx.deEssThreshold, -30.0f }, { &fx.deEssAmount, 6.0f } }, { { &fx.deEssWide, false } } },
+        { "Strong (whole sound)", { { &fx.deEssFreq, 6500.0f }, { &fx.deEssQ, 1.2f }, { &fx.deEssThreshold, -32.0f }, { &fx.deEssAmount, 12.0f } }, { { &fx.deEssWide, true } } },
+    });
+
+    auto& mb = addSection ("Multiband compressor", fx.mbOn);
+    mb.page = 1;
+    addRow (mb, "Low split",  40.0, 1000.0, 200.0, " Hz", 0, fx.mbLowFreq);
+    addRow (mb, "High split", 300.0, 12000.0, 2500.0, " Hz", 0, fx.mbHighFreq);
+    addRow (mb, "Low thr",    -60.0, 0.0, 0.0,    " dB", 1, fx.mbLowThr);
+    addRow (mb, "Mid thr",    -60.0, 0.0, 0.0,    " dB", 1, fx.mbMidThr);
+    addRow (mb, "High thr",   -60.0, 0.0, 0.0,    " dB", 1, fx.mbHighThr);
+    addRow (mb, "Ratio",      1.0, 10.0, 3.0,     " :1", 1, fx.mbRatio);
+    addRow (mb, "Attack",     0.5, 100.0, 10.0,   " ms", 1, fx.mbAttack);
+    addRow (mb, "Release",    5.0, 1000.0, 150.0, " ms", 0, fx.mbRelease);
+    addRow (mb, "Low gain",   -12.0, 12.0, 0.0,   " dB", 1, fx.mbLowGain);
+    addRow (mb, "Mid gain",   -12.0, 12.0, 0.0,   " dB", 1, fx.mbMidGain);
+    addRow (mb, "High gain",  -12.0, 12.0, 0.0,   " dB", 1, fx.mbHighGain);
+    addRow (mb, "Makeup",     0.0, 12.0, 0.0,     " dB", 1, fx.mbMakeup);
+    mb.rows[0]->slider.setTooltip ("Three bands: low, mid and high, compressed separately. The splits are 24 dB/oct and add up flat again.");
+    mb.rows[8]->slider.setTooltip ("The level of the band after its compression (a tone control per band)");
+    addMeter (mb, [&fx] { return fx.mbGr[0].load(); }, "low", 20.0f);
+    addMeter (mb, [&fx] { return fx.mbGr[1].load(); }, "mid", 20.0f);
+    addMeter (mb, [&fx] { return fx.mbGr[2].load(); }, "high", 20.0f);
+    addPresets (mb, fx.mbOn, {
+        { "Default",        { { &fx.mbLowFreq, 200.0f }, { &fx.mbHighFreq, 2500.0f }, { &fx.mbLowThr, -24.0f }, { &fx.mbMidThr, -24.0f }, { &fx.mbHighThr, -24.0f }, { &fx.mbRatio, 3.0f }, { &fx.mbAttack, 8.0f }, { &fx.mbRelease, 120.0f }, { &fx.mbLowGain, 0.0f }, { &fx.mbMidGain, 0.0f }, { &fx.mbHighGain, 0.0f }, { &fx.mbMakeup, 0.0f } }, {} },
+        { "Mastering glue", { { &fx.mbLowFreq, 120.0f }, { &fx.mbHighFreq, 3500.0f }, { &fx.mbLowThr, -22.0f }, { &fx.mbMidThr, -20.0f }, { &fx.mbHighThr, -22.0f }, { &fx.mbRatio, 2.0f }, { &fx.mbAttack, 20.0f }, { &fx.mbRelease, 200.0f }, { &fx.mbLowGain, 0.0f }, { &fx.mbMidGain, 0.0f }, { &fx.mbHighGain, 0.0f }, { &fx.mbMakeup, 1.5f } }, {} },
+        { "Tight low end",  { { &fx.mbLowFreq, 150.0f }, { &fx.mbHighFreq, 4000.0f }, { &fx.mbLowThr, -28.0f }, { &fx.mbMidThr, 0.0f }, { &fx.mbHighThr, 0.0f }, { &fx.mbRatio, 4.0f }, { &fx.mbAttack, 25.0f }, { &fx.mbRelease, 120.0f }, { &fx.mbLowGain, 0.0f }, { &fx.mbMidGain, 0.0f }, { &fx.mbHighGain, 0.0f }, { &fx.mbMakeup, 0.0f } }, {} },
+        { "Vocal air",      { { &fx.mbLowFreq, 200.0f }, { &fx.mbHighFreq, 5000.0f }, { &fx.mbLowThr, -30.0f }, { &fx.mbMidThr, -22.0f }, { &fx.mbHighThr, -30.0f }, { &fx.mbRatio, 3.0f }, { &fx.mbAttack, 8.0f }, { &fx.mbRelease, 100.0f }, { &fx.mbLowGain, 0.0f }, { &fx.mbMidGain, 0.0f }, { &fx.mbHighGain, 2.5f }, { &fx.mbMakeup, 0.0f } }, {} },
+        { "Loud and even",  { { &fx.mbLowFreq, 160.0f }, { &fx.mbHighFreq, 3000.0f }, { &fx.mbLowThr, -26.0f }, { &fx.mbMidThr, -26.0f }, { &fx.mbHighThr, -28.0f }, { &fx.mbRatio, 4.0f }, { &fx.mbAttack, 6.0f }, { &fx.mbRelease, 100.0f }, { &fx.mbLowGain, 0.0f }, { &fx.mbMidGain, 0.0f }, { &fx.mbHighGain, 0.0f }, { &fx.mbMakeup, 3.0f } }, {} },
+    });
+
+    auto& limiter = addSection ("Limiter", fx.limOn);
+    limiter.page = 1;
+    addRow (limiter, "Gain",      0.0, 18.0, 0.0,   " dB", 1, fx.limGain);
+    addRow (limiter, "Ceiling",   -12.0, 0.0, 0.0,  " dB", 1, fx.limCeiling);
+    addRow (limiter, "Release",   5.0, 500.0, 80.0, " ms", 0, fx.limRelease);
+    addRow (limiter, "Lookahead", 0.0, 10.0, 2.0,   " ms", 1, fx.limLookahead);
+    limiter.rows[0]->slider.setTooltip ("Pushes the sound into the limiter: louder, never above the ceiling");
+    limiter.rows[3]->slider.setTooltip ("The limiter looks this far ahead, so it can turn the sound down before a peak arrives (no clipping, no pumping). The track is delayed by it, "
+                                        "and the program compensates for that.");
+    addToggle (limiter, fx.limTruePeak, "True peak", "Also catch the peaks that lie between the samples (they can clip after conversion to MP3 or on a speaker)");
+    addMeter (limiter, [&fx] { return fx.limGr.load(); }, "reduction", 18.0f);
+    addPresets (limiter, fx.limOn, {
+        { "Default",        { { &fx.limGain, 0.0f }, { &fx.limCeiling, -1.0f }, { &fx.limRelease, 80.0f }, { &fx.limLookahead, 2.0f } }, { { &fx.limTruePeak, false } } },
+        { "Transparent",    { { &fx.limGain, 0.0f }, { &fx.limCeiling, -1.0f }, { &fx.limRelease, 150.0f }, { &fx.limLookahead, 3.0f } }, { { &fx.limTruePeak, true } } },
+        { "Loud master",    { { &fx.limGain, 6.0f }, { &fx.limCeiling, -0.5f }, { &fx.limRelease, 60.0f }, { &fx.limLookahead, 4.0f } }, { { &fx.limTruePeak, true } } },
+        { "Safety net",     { { &fx.limGain, 0.0f }, { &fx.limCeiling, -0.3f }, { &fx.limRelease, 250.0f }, { &fx.limLookahead, 1.0f } }, { { &fx.limTruePeak, false } } },
+    });
+
+    // ---- page 3: saturation and chorus
+    auto& sat = addSection ("Saturation", fx.satOn);
+    sat.page = 2;
+    addRow (sat, "Drive",  0.0, 30.0, 8.0,   " dB", 1, fx.satDrive);
+    addRow (sat, "Mix",    0.0, 1.0, 0.0,    "", 2, fx.satMix);
+    addRow (sat, "Output", -12.0, 12.0, 0.0, " dB", 1, fx.satOutput);
+    addRow (sat, "Bias",   0.0, 1.0, 0.0,    "", 2, fx.satBias);
+    addRow (sat, "Tone",   -1.0, 1.0, 0.0,   "", 2, fx.satTone);
+    sat.rows[3]->slider.setTooltip ("Clips one side of the wave more than the other: adds the even harmonics (warmer, like a tube or a transformer)");
+    sat.rows[4]->slider.setTooltip ("Left = darker (a low-pass on the saturated sound), right = brighter");
+    satTypeLabel.setText ("Type", juce::dontSendNotification);
+    satTypeLabel.setColour (juce::Label::textColourId, Theme::text.withAlpha (0.8f));
+    addAndMakeVisible (satTypeLabel);
+    satTypeBox.addItem ("Tube (smooth)", 1);
+    satTypeBox.addItem ("Tape (warm, uneven)", 2);
+    satTypeBox.addItem ("Hard clip (harsh)", 3);
+    satTypeBox.addItem ("Fold (wave folder)", 4);
+    satTypeBox.addItem ("Diode (one side harder)", 5);
+    satTypeBox.setSelectedId (juce::jlimit (0, 4, (int) std::lround (fx.satType.load())) + 1, juce::dontSendNotification);
+    satTypeBox.onChange = [this]
+    {
+        if (beginEdit) beginEdit();
+        track.fx.satType = (float) (satTypeBox.getSelectedId() - 1);
+    };
+    addAndMakeVisible (satTypeBox);
+    sat.footerRows.push_back ({ &satTypeLabel, &satTypeBox });
+    addToggle (sat, fx.satOversample, "4x oversampling", "Runs the clipping at 4 times the sample rate: far less aliasing (no fizzy, inharmonic overtones). "
+                                                          "The sound is delayed by 12 samples; the program compensates for that.");
+    addPresets (sat, fx.satOn, {
+        { "Default",        { { &fx.satDrive, 6.0f }, { &fx.satType, 0.0f }, { &fx.satMix, 1.0f }, { &fx.satOutput, 0.0f }, { &fx.satBias, 0.0f }, { &fx.satTone, 0.0f } }, { { &fx.satOversample, true } } },
+        { "Warm tube",      { { &fx.satDrive, 8.0f }, { &fx.satType, 0.0f }, { &fx.satMix, 0.6f }, { &fx.satOutput, 0.0f }, { &fx.satBias, 0.15f }, { &fx.satTone, -0.2f } }, { { &fx.satOversample, true } } },
+        { "Tape glue",      { { &fx.satDrive, 6.0f }, { &fx.satType, 1.0f }, { &fx.satMix, 0.7f }, { &fx.satOutput, 0.0f }, { &fx.satBias, 0.3f }, { &fx.satTone, -0.3f } }, { { &fx.satOversample, true } } },
+        { "Crunch",         { { &fx.satDrive, 14.0f }, { &fx.satType, 2.0f }, { &fx.satMix, 0.5f }, { &fx.satOutput, -2.0f }, { &fx.satBias, 0.0f }, { &fx.satTone, 0.1f } }, { { &fx.satOversample, true } } },
+        { "Fuzz",           { { &fx.satDrive, 24.0f }, { &fx.satType, 4.0f }, { &fx.satMix, 0.85f }, { &fx.satOutput, -4.0f }, { &fx.satBias, 0.4f }, { &fx.satTone, -0.4f } }, { { &fx.satOversample, true } } },
+        { "Wave folder",    { { &fx.satDrive, 12.0f }, { &fx.satType, 3.0f }, { &fx.satMix, 0.4f }, { &fx.satOutput, -2.0f }, { &fx.satBias, 0.0f }, { &fx.satTone, 0.0f } }, { { &fx.satOversample, true } } },
+    });
+
+    auto& chorus = addSection ("Chorus / flanger", fx.chorusOn);
+    chorus.page = 2;
+    addRow (chorus, "Rate",     0.05, 5.0, 0.8,  " Hz", 2, fx.chorusRate);
+    addRow (chorus, "Depth",    0.0, 1.0, 0.0,   "", 2, fx.chorusDepth);
+    addRow (chorus, "Delay",    0.5, 40.0, 10.0, " ms", 1, fx.chorusDelay);
+    addRow (chorus, "Feedback", 0.0, 0.9, 0.0,   "", 2, fx.chorusFeedback);
+    addRow (chorus, "Mix",      0.0, 1.0, 0.0,   "", 2, fx.chorusMix);
+    addRow (chorus, "Voices",   1.0, 4.0, 2.0,   "", 0, fx.chorusVoices);
+    addRow (chorus, "Width",    0.0, 1.0, 0.0,   "", 2, fx.chorusWidth);
+    addRow (chorus, "Tone",     1000.0, 20000.0, 6000.0, " Hz", 0, fx.chorusTone);
+    chorus.rows[2]->slider.setTooltip ("Around 10-25 ms is a chorus; 1-5 ms with some feedback is a flanger");
+    chorus.rows[4]->slider.setTooltip ("A crossfade with the original: all the way right gives only the effect (vibrato)");
+    chorus.rows[5]->slider.setTooltip ("More voices make a thicker ensemble sound");
+    chorus.rows[7]->slider.setTooltip ("A low-pass on the effect: lower = darker, more like an old analog chorus");
+    addPresets (chorus, fx.chorusOn, {
+        { "Default",        { { &fx.chorusRate, 0.8f }, { &fx.chorusDepth, 0.5f }, { &fx.chorusDelay, 12.0f }, { &fx.chorusFeedback, 0.0f }, { &fx.chorusMix, 0.4f }, { &fx.chorusVoices, 2.0f }, { &fx.chorusWidth, 1.0f }, { &fx.chorusTone, 20000.0f } }, {} },
+        { "Classic chorus", { { &fx.chorusRate, 0.6f }, { &fx.chorusDepth, 0.5f }, { &fx.chorusDelay, 14.0f }, { &fx.chorusFeedback, 0.0f }, { &fx.chorusMix, 0.5f }, { &fx.chorusVoices, 2.0f }, { &fx.chorusWidth, 1.0f }, { &fx.chorusTone, 12000.0f } }, {} },
+        { "Ensemble",       { { &fx.chorusRate, 0.35f }, { &fx.chorusDepth, 0.7f }, { &fx.chorusDelay, 18.0f }, { &fx.chorusFeedback, 0.0f }, { &fx.chorusMix, 0.55f }, { &fx.chorusVoices, 4.0f }, { &fx.chorusWidth, 1.0f }, { &fx.chorusTone, 9000.0f } }, {} },
+        { "Slow flanger",   { { &fx.chorusRate, 0.15f }, { &fx.chorusDepth, 0.8f }, { &fx.chorusDelay, 3.0f }, { &fx.chorusFeedback, 0.6f }, { &fx.chorusMix, 0.5f }, { &fx.chorusVoices, 1.0f }, { &fx.chorusWidth, 0.6f }, { &fx.chorusTone, 20000.0f } }, {} },
+        { "Jet flanger",    { { &fx.chorusRate, 0.3f }, { &fx.chorusDepth, 1.0f }, { &fx.chorusDelay, 2.0f }, { &fx.chorusFeedback, 0.85f }, { &fx.chorusMix, 0.5f }, { &fx.chorusVoices, 1.0f }, { &fx.chorusWidth, 0.3f }, { &fx.chorusTone, 20000.0f } }, {} },
+        { "Vibrato",        { { &fx.chorusRate, 5.5f }, { &fx.chorusDepth, 0.3f }, { &fx.chorusDelay, 6.0f }, { &fx.chorusFeedback, 0.0f }, { &fx.chorusMix, 1.0f }, { &fx.chorusVoices, 1.0f }, { &fx.chorusWidth, 0.0f }, { &fx.chorusTone, 20000.0f } }, {} },
+        { "Wide doubler",   { { &fx.chorusRate, 0.2f }, { &fx.chorusDepth, 0.25f }, { &fx.chorusDelay, 22.0f }, { &fx.chorusFeedback, 0.0f }, { &fx.chorusMix, 0.5f }, { &fx.chorusVoices, 2.0f }, { &fx.chorusWidth, 1.0f }, { &fx.chorusTone, 14000.0f } }, {} },
+    });
+
     // below the effects: the channel's width
     monoToggle.setButtonText ("Mono: play this channel in mono (left and right summed)");
     monoToggle.setTooltip ("Sums left and right after the effects and plugins. Handy to check how a mix or a source sounds in mono, "
@@ -615,7 +813,125 @@ FxPanel::FxPanel (Track& t, std::function<void()> onBeginEdit, Engine* e) : trac
     };
     addAndMakeVisible (monoToggle);
 
-    setSize (1200, 2 * (titleHeight + bottomRows * rowHeight + 6) + gap + gap + 34 + 8);
+    // the extra widgets of the first four effects go in rows of their sections
+    compSection->footerRows.push_back ({ &autoToggle, &compPresets });
+    if (sideBox.getNumItems() > 0)
+        compSection->footerRows.push_back ({ &sideLabel, &sideBox });
+    if (delaySync.getNumItems() > 0)
+        delaySection->footerRows.push_back ({ &pingToggle, &delaySync });
+    else
+        delaySection->footerRows.push_back ({ &pingToggle });
+    delaySection->footerRows.push_back ({ &delayPresets });
+    reverbSection->footerRows.push_back ({ &reverbPresets });
+
+    setSize (1100, 12 + 52 + 12 + 300 + 8 + 30 + 12);
+    selectSection (track.fx.eqOn.load() || (! track.fx.compOn.load() && ! track.fx.delayOn.load() && ! track.fx.reverbOn.load()) ? 0 : track.fx.compOn.load() ? 1 : track.fx.delayOn.load() ? 2 : 3);
+    startTimerHz (8);
+}
+
+// ---- the extra effect pages
+
+// A small bar of a gain reduction (or any level in dB), with its caption and number.
+class MeterBar : public juce::Component, private juce::Timer
+{
+public:
+    MeterBar (std::function<float()> readDb, juce::String name, float maxDb) : read (std::move (readDb)), caption (std::move (name)), maxReduction (maxDb) { startTimerHz (30); }
+
+    void paint (juce::Graphics& g) override
+    {
+        const auto r = getLocalBounds().toFloat().reduced (0.0f, 2.0f);
+        g.setColour (Theme::laneBg);
+        g.fillRoundedRectangle (r, 3.0f);
+        g.setColour (Theme::orange);
+        g.fillRoundedRectangle (r.withWidth (r.getWidth() * juce::jlimit (0.0f, 1.0f, shown / maxReduction)), 3.0f);
+        g.setColour (Theme::text.withAlpha (0.85f));
+        g.setFont (juce::FontOptions (9.5f));
+        g.drawText (caption + (shown > 0.05f ? "  -" + juce::String (shown, 1) : juce::String()), r.toNearestInt().reduced (4, 0), juce::Justification::centredLeft);
+    }
+
+private:
+    void timerCallback() override
+    {
+        const float now = read();
+        shown = juce::jmax (now, shown * 0.88f);
+        if (shown < 0.05f) shown = 0.0f;
+        repaint();
+    }
+
+    std::function<float()> read;
+    juce::String caption;
+    float maxReduction;
+    float shown = 0.0f;
+};
+
+juce::ToggleButton& FxPanel::addToggle (Section& s, std::atomic<bool>& param, const juce::String& text, const juce::String& tooltip, bool sameRowAsPrevious)
+{
+    auto toggle = std::make_unique<juce::ToggleButton> (text);
+    auto* raw = toggle.get();
+    raw->setToggleState (param.load(), juce::dontSendNotification);
+    raw->setTooltip (tooltip);
+    raw->onClick = [this, raw, &param]
+    {
+        if (beginEdit) beginEdit();
+        param = raw->getToggleState();
+    };
+    addAndMakeVisible (*raw);
+    toggleLinks.push_back ({ raw, &param });
+    owned.push_back (std::move (toggle));
+    if (sameRowAsPrevious && ! s.footerRows.empty())
+        s.footerRows.back().push_back (raw);
+    else
+        s.footerRows.push_back ({ raw });
+    return *raw;
+}
+
+void FxPanel::addMeter (Section& s, std::function<float()> read, const juce::String& caption, float maxDb)
+{
+    auto meter = std::make_unique<MeterBar> (std::move (read), caption, maxDb);
+    addAndMakeVisible (*meter);
+    s.meters.push_back (meter.get());
+    owned.push_back (std::move (meter));
+}
+
+// A box of presets as the last row of a section; choosing one sets the parameters, turns the effect on, and is one undo step.
+void FxPanel::addPresets (Section& s, std::atomic<bool>& enabled, std::vector<PresetDef> presets)
+{
+    auto box = std::make_unique<juce::ComboBox>();
+    auto* raw = box.get();
+    raw->setTextWhenNothingSelected ("Presets...");
+    for (int i = 0; i < (int) presets.size(); ++i)
+        raw->addItem (presets[(size_t) i].name, i + 1);
+    raw->onChange = [this, raw, &s, &enabled, presets]
+    {
+        const int id = raw->getSelectedId();
+        raw->setSelectedId (0, juce::dontSendNotification);
+        if (id < 1 || id > (int) presets.size())
+            return;
+        if (beginEdit) beginEdit();
+        for (auto& [param, value] : presets[(size_t) id - 1].floats) param->store (value);
+        for (auto& [param, value] : presets[(size_t) id - 1].bools) param->store (value);
+        if (id > 1)
+            turnOn (s, enabled);
+        syncFromParams();
+    };
+    addAndMakeVisible (*raw);
+    s.footerRows.push_back ({ raw });
+    owned.push_back (std::move (box));
+}
+
+void FxPanel::setSectionVisible (Section& s, bool show)
+{
+    s.toggle.setVisible (show);
+    for (auto& row : s.rows)
+    {
+        row->label.setVisible (show);
+        row->slider.setVisible (show);
+    }
+    for (auto& footer : s.footerRows)
+        for (auto* c : footer)
+            c->setVisible (show);
+    for (auto* m : s.meters)
+        m->setVisible (show);
 }
 
 FxPanel::Section& FxPanel::addSection (const juce::String& title, std::atomic<bool>& enabled)
@@ -715,6 +1031,7 @@ void FxPanel::syncFromParams()
         for (auto& row : s->rows)
             if (row->param != nullptr)
                 row->slider.setValue (row->param->load(), juce::dontSendNotification);
+        // (the on/off boxes of the sections of the extra pages are kept by turnOn)
         s->toggle.setToggleState (s.get() == eqSection ? track.fx.eqOn.load() : s.get() == compSection ? track.fx.compOn.load() : s->toggle.getToggleState(),
                                   juce::dontSendNotification);
     }
@@ -723,6 +1040,9 @@ void FxPanel::syncFromParams()
             row.slider.setValue (row.param->load(), juce::dontSendNotification);
     autoToggle.setToggleState (track.fx.compAuto, juce::dontSendNotification);
     pingToggle.setToggleState (track.fx.delayPing, juce::dontSendNotification);
+    for (auto& [toggle, param] : toggleLinks)
+        toggle->setToggleState (param->load(), juce::dontSendNotification);
+    satTypeBox.setSelectedId (juce::jlimit (0, 4, (int) std::lround (track.fx.satType.load())) + 1, juce::dontSendNotification);
 }
 
 void FxPanel::applyDelayPreset (int index)
@@ -779,70 +1099,190 @@ void FxPanel::applyCompPreset (int index, bool withUndo)
     syncFromParams();
 }
 
+namespace
+{
+    // The chain strip: the effects in the order the sound goes through them (the numbers are the indexes of the sections)
+    constexpr int chainOrder[10] = { 4, 0, 1, 5, 8, 6, 9, 2, 3, 7 };
+    const char* const tileNames[10] = { "EQ", "Compressor", "Delay", "Reverb", "Gate", "De-esser", "Multiband", "Limiter", "Saturation", "Chorus" };   // by section index
+    constexpr int detailRowHeight = 30;
+}
+
+juce::Rectangle<int> FxPanel::tileRect (int k) const
+{
+    const auto b = getLocalBounds().reduced (14, 12);
+    const int gapTile = 6, w = (b.getWidth() - 9 * gapTile) / 10;
+    return { b.getX() + k * (w + gapTile), b.getY(), w, 52 };
+}
+
+void FxPanel::selectSection (int index)
+{
+    selected = juce::jlimit (0, (int) sections.size() - 1, index);
+    for (int i = 0; i < (int) sections.size(); ++i)
+        setSectionVisible (*sections[(size_t) i], i == selected);
+
+    const bool eq = selected == 0, comp = selected == 1;
+    eqCurve->setVisible (eq);
+    for (auto& row : bandRows)
+    {
+        row.label.setVisible (eq);
+        row.slider.setVisible (eq);
+    }
+    eqPresets.setVisible (eq);
+    eqReset.setVisible (eq);
+    compView->setVisible (comp);
+    resized();
+    repaint();
+}
+
+void FxPanel::mouseDown (const juce::MouseEvent& e)
+{
+    for (int k = 0; k < 10; ++k)
+    {
+        const auto r = tileRect (k);
+        if (! r.contains (e.getPosition()))
+            continue;
+        const int i = chainOrder[k];
+        if (e.x < r.getX() + 28 && e.y < r.getY() + 28)   // the light: switches the effect on or off
+            sections[(size_t) i]->toggle.triggerClick();
+        else
+            selectSection (i);
+        repaint();
+        return;
+    }
+}
+
 void FxPanel::paint (juce::Graphics& g)
 {
     g.fillAll (Theme::panel);
 
+    // the chain strip
+    for (int k = 0; k < 10; ++k)
+    {
+        const int i = chainOrder[k];
+        const auto r = tileRect (k).toFloat();
+        const bool on = sections[(size_t) i]->toggle.getToggleState(), sel = i == selected;
+        g.setColour (sel ? Theme::laneBg.brighter (0.07f) : Theme::laneBg);
+        g.fillRoundedRectangle (r, 9.0f);
+        if (sel)
+        {
+            g.setColour (Theme::orange);
+            g.drawRoundedRectangle (r.reduced (0.5f), 9.0f, 1.6f);
+        }
+
+        const auto led = juce::Rectangle<float> (r.getX() + 10.0f, r.getY() + 10.0f, 10.0f, 10.0f);
+        if (on)
+        {
+            g.setColour (Theme::orange.withAlpha (0.3f));
+            g.fillEllipse (led.expanded (3.0f));
+            g.setColour (Theme::yellow);
+            g.fillEllipse (led);
+        }
+        else
+        {
+            g.setColour (Theme::textFaint);
+            g.drawEllipse (led.reduced (0.5f), 1.2f);
+        }
+
+        g.setColour (on || sel ? Theme::text : Theme::text.withAlpha (0.6f));
+        g.setFont (juce::FontOptions (13.0f, sel ? juce::Font::bold : juce::Font::plain));
+        g.drawText (tileNames[i], r.toNearestInt().withTrimmedTop (26).reduced (8, 0), juce::Justification::centredLeft, true);
+
+        if (k < 9)   // a small arrow: the sound goes on to the next one
+        {
+            g.setColour (Theme::textFaint.withAlpha (0.6f));
+            const float ax = r.getRight() + 3.0f, ay = r.getY() + 14.0f;
+            g.drawLine (ax - 1.5f, ay - 3.0f, ax + 1.5f, ay, 1.0f);
+            g.drawLine (ax - 1.5f, ay + 3.0f, ax + 1.5f, ay, 1.0f);
+        }
+    }
+
+    // the card of the selected effect
     g.setColour (Theme::laneBg);
-    const auto b = getLocalBounds().reduced (gap / 2);
-    for (int i = 0; i < (int) sections.size(); ++i)
-        g.drawRoundedRectangle (sectionRect (b, i).withHeight (titleHeight + (i < 2 ? topRows : bottomRows) * rowHeight + 6).toFloat(), 6.0f, 1.0f);
+    g.fillRoundedRectangle (detail.toFloat(), 12.0f);
+    g.setColour (Theme::border.withAlpha (0.5f));
+    g.drawRoundedRectangle (detail.toFloat().reduced (0.5f), 12.0f, 1.0f);
 }
 
 void FxPanel::resized()
 {
-    const auto b = getLocalBounds().reduced (gap / 2);
-    monoToggle.setBounds (b.getX() + 12, b.getBottom() - 30, b.getWidth() - 24, 26);
+    const auto b = getLocalBounds().reduced (14, 12);
+    auto rest = b.withTrimmedTop (52 + 12);
+    auto bottom = rest.removeFromBottom (30);
+    monoToggle.setBounds (bottom.removeFromLeft (520));
+    rest.removeFromBottom (8);
+    detail = rest;
 
-    for (int i = 0; i < (int) sections.size(); ++i)
+    if (sections.empty())
+        return;
+    auto& s = *sections[(size_t) selected];
+    auto area = detail.reduced (20, 14);
+
+    auto header = area.removeFromTop (32);   // the name with its on/off box, the meters on the right
+    for (int m = (int) s.meters.size() - 1; m >= 0; --m)
+        s.meters[(size_t) m]->setBounds (header.removeFromRight (s.meters.size() > 1 ? 110 : 220).reduced (2, 7));
+    s.toggle.setBounds (header.removeFromLeft (260));
+    area.removeFromTop (6);
+
+    // sliders and the rows under them, spread over two columns
+    auto layoutItems = [&] (juce::Rectangle<int> r)
     {
-        auto& s = *sections[(size_t) i];
-        auto area = sectionRect (b, i).reduced (10, 0);
+        const int total = (int) s.rows.size() + (int) s.footerRows.size();
+        const int perColumn = (total + 1) / 2;
+        const int colGap = 28, colW = (r.getWidth() - colGap) / 2;
+        for (int idx = 0; idx < total; ++idx)
+        {
+            const int column = idx / perColumn, row = idx % perColumn;
+            const juce::Rectangle<int> cell (r.getX() + column * (colW + colGap), r.getY() + row * detailRowHeight, colW, detailRowHeight);
+            if (idx < (int) s.rows.size())
+            {
+                auto& rw = *s.rows[(size_t) idx];
+                auto c = cell;
+                rw.label.setBounds (c.removeFromLeft (84));
+                rw.slider.setBounds (c);
+                continue;
+            }
+            auto& footer = s.footerRows[(size_t) idx - s.rows.size()];
+            auto c = cell.reduced (0, 2);
+            if (footer.size() == 1)
+                footer[0]->setBounds (c);
+            else if (dynamic_cast<juce::Label*> (footer[0]) != nullptr)
+            {
+                footer[0]->setBounds (c.removeFromLeft (84));
+                footer[1]->setBounds (c);
+            }
+            else
+            {
+                const int w = c.getWidth() / (int) footer.size();
+                for (auto* comp : footer)
+                    comp->setBounds (c.removeFromLeft (w));
+            }
+        }
+    };
 
-        s.toggle.setBounds (area.removeFromTop (titleHeight).reduced (0, 3));
-        for (auto& row : s.rows)
+    if (&s == eqSection)   // the curve on the left, the sliders of the selected band and the presets on the right
+    {
+        auto left = area.removeFromLeft ((int) (area.getWidth() * 0.64f));
+        area.removeFromLeft (24);
+        eqCurve->setBounds (left);
+        for (auto& row : bandRows)
         {
-            auto r = area.removeFromTop (rowHeight);
-            row->label.setBounds (r.removeFromLeft (70));
-            row->slider.setBounds (r);
+            auto r = area.removeFromTop (detailRowHeight);
+            row.label.setBounds (r.removeFromLeft (70));
+            row.slider.setBounds (r);
         }
-        if (&s == eqSection)
-        {
-            eqCurve->setBounds (area.removeFromTop (area.getHeight() - 4 * rowHeight - 6).reduced (0, 3));   // (all the room left over, the sliders and presets under it)
-            for (auto& row : bandRows)
-            {
-                auto r = area.removeFromTop (rowHeight);
-                row.label.setBounds (r.removeFromLeft (70));
-                row.slider.setBounds (r);
-            }
-            auto r = area.removeFromTop (rowHeight).reduced (0, 2);
-            eqReset.setBounds (r.removeFromRight (60));
-            r.removeFromRight (6);
-            eqPresets.setBounds (r);
-        }
-        if (&s == delaySection)
-        {
-            auto r = area.removeFromTop (rowHeight).reduced (0, 2);
-            pingToggle.setBounds (r.removeFromLeft (r.getWidth() / 2 - 3));
-            r.removeFromLeft (6);
-            delaySync.setBounds (r);
-            delayPresets.setBounds (area.removeFromTop (rowHeight).reduced (0, 2));
-        }
-        if (&s == reverbSection)
-            reverbPresets.setBounds (area.removeFromTop (rowHeight).reduced (0, 2));
-        if (&s == compSection)
-        {
-            auto r = area.removeFromTop (rowHeight).reduced (0, 2);
-            autoToggle.setBounds (r.removeFromLeft (r.getWidth() / 2 - 3));
-            r.removeFromLeft (6);
-            compPresets.setBounds (r);
-            if (sideBox.getNumItems() > 0)
-            {
-                auto sr = area.removeFromTop (rowHeight);
-                sideLabel.setBounds (sr.removeFromLeft (70));
-                sideBox.setBounds (sr.reduced (0, 2));
-            }
-            compView->setBounds (area.removeFromTop (area.getHeight() - 6).reduced (0, 3));
-        }
+        area.removeFromTop (14);
+        auto r = area.removeFromTop (detailRowHeight).reduced (0, 2);
+        eqReset.setBounds (r.removeFromRight (64));
+        r.removeFromRight (6);
+        eqPresets.setBounds (r);
     }
+    else if (&s == compSection)   // the sliders on the left (two columns), the curve and the gain reduction on the right
+    {
+        auto right = area.removeFromRight ((int) (area.getWidth() * 0.34f));
+        area.removeFromRight (24);
+        compView->setBounds (right);
+        layoutItems (area);
+    }
+    else
+        layoutItems (area);
 }

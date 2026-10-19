@@ -226,6 +226,7 @@ struct Track
 
     juce::String name;
     juce::uint32 colour = 0;            // the colour of the track in the headers, mixer and clips (ARGB); 0 = the colour of its type
+    int groupId = 0;                    // the folder (track group) the track is in; 0 = none. The members of a group sit next to each other.
     // The key of the piano roll of this track (see Scales.h): root 0..11, scale 0 = none, snap = new and moved notes stay in the scale,
     // chord 0 / 1 / 2 = single notes / triads / sevenths when a note is added
     int scaleRoot = 0, scaleType = 0, scaleChord = 0;
@@ -233,6 +234,10 @@ struct Track
     // Sidechain: this track's compressor listens to the sound of sidechainSource instead of its own (it ducks when that one is loud). A track
     // that is used this way (sidechainTapped) is rendered first and leaves a copy of its sound in scL / scR for the others.
     std::atomic<Track*> sidechainSource { nullptr };
+    // Freeze: the track was bounced to audio (the track named freezeTwin plays that); this one is switched off completely (no instrument, effects or
+    // plugins run) until it is unfrozen, which saves the CPU.
+    std::atomic<bool> frozen { false };
+    Track* freezeTwin = nullptr;
     std::atomic<bool> sidechainTapped { false };
     std::vector<float> scL, scR;
     Type type = Type::Audio;
@@ -325,6 +330,7 @@ struct TrackState
 {
     juce::String name;
     juce::uint32 colour = 0;
+    int groupId = 0;
     int scaleRoot = 0, scaleType = 0, scaleChord = 0;
     bool scaleSnap = false;
     Track::Type type = Track::Type::Audio;
@@ -359,7 +365,9 @@ struct TrackState
     std::vector<std::pair<int, int>> midiOuts;   // (index of the target track, channel) of each MIDI route
     bool bus = false;
     int outputIndex = -1;                        // index of the bus this track plays into (-1 = master)
-    int sidechainIndex = -1;                     // index of the track its compressor listens to (-1 = its own signal)
+    bool frozen = false;
+    int freezeTwinIndex = -1;
+    int sidechainIndex = -1;                   // index of the track its compressor listens to (-1 = its own signal)
     struct SendState { int bus = -1; float level = 0.5f; bool preFader = false; };
     std::vector<SendState> sends;
     std::vector<ExternalRoute> externalOuts;
@@ -396,8 +404,17 @@ struct RangeBundle
     double length = 0.0;
 };
 
+// A folder of tracks: shown under one header with a name, that collapses and mutes or solos all of them (message thread only; the audio doesn't use it)
+struct TrackGroup
+{
+    int id = 0;
+    juce::String name;
+    bool collapsed = false;
+};
+
 struct ProjectState
 {
+    std::vector<TrackGroup> groups;
     // The state of some plugins at that moment (only those whose own window was opened: what is done inside it is part of undo this way)
     std::vector<std::pair<std::shared_ptr<PluginSlot>, juce::MemoryBlock>> pluginStates;
     std::vector<ArrSection> sections;
@@ -424,6 +441,14 @@ public:
     void removeTrack (Track*);
     Track* duplicateTrack (const Track&);              // a copy right after the original: clips, settings, effects, sampler / drum kit (plugins are not copied here)
     bool moveTrack (Track&, int delta);                // -1 = one place up, +1 = one place down; false if it is already at the end
+
+    // Track groups (folders). A track put in a group is moved next to its other members; empty groups disappear.
+    std::vector<TrackGroup>& getGroups() { return groups; }
+    const std::vector<TrackGroup>& getGroups() const { return groups; }
+    int createGroup (const juce::String& name);                    // the new group's id
+    void setTrackGroup (Track&, int groupId);                      // 0 = take it out of its group
+    TrackGroup* findGroup (int id);
+    std::vector<Track*> groupMembers (int id) const;
     // Sub-tracks of a MIDI track (see SubLane): replace the list; the mute / solo state decides which pitches are heard
     void setSubLanes (Track&, std::vector<SubLane>, bool open);
     void updateSubLaneMask (Track&);                  // after mute / solo changed (call with the engine lock)
@@ -637,12 +662,16 @@ public:
         int formatChoice = -1;                          // an index into AudioExport::choices() (WAV, FLAC, AIFF, MP3, Ogg); -1 = WAV with `bits`
         const Track* onlyTrack = nullptr;               // set: render just this track (a stem)
         bool masterProcessing = true;                   // false: no master volume / limiter (stems)
+        bool noDelayCompensation = false;               // true: the track is not delayed to line up with plugins on other tracks (freeze)
         std::function<bool()> shouldCancel;             // polled between blocks; true stops the render
         std::function<void (double)> onProgress;        // 0..1, called from the rendering thread
     };
     bool renderToFile (const juce::File&, double lengthSeconds, bool withMetronome);
     bool renderToFile (const juce::File&, double lengthSeconds, const RenderOptions&);
-    bool trackHasOutput (const Track&) const;           // whether the track would give a non-empty stem
+    static int latencyOf (const Track& t) { return trackLatency (t); }   // samples of delay the plugins of the track add
+    // Message thread: true once when a plugin crashed while it was playing (it is switched off), with its name
+    bool takeCrashedPlugin (juce::String& name);
+    bool trackHasOutput (const Track&) const;       // whether the track would give a non-empty stem
 
     // Records the audio input (while the transport plays) straight to a 24-bit WAV on a background thread.
     // Several files can record at the same time, each from its own input channels (numbered among the device's
@@ -653,6 +682,20 @@ public:
         int numChannels = 2;   // 1 or 2
         juce::File file;
     };
+    // What has been recorded so far as peaks, for drawing the waveform while it forms: one value (the loudest sample) per `bucket` samples.
+    // The audio thread appends; `count` says how many are valid.
+    struct RecPeaks
+    {
+        std::vector<float> data;
+        std::atomic<int> count { 0 };
+        int bucket = 480;
+        float cur = 0.0f;   // (audio thread)
+        int fill = 0;
+    };
+    std::shared_ptr<const RecPeaks> getRecordingPeaks (int targetIndex) const   // message thread; null when there is no such recording
+    {
+        return juce::isPositiveAndBelow (targetIndex, (int) livePeaks.size()) ? livePeaks[(size_t) targetIndex] : nullptr;
+    }
     bool startRecording (const std::vector<RecordTarget>&);   // false (nothing recording) if any file cannot be created
     void stopRecording();
     bool isRecording() const { return recordingActive.load(); }
@@ -791,6 +834,8 @@ private:
     void renderSamplerTrack (Track&, int numSamples, juce::int64 pos, bool running, float* outL, float* outR);
     void renderPluginInstrument (Track&, int numSamples, float* outL, float* outR);
     void processInsert (PluginSlot&, float* l, float* r, int numSamples);
+    bool processPlugin (PluginSlot&, juce::AudioBuffer<float>&, juce::MidiBuffer&);   // processBlock behind the crash guard; false = the plugin crashed (now or before)
+    std::atomic<PluginSlot*> crashedPlugin { nullptr };                                // the first plugin that crashed and was not reported yet
 
     Clip* findClip (Track&, int clipId);
     const Clip* findClip (const Track&, int clipId) const;
@@ -821,8 +866,10 @@ private:
     {
         std::unique_ptr<juce::AudioFormatWriter::ThreadedWriter> writer;
         int first = 0, count = 2;
+        std::shared_ptr<RecPeaks> peaks;
     };
-    std::vector<Recorder> recorders;                // guarded by recLock; the audio thread only try-locks it
+    std::vector<std::shared_ptr<RecPeaks>> livePeaks;   // the same peaks, for the message thread (in the order of the targets)
+    std::vector<Recorder> recorders;               // guarded by recLock; the audio thread only try-locks it
     std::atomic<bool> recordingActive { false };
     // MIDI clock (guarded by `lock`; the audio thread reads it while it holds it)
     std::vector<int> clockPorts;
@@ -849,6 +896,8 @@ private:
     std::atomic<bool> punchDone { false };
     std::atomic<juce::int64> recFirstSample { -1 };
     int nextTakeGroup = 1;
+    std::vector<TrackGroup> groups;
+    int nextGroupId = 1;
 
     std::vector<ArrSection> arrangement;
     std::array<float, tunerRingSize> tunerRing {};
@@ -896,6 +945,7 @@ private:
     void applyReference (float* l, float* r, int n, juce::int64 pos, bool running);
     const Track* renderOnly = nullptr;              // set during an offline render of a single track
     bool renderMaster = true;
+    bool renderNoPdc = false;
 
     std::atomic<bool> playing { false };
     std::atomic<juce::int64> positionSamples { 0 };

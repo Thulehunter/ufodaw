@@ -37,6 +37,8 @@ private:
     void changeListenerCallback (juce::ChangeBroadcaster*) override;   // known plugin list changed: save it
 
     juce::File listFile() const;
+    juce::File blockedFile() const;
+    bool isBlocked (const juce::PluginDescription&) const;
 
     juce::AudioPluginFormatManager formats;
     juce::KnownPluginList knownPlugins;

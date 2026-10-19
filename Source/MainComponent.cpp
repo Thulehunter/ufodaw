@@ -241,6 +241,18 @@ public:
                                                                     : Theme::trackColour (track.type == Track::Type::Midi, track.kit != nullptr));
         g.fillRoundedRectangle (card.getX() + 3.0f, card.getY() + 8.0f, isMaster ? 5.0f : 4.0f, card.getHeight() - 16.0f, 2.0f);
 
+        if (track.groupId != 0)   // a member of a group: a line at the left edge, under the group's header
+        {
+            g.setColour (Theme::yellowDim);
+            g.fillRect (card.getX() - 3.0f, card.getY() - 3.0f, 3.0f, card.getHeight() + 6.0f);
+        }
+
+        if (track.frozen.load())
+        {
+            g.setColour (Theme::yellow.withAlpha (0.8f));   // a yellow frame: this track is switched off, its bounce (the next track) plays
+            g.drawRoundedRectangle (card.reduced (1.0f), 10.0f, 2.0f);
+        }
+
         // level meter, with a clip lamp on top: it lights red when the track (or, for an armed audio track, its input) reached full
         // scale and stays lit until you click it, so a clip that happened a moment ago is not missed
         const bool clip = track.clipped.load() || track.inputClipped.load();
@@ -739,6 +751,16 @@ public:
 
     Track& getTrack() { return track; }
 
+    // while this track records, the lane is redrawn as the waveform grows
+    void tickLive()
+    {
+        double start = 0.0, perPeak = 0.01;
+        const bool live = main.liveRecordingFor (track, start, perPeak) != nullptr;
+        if (live || liveShown)
+            repaint();
+        liveShown = live;
+    }
+
     void paint (juce::Graphics& g) override
     {
         const double pps = main.getPixelsPerSecond();
@@ -870,6 +892,39 @@ public:
             g.restoreState();
         }
 
+        // the audio that is being recorded into this track: its waveform grows while you play
+        {
+            double liveStart = 0.0, perPeak = 0.01;
+            if (auto live = main.liveRecordingFor (track, liveStart, perPeak))
+            {
+                const int count = live->count.load (std::memory_order_acquire);
+                const auto r = rectFor (liveStart, juce::jmax (0.05, count * perPeak), pps);
+                if (r.intersects (area))
+                {
+                    g.setColour (Theme::redBright.withAlpha (0.28f));
+                    g.fillRoundedRectangle (r.toFloat(), 4.0f);
+                    const float mid = (float) r.getCentreY();
+                    const float half = (float) r.getHeight() * 0.5f - 3.0f;
+                    g.setColour (Theme::redBright);
+                    for (int x = juce::jmax (r.getX(), area.getX()); x < juce::jmin (r.getRight(), area.getRight()); ++x)
+                    {
+                        const int from = (int) ((double) (x - r.getX()) / pps / perPeak);
+                        const int to = juce::jmin (count, juce::jmax (from + 1, (int) ((double) (x + 1 - r.getX()) / pps / perPeak)));
+                        float p = 0.0f;
+                        for (int k = juce::jmax (0, from); k < to; ++k)
+                            p = juce::jmax (p, live->data[(size_t) k]);
+                        p = juce::jmin (1.0f, p);
+                        g.drawVerticalLine (x, mid - p * half, mid + p * half + 1.0f);
+                    }
+                    g.setColour (Theme::redBright);
+                    g.drawRoundedRectangle (r.toFloat(), 4.0f, 1.5f);
+                    g.setColour (Theme::text.withAlpha (0.85f));
+                    g.setFont (11.0f);
+                    g.drawText ("Recording...", r.getX() + 5, r.getY() + 2, 120, 13, juce::Justification::left);
+                }
+            }
+        }
+
         // MIDI clips, with a miniature of their notes
         for (auto& m : main.getEngine().getMidiClips (track))
         {
@@ -930,7 +985,7 @@ public:
         }
 
         // an audio track without clips says what can be done with it
-        if (track.type == Track::Type::Audio && ! track.bus && clips.empty() && track.autoEditId.isEmpty() && ! main.getEngine().isMaster (track))
+        if (track.type == Track::Type::Audio && ! track.bus && clips.empty() && track.autoEditId.isEmpty() && ! main.getEngine().isMaster (track) && ! main.getEngine().isRecording())
         {
             g.setColour (track.recordArmed ? Theme::redBright : Theme::textFaint);
             g.setFont (juce::FontOptions (13.0f));
@@ -2121,7 +2176,7 @@ private:
     AutoInfo cachedInfo;
     int autoDrag = -1;
     bool autoEdited = false;
-    bool armedShown = false;
+    bool armedShown = false, liveShown = false;
     double rangeA = -1.0, rangeB = -1.0;   // the time range picked with Shift+drag in an automation lane (for comping)
     bool rangeDragging = false;
     int compRow = -2;
@@ -2295,6 +2350,106 @@ private:
     MainComponent& main;
     Track* track;
     int sub;
+};
+
+// The header row of a track group (folder): an arrow to collapse the tracks, the name, and mute / solo for all of them together.
+class GroupHeader : public juce::Component, public juce::SettableTooltipClient, private juce::Timer
+{
+public:
+    GroupHeader (MainComponent& m, int id) : main (m), groupId (id)
+    {
+        muteButton.setButtonText ("M");
+        soloButton.setButtonText ("S");
+        muteButton.setTooltip ("Mute or unmute all the tracks of this group");
+        soloButton.setTooltip ("Solo or unsolo all the tracks of this group");
+        muteButton.onClick = [this] { main.muteSoloGroup (groupId, false); };
+        soloButton.onClick = [this] { main.muteSoloGroup (groupId, true); };
+        addAndMakeVisible (muteButton);
+        addAndMakeVisible (soloButton);
+        setTooltip ("Click to collapse or expand the group. Double-click to rename. Right-click for more.");
+        startTimerHz (5);
+        refresh();
+    }
+
+    int getGroupId() const { return groupId; }
+
+    void paint (juce::Graphics& g) override
+    {
+        g.fillAll (Theme::background);
+        const auto card = getLocalBounds().toFloat().reduced (5.0f, 2.0f);
+        g.setColour (Theme::panel.brighter (0.06f));
+        g.fillRoundedRectangle (card, 8.0f);
+        g.setColour (Theme::yellowDim);
+        g.fillRoundedRectangle (card.getX() + 3.0f, card.getY() + 5.0f, 4.0f, card.getHeight() - 10.0f, 2.0f);
+
+        auto* group = main.getEngine().findGroup (groupId);
+        const bool collapsed = group != nullptr && group->collapsed;
+        g.setColour (Theme::yellow);
+        juce::Path arrow;   // ▸ collapsed, ▾ open
+        const float cx = card.getX() + 20.0f, cy = card.getCentreY();
+        if (collapsed) arrow.addTriangle (cx - 3.0f, cy - 5.0f, cx - 3.0f, cy + 5.0f, cx + 4.0f, cy);
+        else           arrow.addTriangle (cx - 5.0f, cy - 3.0f, cx + 5.0f, cy - 3.0f, cx, cy + 4.0f);
+        g.fillPath (arrow);
+
+        g.setColour (Theme::text);
+        g.setFont (juce::FontOptions (13.0f, juce::Font::bold));
+        const int count = (int) main.getEngine().groupMembers (groupId).size();
+        g.drawText (group != nullptr ? group->name : juce::String ("Group"), 34, 0, getWidth() - 34 - 82, getHeight(), juce::Justification::centredLeft, true);
+        g.setColour (Theme::textFaint);
+        g.setFont (juce::FontOptions (11.0f));
+        g.drawText (juce::String (count) + (count == 1 ? " track" : " tracks"), getWidth() - 160, 0, 74, getHeight(), juce::Justification::centredRight);
+    }
+
+    void resized() override
+    {
+        auto r = getLocalBounds().reduced (6, 5);
+        soloButton.setBounds (r.removeFromRight (26));
+        r.removeFromRight (4);
+        muteButton.setBounds (r.removeFromRight (26));
+    }
+
+    void mouseDown (const juce::MouseEvent& e) override
+    {
+        if (e.mods.isPopupMenu())
+            main.showGroupMenu (groupId);
+    }
+
+    void mouseUp (const juce::MouseEvent& e) override
+    {
+        if (! e.mods.isPopupMenu() && ! e.mouseWasDraggedSinceMouseDown() && e.getNumberOfClicks() == 1)
+            main.toggleGroupCollapsed (groupId);
+    }
+
+    void mouseDoubleClick (const juce::MouseEvent&) override { main.toggleGroupCollapsed (groupId); main.renameGroup (groupId); }   // (the first click collapsed, the second undoes it)
+
+private:
+    void timerCallback() override { refresh(); }
+
+    void refresh()
+    {
+        bool allMuted = true, anySolo = false;
+        const auto members = main.getEngine().groupMembers (groupId);
+        for (auto* t : members)
+        {
+            allMuted = allMuted && t->mute.load();
+            anySolo = anySolo || t->solo.load();
+        }
+        const bool muted = ! members.empty() && allMuted;
+        if (muted != muteShown || anySolo != soloShown)
+        {
+            muteShown = muted;
+            soloShown = anySolo;
+            muteButton.setColour (juce::TextButton::buttonColourId, muted ? Theme::redBright : Theme::buttonOff);
+            soloButton.setColour (juce::TextButton::buttonColourId, anySolo ? Theme::yellow : Theme::buttonOff);
+            soloButton.setColour (juce::TextButton::textColourOffId, anySolo ? Theme::background : Theme::text);
+        }
+        repaint();
+    }
+
+    MainComponent& main;
+    int groupId;
+    juce::TextButton muteButton, soloButton;
+    bool muteShown = false, soloShown = false;
 };
 
 // The left side of a sub-track: its name, the pitch it stands for, and mute / solo for just that pitch.
@@ -4534,6 +4689,14 @@ void MainComponent::showTrackMenu (Track& t)
         menu.addSeparator();
         menu.addSubMenu ("Colour", colours);
         menu.addItem (30, "Save as a template...");
+        showTrackGroupMenuItems (menu, t);
+        if (! t.bus)
+        {
+            menu.addSeparator();
+            menu.addItem (t.frozen.load() ? 61 : 60,
+                          t.frozen.load() ? "Unfreeze (play the track itself again)" : "Freeze: bounce to audio and switch it off (saves CPU)",
+                          t.frozen.load() || engine.trackHasOutput (t));
+        }
     }
     if (t.type == Track::Type::Midi && ! t.bus)
     {
@@ -4601,8 +4764,29 @@ void MainComponent::showTrackMenu (Track& t)
             case 9: self.openInstrumentEditor (track); break;
             case 21: case 22: case 23: case 24: case 25: self.applySubLaneChoice (track, result - 20); break;
             case 30: self.saveTrackTemplate (track); break;
+            case 60: self.freezeTrack (track); break;
+            case 61: self.unfreezeTrack (track); break;
+            case 70:   // a new group with this track
+            {
+                self.beginEdit();
+                const int id = self.engine.createGroup ("Group " + juce::String ((int) self.engine.getGroups().size() + 1));
+                self.engine.setTrackGroup (track, id);
+                self.groupChanged();
+                break;
+            }
+            case 71:
+                self.beginEdit();
+                self.engine.setTrackGroup (track, 0);
+                self.groupChanged();
+                break;
             default:
-                if (result >= 40 && result < 40 + (int) trackPalette.size())   // a colour
+                if (result >= 80 && result < 80 + (int) self.engine.getGroups().size())   // into an existing group
+                {
+                    self.beginEdit();
+                    self.engine.setTrackGroup (track, self.engine.getGroups()[(size_t) (result - 80)].id);
+                    self.groupChanged();
+                }
+                else if (result >= 40 && result < 40 + (int) trackPalette.size())   // a colour
                 {
                     self.beginEdit();
                     track.colour = trackPalette[(size_t) (result - 40)];
@@ -4816,27 +5000,60 @@ void MainComponent::layoutContent()
     const double seconds = engine.getTotalLengthSeconds() + 10.0;
     const int contentW = juce::jmax (visibleW, (int) (seconds * pixelsPerSecond));
 
-    // the rows from the top: a track, then its sub-tracks (when they are shown), then the next track
+    syncGroupUI();   // (group header rows come and go with the groups)
+
+    // the rows from the top: a group header (above the first track of a group), a track, then its sub-tracks (when they are shown), then the next track.
+    // The tracks of a collapsed group are hidden.
     trackTops.assign ((size_t) lanes.size(), 0);
-    int y = 0, subIndex = 0, footerIndex = 0;
+    int y = 0, subIndex = 0, footerIndex = 0, groupIndex = 0, previousGroup = 0;
     for (int i = 0; i < lanes.size(); ++i)
     {
+        const int gid = lanes[i]->getTrack().groupId;
+        bool hidden = false;
+        if (gid != 0)
+        {
+            auto* group = engine.findGroup (gid);
+            if (gid != previousGroup && group != nullptr && groupIndex < groupHeaders.size())
+            {
+                groupHeaders[groupIndex]->setBounds (0, y, controlsWidth, groupRowHeight);
+                groupBands[groupIndex]->setBounds (0, y, contentW, groupRowHeight);
+                y += groupRowHeight;
+                ++groupIndex;
+            }
+            hidden = group != nullptr && group->collapsed;
+        }
+        previousGroup = gid;
+
         trackTops[(size_t) i] = y;
-        lanes[i]->setBounds (0, y, contentW, stripHeight);
-        headers[i]->setBounds (0, y, controlsWidth, stripHeight);
-        y += stripHeight;
+        lanes[i]->setVisible (! hidden);
+        headers[i]->setVisible (! hidden);
+        if (! hidden)
+        {
+            lanes[i]->setBounds (0, y, contentW, stripHeight);
+            headers[i]->setBounds (0, y, controlsWidth, stripHeight);
+            y += stripHeight;
+        }
         while (subIndex < subRows.size() && subRows[subIndex]->getTrack() == &lanes[i]->getTrack())
         {
-            subRows[subIndex]->setBounds (0, y, contentW, subLaneHeight);
-            subHeaders[subIndex]->setBounds (0, y, controlsWidth, subLaneHeight);
-            y += subLaneHeight;
+            subRows[subIndex]->setVisible (! hidden);
+            subHeaders[subIndex]->setVisible (! hidden);
+            if (! hidden)
+            {
+                subRows[subIndex]->setBounds (0, y, contentW, subLaneHeight);
+                subHeaders[subIndex]->setBounds (0, y, controlsWidth, subLaneHeight);
+                y += subLaneHeight;
+            }
             ++subIndex;
         }
         if (auto& t = lanes[i]->getTrack(); t.type == Track::Type::Midi && t.subLanesOpen && ! t.subLanes.empty() && footerIndex < subFooters.size()
                                             && subFooters[footerIndex]->getTrack() == &t)
         {
-            subFooters[footerIndex]->setBounds (0, y, controlsWidth, subFooterHeight);
-            y += subFooterHeight;
+            subFooters[footerIndex]->setVisible (! hidden);
+            if (! hidden)
+            {
+                subFooters[footerIndex]->setBounds (0, y, controlsWidth, subFooterHeight);
+                y += subFooterHeight;
+            }
             ++footerIndex;
         }
     }
@@ -5656,6 +5873,11 @@ void MainComponent::openMidiLearn()
 void MainComponent::timerCallback()
 {
     applyMidiMappings();
+    if (juce::String crashed; engine.takeCrashedPlugin (crashed))   // a plugin crashed while playing: it was caught and switched off
+        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "A plugin crashed",
+                                                crashed + " crashed while it was playing. UFODAW caught it and switched the plugin off, so the program could go on: "
+                                                          "an effect now lets the sound through, an instrument is silent.\n\nSave your project and open it again to load the plugin again. "
+                                                          "If it keeps happening, the plugin has a problem (an update may help).");
     if (++subAutoTicks % 20 == 0)
         autoSubLanes();   // about once a second: a drum plugin may just have been loaded
     {
@@ -5664,7 +5886,10 @@ void MainComponent::timerCallback()
         if (engine.recordedTakeCounter != takesBefore)
             ++editCounter;                // (unsaved changes, autosave)
         for (auto* lane : lanes)
+        {
             lane->checkArmed();
+            lane->tickLive();
+        }
         static int armedTicks = 0;
         if (engine.anyAutomationArmed() && (++armedTicks % 3 == 0 || engine.recordedTakeCounter != takesBefore))
             for (auto* lane : lanes)   // the REC mark and the new takes show up while riding
@@ -6738,6 +6963,8 @@ void MainComponent::saveProject (const juce::File& file, SaveKind kind)
                 o->setProperty ("midiChannel", t->midiInputChannel);
         }
         o->setProperty ("sequencer", t->sequencer);
+        if (t->groupId != 0)
+            o->setProperty ("group", t->groupId);
         o->setProperty ("inputFirst", t->inputFirst);   // audio tracks: the interface input(s) it records from
         o->setProperty ("inputCount", t->inputCount);
         if (t->bus)
@@ -6746,6 +6973,12 @@ void MainComponent::saveProject (const juce::File& file, SaveKind kind)
             o->setProperty ("output", engine.indexOfTrack (t->output));   // buses and sends point at tracks by index
         if (t->sidechainSource.load() != nullptr)                         // the track the compressor listens to
             o->setProperty ("sidechain", engine.indexOfTrack (t->sidechainSource.load()));
+        if (t->frozen.load())                                             // bounced: the track that plays the bounce
+        {
+            o->setProperty ("frozen", true);
+            if (t->freezeTwin != nullptr)
+                o->setProperty ("freezeTwin", engine.indexOfTrack (t->freezeTwin));
+        }
         if (! t->sends.empty())
         {
             juce::Array<juce::var> sendList;
@@ -6821,6 +7054,19 @@ void MainComponent::saveProject (const juce::File& file, SaveKind kind)
             arrangementList.add (juce::var (so));
         }
         root->setProperty ("arrangement", arrangementList);
+    }
+    if (! engine.getGroups().empty())   // track groups (folders)
+    {
+        juce::Array<juce::var> groupList;
+        for (auto& g : engine.getGroups())
+        {
+            auto* go = new juce::DynamicObject();
+            go->setProperty ("id", g.id);
+            go->setProperty ("name", g.name);
+            go->setProperty ("collapsed", g.collapsed);
+            groupList.add (juce::var (go));
+        }
+        root->setProperty ("groups", groupList);
     }
     root->setProperty ("master", juce::var (masterObject));
     if (! midiMappings.empty())   // MIDI learn: which controller moves which parameter
@@ -7376,6 +7622,7 @@ void MainComponent::resetToEmptyProject()
     tempoMap.setSections ({ TempoSection() });
     engine.setTempoMap (tempoMap, false);
     engine.setSections ({});
+    engine.getGroups().clear();
     engine.clearReference();
     midiMappings.clear();
     engine.metronome = false;
@@ -7483,6 +7730,18 @@ void MainComponent::loadProject (const juce::File& file, bool asTemplate)
                 arrangement.push_back (s);
             }
         engine.setSections (std::move (arrangement));
+
+        engine.getGroups().clear();
+        if (auto* list = root["groups"].getArray())
+            for (auto& gv : *list)
+            {
+                TrackGroup g;
+                g.id = (int) gv.getProperty ("id", 0);
+                g.name = gv.getProperty ("name", "Group").toString();
+                g.collapsed = (bool) gv.getProperty ("collapsed", false);
+                if (g.id > 0)
+                    engine.getGroups().push_back (g);
+            }
     }
     engine.metronome = (bool) root.getProperty ("metronome", false);
     bpmSlider.setValue (tempoMap.getSections().front().bpm, juce::dontSendNotification);
@@ -7804,6 +8063,15 @@ void MainComponent::loadProject (const juce::File& file, bool asTemplate)
                 if (! asTemplate && item.hasProperty ("sidechain"))
                     if (auto* source = engine.getTrack ((int) item["sidechain"]))
                         engine.setSidechain (*from, source);
+                if (! asTemplate)
+                    from->groupId = (int) item.getProperty ("group", 0);
+                if (! asTemplate && (bool) item.getProperty ("frozen", false))
+                {
+                    from->frozen = true;
+                    if (item.hasProperty ("freezeTwin"))
+                        if (auto* twin = engine.getTrack ((int) item["freezeTwin"]); twin != nullptr && twin != from)
+                            from->freezeTwin = twin;
+                }
                 if (auto* sendArray = asTemplate ? nullptr : item["sends"].getArray())
                     for (auto& sv : *sendArray)
                         if (auto* bus = engine.getTrack ((int) sv["bus"]))
@@ -7831,6 +8099,118 @@ void MainComponent::loadProject (const juce::File& file, bool asTemplate)
         juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon,
                                                 "Some plugins could not be loaded",
                                                 pluginProblems.joinIntoString ("\n"));
+}
+
+// Renders one track (with its instrument, effects, plugins, volume and pan) to a WAV file behind a progress window, for Freeze.
+class FreezeJob : public juce::ThreadWithProgressWindow
+{
+public:
+    FreezeJob (Engine& e, Track* t, juce::File target, double lengthSeconds, juce::Component* centreAround, std::function<void (bool)> whenDone)
+        : juce::ThreadWithProgressWindow ("Freezing " + t->name, true, true, 5000, "Cancel", centreAround),
+          engine (e), track (t), file (std::move (target)), seconds (lengthSeconds), done (std::move (whenDone))
+    {
+    }
+
+    void run() override
+    {
+        Engine::RenderOptions options;
+        options.onlyTrack = track;
+        options.masterProcessing = false;
+        options.noDelayCompensation = true;
+        options.bits = 32;   // floating point: no clipping in the bounce
+        options.shouldCancel = [this] { return threadShouldExit(); };
+        options.onProgress = [this] (double f) { setProgress (f); };
+        ok = engine.renderToFile (file, seconds, options);
+    }
+
+    void threadComplete (bool userPressedCancel) override
+    {
+        const bool good = ok && ! userPressedCancel;
+        if (! good)
+            file.deleteFile();
+        if (done)
+            done (good);
+    }
+
+private:
+    Engine& engine;
+    Track* track;
+    juce::File file;
+    double seconds;
+    std::function<void (bool)> done;
+    bool ok = false;
+};
+
+void MainComponent::freezeTrack (Track& t)
+{
+    finishRecording();
+    engine.stop();
+    if (t.frozen.load() || t.bus || ! engine.trackHasOutput (t))
+        return;
+
+    const int latency = Engine::latencyOf (t);   // (the plugins' delay: trimmed off the bounce, the compensation puts the track back in time)
+    const auto folder = juce::File::getSpecialLocation (juce::File::userDocumentsDirectory).getChildFile ("UFODAW Recordings");
+    folder.createDirectory();
+    const auto file = folder.getChildFile ("Freeze " + juce::Time::getCurrentTime().formatted ("%Y-%m-%d %H-%M-%S") + " - "
+                                           + juce::File::createLegalFileName (t.name) + ".wav");
+    const double seconds = engine.getTotalLengthSeconds() + engine.getRenderTailSeconds();
+
+    juce::Component::SafePointer<MainComponent> safe (this);
+    Track* ref = &t;
+    auto* job = new FreezeJob (engine, ref, file, seconds, this, [safe, ref, file, latency] (bool ok)
+    {
+        if (safe == nullptr || ! ok || safe->engine.indexOfTrack (ref) < 0)
+            return;
+        auto& self = *safe;
+
+        self.beginEdit();
+        auto* twin = self.engine.addTrack (ref->name + " (frozen)");
+        const int id = twin != nullptr ? self.engine.addClipFromFile (*twin, file, 0.0) : -1;
+        if (twin == nullptr || id < 0)
+        {
+            if (twin != nullptr)
+                self.engine.removeTrack (twin);
+            self.cancelEdit();
+            file.deleteFile();
+            juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Freeze failed", "The bounce could not be loaded.");
+            return;
+        }
+
+        Clip whole;
+        if (latency > 0 && self.engine.getClip (*twin, id, whole))
+        {
+            const double trim = (double) latency / self.engine.getSampleRate();
+            self.engine.setClipRegion (*twin, id, 0.0, trim, juce::jmax (0.01, whole.sourceLength() - trim));
+        }
+
+        twin->colour = ref->colour;
+        self.engine.setTrackOutput (*twin, ref->output);
+        for (auto& s : ref->sends)
+            self.engine.setSend (*twin, *s.bus, s.level, s.preFader);
+
+        ref->frozen = true;
+        ref->freezeTwin = twin;
+        for (int from = self.engine.indexOfTrack (twin), to = self.engine.indexOfTrack (ref) + 1; from > to; --from)   // right after the original
+            self.engine.moveTrack (*twin, -1);
+
+        self.rebuildTrackUI();
+        self.clipsChanged();
+    });
+    job->launchThread();   // deletes itself when it is done
+}
+
+void MainComponent::unfreezeTrack (Track& t)
+{
+    if (! t.frozen.load())
+        return;
+    if (auto* twin = t.freezeTwin; twin != nullptr && engine.indexOfTrack (twin) >= 0)
+        removeTrackUI (twin);   // (this takes the undo snapshot)
+    else
+        beginEdit();
+    t.freezeTwin = nullptr;
+    t.frozen = false;
+    rebuildTrackUI();
+    clipsChanged();
 }
 
 // Export stems: pick a folder, pick the format, then every track is rendered to its own WAV file in it.
@@ -8210,6 +8590,160 @@ namespace
         if (pitch == 59) return "Ride 2";
         return juce::MidiMessage::getMidiNoteName (pitch, true, true, 3);
     }
+}
+
+// ---- track groups
+
+// A strip in the lane area next to a group header (the groups have nothing to show in time, it just keeps the rows together).
+namespace
+{
+    struct GroupBand : juce::Component
+    {
+        GroupBand() { setInterceptsMouseClicks (false, false); }
+        void paint (juce::Graphics& g) override
+        {
+            g.setColour (Theme::yellowDim.withAlpha (0.10f));
+            g.fillRoundedRectangle (getLocalBounds().toFloat().reduced (0.0f, 2.0f), 6.0f);
+        }
+    };
+}
+
+// Builds the group header rows when the groups (their names, order, collapsed state) changed.
+void MainComponent::syncGroupUI()
+{
+    juce::String signature;
+    int previous = 0;
+    for (int i = 0; i < engine.getNumTracks(); ++i)
+    {
+        const int gid = engine.getTrack (i)->groupId;
+        if (gid != 0 && gid != previous)
+            if (auto* g = engine.findGroup (gid))
+                signature << gid << ":" << g->name << ";";
+        previous = gid;
+    }
+    if (signature == groupSignature)
+        return;
+    groupSignature = signature;
+
+    groupHeaders.clear();
+    groupBands.clear();
+    previous = 0;
+    for (int i = 0; i < engine.getNumTracks(); ++i)
+    {
+        const int gid = engine.getTrack (i)->groupId;
+        if (gid != 0 && gid != previous && engine.findGroup (gid) != nullptr)
+        {
+            headerHolder.addAndMakeVisible (groupHeaders.add (new GroupHeader (*this, gid)));
+            laneHolder.addAndMakeVisible (groupBands.add (new GroupBand()));
+        }
+        previous = gid;
+    }
+}
+
+void MainComponent::groupChanged()
+{
+    groupSignature = "*";   // (made again)
+    rebuildTrackUI();
+    ++editCounter;
+}
+
+void MainComponent::toggleGroupCollapsed (int groupId)
+{
+    if (auto* g = engine.findGroup (groupId))
+    {
+        g->collapsed = ! g->collapsed;
+        layoutContent();
+        for (auto* h : groupHeaders)
+            h->repaint();
+        ++editCounter;
+    }
+}
+
+// All the tracks of the group to muted (or soloed), unless all of them already are: then all back.
+void MainComponent::muteSoloGroup (int groupId, bool solo)
+{
+    const auto members = engine.groupMembers (groupId);
+    if (members.empty())
+        return;
+    bool all = true;
+    for (auto* t : members)
+        all = all && (solo ? t->solo.load() : t->mute.load());
+    beginEdit();
+    for (auto* t : members)
+    {
+        if (solo) t->solo = ! all;
+        else      t->mute = ! all;
+    }
+}
+
+void MainComponent::renameGroup (int groupId)
+{
+    auto* group = engine.findGroup (groupId);
+    if (group == nullptr)
+        return;
+    juce::Component::SafePointer<MainComponent> safe (this);
+    auto* box = new juce::AlertWindow ("Rename group", "A name for this group of tracks:", juce::MessageBoxIconType::NoIcon);
+    box->addTextEditor ("text", group->name);
+    box->addButton ("OK", 1, juce::KeyPress (juce::KeyPress::returnKey));
+    box->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+    box->enterModalState (true, juce::ModalCallbackFunction::create ([safe, box, groupId] (int ok)
+    {
+        if (ok != 1 || safe == nullptr)
+            return;
+        const auto text = box->getTextEditorContents ("text").trim();
+        if (auto* g = safe->engine.findGroup (groupId); g != nullptr && text.isNotEmpty() && text != g->name)
+        {
+            safe->beginEdit();
+            g->name = text;
+            safe->groupSignature = "*";
+            safe->layoutContent();
+        }
+    }), true);
+}
+
+void MainComponent::showGroupMenu (int groupId)
+{
+    auto* group = engine.findGroup (groupId);
+    if (group == nullptr)
+        return;
+    juce::Component::SafePointer<MainComponent> safe (this);
+    juce::PopupMenu menu;
+    menu.addItem (1, group->collapsed ? "Expand" : "Collapse");
+    menu.addItem (2, "Rename...");
+    menu.addSeparator();
+    menu.addItem (3, "Ungroup (the tracks stay)");
+    menu.showMenuAsync (juce::PopupMenu::Options().withTargetScreenArea (juce::Rectangle<int> (1, 1).withCentre (juce::Desktop::getMousePosition())),
+                        [safe, groupId] (int result)
+    {
+        if (safe == nullptr || result == 0)
+            return;
+        if (result == 1) safe->toggleGroupCollapsed (groupId);
+        else if (result == 2) safe->renameGroup (groupId);
+        else if (result == 3)
+        {
+            safe->beginEdit();
+            for (auto* t : safe->engine.groupMembers (groupId))
+                safe->engine.setTrackGroup (*t, 0);
+            safe->groupChanged();
+        }
+    });
+}
+
+// The "Group" items of a track's right-click menu: a new group with it, join an existing one, leave its group.
+void MainComponent::showTrackGroupMenuItems (juce::PopupMenu& menu, const Track& t)
+{
+    juce::PopupMenu sub;
+    sub.addItem (70, "New group with this track");
+    int k = 0;
+    for (auto& g : engine.getGroups())
+        sub.addItem (80 + k++, "Move into: " + g.name, true, g.id == t.groupId);
+    if (t.groupId != 0)
+    {
+        sub.addSeparator();
+        sub.addItem (71, "Take it out of its group");
+    }
+    menu.addSeparator();
+    menu.addSubMenu ("Group (folder)", sub);
 }
 
 // Builds or removes the sub-track rows so that they match the tracks (the shown sub-tracks of every MIDI track, in order).

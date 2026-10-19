@@ -1,5 +1,6 @@
 #include "PluginHost.h"
 #include "Theme.h"
+#include "PluginScan.h"
 
 namespace
 {
@@ -96,6 +97,25 @@ PluginHost::PluginHost()
     if (auto xml = juce::XmlDocument::parse (listFile()))
         knownPlugins.recreateFromXml (*xml);
     knownPlugins.addChangeListener (this);
+    knownPlugins.setCustomScanner (std::make_unique<PluginScan::Scanner>());   // scanning happens in a helper process: a crashing plugin can't take the program along
+
+    // A plugin that crashed the program while it was being loaded is not loaded again (the project then opens without it instead of crashing
+    // again at once). The list is cleared when the plugin manager is opened.
+    const auto marker = appDataFolder().getChildFile ("plugin-loading.txt");
+    if (marker.existsAsFile())
+    {
+        auto blocked = blockedFile().loadFileAsString().trim();
+        blocked += "\n" + marker.loadFileAsString().trim();
+        blockedFile().replaceWithText (blocked.trim());
+        marker.deleteFile();
+    }
+}
+
+juce::File PluginHost::blockedFile() const { return appDataFolder().getChildFile ("plugin-blocked.txt"); }
+
+bool PluginHost::isBlocked (const juce::PluginDescription& d) const
+{
+    return juce::StringArray::fromLines (blockedFile().loadFileAsString()).contains (d.createIdentifierString());
 }
 
 PluginHost::~PluginHost()
@@ -114,7 +134,16 @@ void PluginHost::changeListenerCallback (juce::ChangeBroadcaster*)
 
 std::shared_ptr<PluginSlot> PluginHost::createSlot (const juce::PluginDescription& description, Engine& engine, juce::String& error)
 {
+    if (isBlocked (description))
+    {
+        error = description.name + " crashed the program the last time it was loaded, so it is skipped. Open Plugins (the scan window) to allow it again.";
+        return nullptr;
+    }
+
+    const auto marker = appDataFolder().getChildFile ("plugin-loading.txt");   // (still there after a crash: the next start knows who did it)
+    marker.replaceWithText (description.createIdentifierString());
     auto instance = formats.createPluginInstance (description, engine.getSampleRate(), engine.getMaxBlockSize(), error);
+    marker.deleteFile();
     if (instance == nullptr)
         return nullptr;
 
@@ -192,6 +221,7 @@ void PluginHost::closeAllEditors()
 
 void PluginHost::showManager()
 {
+    blockedFile().deleteFile();   // plugins that crashed the program are allowed again (the user is looking at the plugins)
     if (manager == nullptr)
         manager = std::make_unique<ManagerWindow> (*this);
     manager->setVisible (true);

@@ -319,8 +319,15 @@ bool Engine::startRecording (const std::vector<RecordTarget>& targets)
         r.writer = std::make_unique<juce::AudioFormatWriter::ThreadedWriter> (writer.release(), writerThread, 32768);
         r.first = juce::jmax (0, target.firstChannel);
         r.count = juce::jlimit (1, 2, target.numChannels);
+        r.peaks = std::make_shared<RecPeaks>();
+        r.peaks->bucket = juce::jmax (16, (int) (sampleRate / 100.0));   // 100 per second
+        r.peaks->data.assign (360000, 0.0f);                             // an hour
         fresh.push_back (std::move (r));
     }
+
+    livePeaks.clear();
+    for (auto& r : fresh)
+        livePeaks.push_back (r.peaks);
 
     punchDone = false;
     recFirstSample = -1;
@@ -341,6 +348,7 @@ void Engine::stopRecording()
         old.swap (recorders);
     }
     old.clear();   // flushes what is left and closes the files
+    livePeaks.clear();
 }
 
 bool Engine::readTunerSamples (float* dest, int n) const
@@ -640,10 +648,15 @@ void Engine::removeTrack (Track* t)
             other->output = nullptr;   // what played into a removed bus goes to the master again
         if (other->sidechainSource.load() == t)
             other->sidechainSource = nullptr;
+        if (other->freezeTwin == t)
+            other->freezeTwin = nullptr;
     }
     tracks.erase (std::remove_if (tracks.begin(), tracks.end(),
                                   [t] (auto& p) { return p.get() == t; }),
                   tracks.end());
+    groups.erase (std::remove_if (groups.begin(), groups.end(),   // a group whose last track went is gone
+                                  [this] (const TrackGroup& g) { for (auto& t : tracks) if (t->groupId == g.id) return false; return true; }),
+                  groups.end());
     updateSidechainTaps();
 }
 
@@ -1936,6 +1949,7 @@ TrackState Engine::captureTrack (const Track& t) const
     }
     ts.name = t.name;
     ts.colour = t.colour;
+    ts.groupId = t.groupId;
     ts.scaleRoot = t.scaleRoot;
     ts.scaleType = t.scaleType;
     ts.scaleChord = t.scaleChord;
@@ -1947,6 +1961,7 @@ TrackState Engine::captureTrack (const Track& t) const
     ts.gain = t.gain;
     ts.pan = t.pan;
     ts.mute = t.mute;
+    ts.frozen = t.frozen.load();
     ts.solo = t.solo;
     ts.waveform = t.synth.waveform;
     ts.synthValues[0] = t.synth.attack;
@@ -1981,6 +1996,7 @@ void Engine::applyTrackState (Track& t, const TrackState& ts)
 {
     t.name = ts.name;
     t.colour = ts.colour;
+    t.groupId = ts.groupId;
     t.scaleRoot = ts.scaleRoot;
     t.scaleType = ts.scaleType;
     t.scaleChord = ts.scaleChord;
@@ -1995,6 +2011,7 @@ void Engine::applyTrackState (Track& t, const TrackState& ts)
     t.gain = ts.gain;
     t.pan = ts.pan;
     t.mute = ts.mute;
+    t.frozen = ts.frozen;
     t.solo = ts.solo;
     t.synth.waveform = ts.waveform;
     t.synth.attack = ts.synthValues[0];
@@ -2094,6 +2111,7 @@ ProjectState Engine::captureState (const std::vector<std::shared_ptr<PluginSlot>
 
     const juce::ScopedLock sl (lock);
     s.sections = arrangement;
+    s.groups = groups;
     s.tempo = tempoMap;
     s.master = captureTrack (*master);
 
@@ -2110,6 +2128,8 @@ ProjectState Engine::captureState (const std::vector<std::shared_ptr<PluginSlot>
                 ts.outputIndex = (int) k;
             if (tracks[k].get() == t->sidechainSource.load())
                 ts.sidechainIndex = (int) k;
+            if (t->freezeTwin != nullptr && tracks[k].get() == t->freezeTwin)
+                ts.freezeTwinIndex = (int) k;
             for (auto& s : t->sends)
                 if (tracks[k].get() == s.bus)
                     ts.sends.push_back ({ (int) k, s.level, s.preFader });
@@ -2126,6 +2146,7 @@ void Engine::restoreState (const ProjectState& s)
             slot->instance->setStateInformation (state.getData(), (int) state.getSize());
 
     arrangement = s.sections;
+    groups = s.groups;
     std::vector<std::unique_ptr<Track>> fresh;
     for (auto& ts : s.tracks)
     {
@@ -2162,6 +2183,8 @@ void Engine::restoreState (const ProjectState& s)
         if (ts.sidechainIndex >= 0 && ts.sidechainIndex < (int) fresh.size() && ts.sidechainIndex != (int) i && ! fresh[(size_t) ts.sidechainIndex]->bus
             && ! fresh[i]->bus)
             fresh[i]->sidechainSource = fresh[(size_t) ts.sidechainIndex].get();
+        if (ts.freezeTwinIndex >= 0 && ts.freezeTwinIndex < (int) fresh.size() && ts.freezeTwinIndex != (int) i)
+            fresh[i]->freezeTwin = fresh[(size_t) ts.freezeTwinIndex].get();
     }
 
     for (size_t i = 0; i < s.tracks.size(); ++i)   // MIDI routes point at tracks by index
@@ -2383,6 +2406,24 @@ void Engine::getNextAudioBlock (const juce::AudioSourceChannelInfo& info)
                     in[0] = info.buffer->getReadPointer (juce::jmin (r.first, bufferChannels - 1), info.startSample + from);
                     in[1] = r.count > 1 ? info.buffer->getReadPointer (juce::jmin (r.first + 1, bufferChannels - 1), info.startSample + from) : in[0];
                     r.writer->write (in, to - from);
+
+                    auto& pk = *r.peaks;   // the peaks the lane draws while the recording is made
+                    const int size = (int) pk.data.size();
+                    for (int i = 0; i < to - from; ++i)
+                    {
+                        pk.cur = juce::jmax (pk.cur, std::abs (in[0][i]), std::abs (in[1][i]));
+                        if (++pk.fill >= pk.bucket)
+                        {
+                            const int c = pk.count.load (std::memory_order_relaxed);
+                            if (c < size)
+                            {
+                                pk.data[(size_t) c] = pk.cur;
+                                pk.count.store (c + 1, std::memory_order_release);
+                            }
+                            pk.cur = 0.0f;
+                            pk.fill = 0;
+                        }
+                    }
                 }
             }
         }
@@ -2808,7 +2849,9 @@ void Engine::collectNoteEvents (Track& t, int n, juce::int64 pos, bool running)
 // Samples of delay the plugins in a track add (reported by the plugins themselves).
 int Engine::trackLatency (const Track& t)
 {
-    int latency = 0;
+    if (t.frozen.load())
+        return 0;   // switched off: its plugins don't run
+    int latency = t.fx.anyOn() ? t.fx.latencySamples.load() : 0;   // the limiter's lookahead and the oversampling of the saturation
     if (t.instrument != nullptr && ! t.routesElsewhere())
         latency += t.instrument->instance->getLatencySamples();
     for (auto& p : t.inserts)
@@ -2885,7 +2928,8 @@ void Engine::applyMidiFx (Track& t, int n)
 
         buf.clear (0, n);
         juce::AudioBuffer<float> view (buf.getArrayOfWritePointers(), channels, n);
-        slot->instance->processBlock (view, midiScratch);   // notes in, notes out (in place)
+        if (! processPlugin (*slot, view, midiScratch))   // notes in, notes out (in place)
+            midiScratch.clear();
     }
 
     noteEvents.clear();
@@ -2898,6 +2942,35 @@ void Engine::applyMidiFx (Track& t, int n)
     }
     std::sort (noteEvents.begin(), noteEvents.end(), [] (const NoteEvent& a, const NoteEvent& b)
                { return a.offset != b.offset ? a.offset < b.offset : (! a.on && b.on); });
+}
+
+// A plugin's processBlock behind the safety net; the first plugin that crashes is reported to the message thread (see takeCrashedPlugin).
+bool Engine::processPlugin (PluginSlot& slot, juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi)
+{
+    if (guardedProcess (slot, buffer, midi))
+        return true;
+    PluginSlot* expected = nullptr;
+    crashedPlugin.compare_exchange_strong (expected, &slot);
+    return false;
+}
+
+bool Engine::takeCrashedPlugin (juce::String& name)
+{
+    auto* slot = crashedPlugin.exchange (nullptr);
+    if (slot == nullptr)
+        return false;
+    const juce::ScopedLock sl (lock);   // (the slot may be gone by now: only name it when it is still in a track)
+    auto find = [&] (const Track& t)
+    {
+        bool found = t.instrument.get() == slot;
+        for (auto& p : t.inserts) found = found || p.get() == slot;
+        for (auto& p : t.midiFx) found = found || p.get() == slot;
+        return found;
+    };
+    bool present = find (*master);
+    for (auto& t : tracks) present = present || find (*t);
+    name = present ? slot->description.name : juce::String ("A plugin");
+    return true;
 }
 
 // Hosted VST3 instrument: feed it this block's MIDI and take its stereo output.
@@ -2920,7 +2993,8 @@ void Engine::renderPluginInstrument (Track& t, int n, float* outL, float* outR)
 
     buf.clear (0, n);
     juce::AudioBuffer<float> view (buf.getArrayOfWritePointers(), channels, n);   // wraps, no allocation
-    slot.instance->processBlock (view, midiScratch);
+    if (! processPlugin (slot, view, midiScratch))
+        buf.clear (0, n);   // (a crashed instrument is silent)
 
     std::copy (buf.getReadPointer (0), buf.getReadPointer (0) + n, outL);
     std::copy (buf.getReadPointer (channels > 1 ? 1 : 0), buf.getReadPointer (channels > 1 ? 1 : 0) + n, outR);
@@ -2945,7 +3019,8 @@ void Engine::runMidiSource (Track& t, int n)
 
     buf.clear (0, n);
     juce::AudioBuffer<float> view (buf.getArrayOfWritePointers(), channels, n);
-    slot.instance->processBlock (view, midiScratch);   // the MIDI buffer now holds what the plugin sent out
+    if (! processPlugin (slot, view, midiScratch))   // the MIDI buffer now holds what the plugin sent out
+        midiScratch.clear();
 
     for (const auto meta : midiScratch)
     {
@@ -2985,7 +3060,8 @@ void Engine::processInsert (PluginSlot& slot, float* l, float* r, int n)
 
     emptyMidi.clear();
     juce::AudioBuffer<float> view (buf.getArrayOfWritePointers(), channels, n);
-    slot.instance->processBlock (view, emptyMidi);
+    if (! processPlugin (slot, view, emptyMidi))
+        return;   // a crashed effect: the sound goes through untouched
 
     std::copy (buf.getReadPointer (0), buf.getReadPointer (0) + n, l);
     std::copy (buf.getReadPointer (1), buf.getReadPointer (1) + n, r);
@@ -3144,6 +3220,12 @@ void Engine::mixBlock (float* outL, float* outR, int n, juce::int64 pos, bool wi
         {
             t->level = 0.0f;
             continue;   // (except one that a compressor of the stem listens to: it is made, not heard)
+        }
+
+        if (t->frozen.load() && ! t->sidechainTapped.load())   // frozen: its bounce plays instead, nothing of this track runs
+        {
+            t->level = 0.0f;
+            continue;
         }
 
         float peak = 0.0f;
@@ -3337,7 +3419,7 @@ void Engine::mixBlock (float* outL, float* outR, int n, juce::int64 pos, bool wi
                 bufL[i] = bufR[i] = 0.5f * (bufL[i] + bufR[i]);
 
         // plugin delay compensation: tracks without (or with less) plugin latency wait for the slowest one
-        const int delay = maxLatency - trackLatency (*t);
+        const int delay = renderNoPdc ? 0 : maxLatency - trackLatency (*t);   // (a freeze is made without it: the bounce is compensated when it plays)
         if (! t->bus && (delay > 0 || t->pdcDelay != 0 || t->pdcFade > 0))
             applyDelay (*t, bufL, bufR, nn, delay);
 
@@ -3640,6 +3722,7 @@ bool Engine::renderToFile (const juce::File& file, double seconds, const RenderO
         silenceSynths();
         renderOnly = options.onlyTrack;
         renderMaster = options.masterProcessing;
+        renderNoPdc = options.noDelayCompensation;
     }
 
     constexpr int blockSize = 1024;
@@ -3673,6 +3756,7 @@ bool Engine::renderToFile (const juce::File& file, double seconds, const RenderO
         lastBlockEnd = -1;
         renderOnly = nullptr;
         renderMaster = true;
+        renderNoPdc = false;
     }
     return ok;
 }
@@ -4384,6 +4468,8 @@ Track* Engine::duplicateTrack (const Track& src)
     ts.sampler = copy->sampler;
     applyTrackState (*copy, ts);
     copy->recordArmed = false;
+    copy->frozen = false;         // (a copy of a frozen track plays itself again)
+    // (a copy stays in the same group)
     copy->output = src.output;    // plays into the same bus
     copy->sidechainSource = src.sidechainSource.load();
     updateSidechainTaps();
@@ -4417,6 +4503,66 @@ bool Engine::moveTrack (Track& t, int delta)
         return false;
     std::swap (tracks[(size_t) index], tracks[(size_t) target]);
     return true;
+}
+
+//==============================================================================
+// Track groups
+
+TrackGroup* Engine::findGroup (int id)
+{
+    for (auto& g : groups)
+        if (g.id == id)
+            return &g;
+    return nullptr;
+}
+
+std::vector<Track*> Engine::groupMembers (int id) const
+{
+    std::vector<Track*> members;
+    if (id != 0)
+        for (auto& t : tracks)
+            if (t->groupId == id)
+                members.push_back (t.get());
+    return members;
+}
+
+int Engine::createGroup (const juce::String& name)
+{
+    TrackGroup g;
+    for (auto& existing : groups)
+        nextGroupId = juce::jmax (nextGroupId, existing.id + 1);
+    g.id = nextGroupId++;
+    g.name = name;
+    groups.push_back (g);
+    return g.id;
+}
+
+void Engine::setTrackGroup (Track& t, int groupId)
+{
+    {
+        const juce::ScopedLock sl (lock);
+        t.groupId = groupId;
+
+        if (groupId != 0)   // next to the other members: right after the last one of them (or where it is, when it is the only one)
+        {
+            auto indexOf = [this] (const Track* x) { for (int i = 0; i < (int) tracks.size(); ++i) if (tracks[(size_t) i].get() == x) return i; return -1; };
+            int last = -1;
+            for (int i = 0; i < (int) tracks.size(); ++i)
+                if (tracks[(size_t) i]->groupId == groupId && tracks[(size_t) i].get() != &t)
+                    last = i;
+            int from = indexOf (&t);
+            if (last >= 0 && from >= 0)
+            {
+                const int to = from < last ? last : last + 1;   // (moving up from below the group, it lands after the last member)
+                while (from < to && from + 1 < (int) tracks.size()) { std::swap (tracks[(size_t) from], tracks[(size_t) from + 1]); ++from; }
+                while (from > to) { std::swap (tracks[(size_t) from], tracks[(size_t) from - 1]); --from; }
+            }
+        }
+    }
+
+    groups.erase (std::remove_if (groups.begin(), groups.end(),   // a group with no tracks left is gone
+                                  [this] (const TrackGroup& g) { for (auto& t : tracks) if (t->groupId == g.id) return false; return true; }),
+                  groups.end());
 }
 
 //==============================================================================

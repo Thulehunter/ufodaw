@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <cmath>
 #include <complex>
+#include <array>
 
 void FxParams::forEachFloat (const std::function<void (const char*, std::atomic<float>&)>& f)
 {
@@ -16,11 +17,25 @@ void FxParams::forEachFloat (const std::function<void (const char*, std::atomic<
     f ("delayRatio", delayRatio); f ("delayLowCut", delayLowCut); f ("delayHighCut", delayHighCut); f ("delayMod", delayMod);
     f ("reverbDecay", reverbDecay); f ("reverbPreDelay", reverbPreDelay); f ("reverbLowCut", reverbLowCut);
     f ("reverbWidth", reverbWidth); f ("reverbMod", reverbMod);
+    f ("gateThreshold", gateThreshold); f ("gateRange", gateRange); f ("gateAttack", gateAttack); f ("gateHold", gateHold); f ("gateRelease", gateRelease);
+    f ("deEssFreq", deEssFreq); f ("deEssThreshold", deEssThreshold); f ("deEssAmount", deEssAmount);
+    f ("satDrive", satDrive); f ("satType", satType); f ("satMix", satMix); f ("satOutput", satOutput);
+    f ("mbLowFreq", mbLowFreq); f ("mbHighFreq", mbHighFreq); f ("mbLowThr", mbLowThr); f ("mbMidThr", mbMidThr); f ("mbHighThr", mbHighThr);
+    f ("mbRatio", mbRatio); f ("mbMakeup", mbMakeup);
+    f ("chorusRate", chorusRate); f ("chorusDepth", chorusDepth); f ("chorusDelay", chorusDelay); f ("chorusFeedback", chorusFeedback); f ("chorusMix", chorusMix);
+    f ("limGain", limGain); f ("limCeiling", limCeiling); f ("limRelease", limRelease);
+    f ("gateHyst", gateHyst); f ("gateScHpf", gateScHpf); f ("gateScLpf", gateScLpf);
+    f ("deEssQ", deEssQ); f ("satBias", satBias); f ("satTone", satTone);
+    f ("mbLowGain", mbLowGain); f ("mbMidGain", mbMidGain); f ("mbHighGain", mbHighGain); f ("mbAttack", mbAttack); f ("mbRelease", mbRelease);
+    f ("chorusVoices", chorusVoices); f ("chorusWidth", chorusWidth); f ("chorusTone", chorusTone);
+    f ("limLookahead", limLookahead);
 }
 
 void FxParams::forEachBool (const std::function<void (const char*, std::atomic<bool>&)>& f)
 {
     f ("eqOn", eqOn);  f ("compOn", compOn);  f ("delayOn", delayOn);  f ("reverbOn", reverbOn);  f ("mono", mono);  f ("compAuto", compAuto);  f ("delayPing", delayPing);
+    f ("gateOn", gateOn); f ("deEssOn", deEssOn); f ("satOn", satOn); f ("mbOn", mbOn); f ("chorusOn", chorusOn); f ("limOn", limOn);
+    f ("deEssWide", deEssWide); f ("deEssListen", deEssListen); f ("satOversample", satOversample); f ("limTruePeak", limTruePeak);
 }
 
 std::atomic<float>* FxParams::findFloat (const juce::String& name)
@@ -69,6 +84,48 @@ const std::vector<FxParamSpec>& fxParamSpecs()
         { "reverbLowCut",  "Reverb low cut",     20.0f,    1000.0f },
         { "reverbWidth",   "Reverb width",       0.0f,     1.0f },
         { "reverbMod",     "Reverb modulation",  0.0f,     1.0f },
+        { "gateThreshold", "Gate threshold",     -80.0f,   0.0f },
+        { "gateRange",     "Gate range",         0.0f,     80.0f },
+        { "gateAttack",    "Gate attack",        0.1f,     50.0f },
+        { "gateHold",      "Gate hold",          0.0f,     500.0f },
+        { "gateRelease",   "Gate release",       10.0f,    1000.0f },
+        { "deEssFreq",     "De-esser frequency", 2000.0f,  14000.0f },
+        { "deEssThreshold","De-esser threshold", -60.0f,   0.0f },
+        { "deEssAmount",   "De-esser amount",    0.0f,     20.0f },
+        { "satDrive",      "Saturation drive",   0.0f,     30.0f },
+        { "satType",       "Saturation type",    0.0f,     4.0f },
+        { "satMix",        "Saturation mix",     0.0f,     1.0f },
+        { "satOutput",     "Saturation output",  -12.0f,   12.0f },
+        { "mbLowFreq",     "Multiband low split", 40.0f,   1000.0f },
+        { "mbHighFreq",    "Multiband high split", 300.0f, 12000.0f },
+        { "mbLowThr",      "Multiband low threshold", -60.0f, 0.0f },
+        { "mbMidThr",      "Multiband mid threshold", -60.0f, 0.0f },
+        { "mbHighThr",     "Multiband high threshold", -60.0f, 0.0f },
+        { "mbRatio",       "Multiband ratio",    1.0f,     10.0f },
+        { "mbMakeup",      "Multiband makeup",   0.0f,     12.0f },
+        { "chorusRate",    "Chorus rate",        0.05f,    5.0f },
+        { "chorusDepth",   "Chorus depth",       0.0f,     1.0f },
+        { "chorusDelay",   "Chorus delay",       0.5f,     40.0f },
+        { "chorusFeedback","Chorus feedback",    0.0f,     0.9f },
+        { "chorusMix",     "Chorus mix",         0.0f,     1.0f },
+        { "limGain",       "Limiter gain",       0.0f,     18.0f },
+        { "limCeiling",    "Limiter ceiling",    -12.0f,   0.0f },
+        { "limRelease",    "Limiter release",    5.0f,     500.0f },
+        { "gateHyst",      "Gate hysteresis",    0.0f,     12.0f },
+        { "gateScHpf",     "Gate sidechain low cut", 20.0f, 2000.0f },
+        { "gateScLpf",     "Gate sidechain high cut", 1000.0f, 20000.0f },
+        { "deEssQ",        "De-esser width",     0.3f,     6.0f },
+        { "satBias",       "Saturation bias",    0.0f,     1.0f },
+        { "satTone",       "Saturation tone",    -1.0f,    1.0f },
+        { "mbLowGain",     "Multiband low gain", -12.0f,   12.0f },
+        { "mbMidGain",     "Multiband mid gain", -12.0f,   12.0f },
+        { "mbHighGain",    "Multiband high gain", -12.0f,  12.0f },
+        { "mbAttack",      "Multiband attack",   0.5f,     100.0f },
+        { "mbRelease",     "Multiband release",  5.0f,     1000.0f },
+        { "chorusVoices",  "Chorus voices",      1.0f,     4.0f },
+        { "chorusWidth",   "Chorus width",       0.0f,     1.0f },
+        { "chorusTone",    "Chorus tone",        1000.0f,  20000.0f },
+        { "limLookahead",  "Limiter lookahead",  0.0f,     10.0f },
     };
     return specs;
 }
@@ -166,6 +223,8 @@ void TrackFx::prepare (double rate)
         fdnBase[k] = bases[k];
         fdn[k].assign ((size_t) (bases[k] * 1.6f * (float) rate / 48000.0f) + 64, 0.0f);
     }
+    chL.assign ((size_t) (rate * 0.1) + 8, 0.0f);
+    chR.assign (chL.size(), 0.0f);
     preL.assign ((size_t) (rate * 0.2) + 2, 0.0f);
     preR.assign (preL.size(), 0.0f);
     reset();
@@ -183,6 +242,20 @@ void TrackFx::reset()
 
     compGr = 0.0f;
     rmsSq = 0.0f;
+    gateEnv = 0.0f; gateGain = 1.0f; gateHoldLeft = 0;
+    for (auto& st : deEssState) st = Biquad();
+    lastDeEssFreq = -1.0f; deEssEnv = 0.0f;
+    for (auto& ch : mbState) for (auto& st : ch) st = Biquad();
+    lastMbFreq[0] = lastMbFreq[1] = -1.0f;
+    for (auto& e : mbEnv) e = 0.0f;
+    std::fill (chL.begin(), chL.end(), 0.0f);
+    std::fill (chR.begin(), chR.end(), 0.0f);
+    chPos = 0; chPhase = 0.0f; chToneL = chToneR = 0.0f;
+    limGainNow = 1.0f; limLastLook = -1; limSumMin = 0.0f; limPos = 0;
+    for (auto& o : satOver) o = Over4();
+    satLp[0] = satLp[1] = satTilt[0] = satTilt[1] = 0.0f;
+    gateOpen = false; for (auto& st : gateState) st = Biquad();
+    lastGateHp = lastGateLp = -1.0f;
     std::fill (delayL.begin(), delayL.end(), 0.0f);
     std::fill (delayR.begin(), delayR.end(), 0.0f);
     delayPos = 0;
@@ -200,11 +273,27 @@ void TrackFx::reset()
 
 void TrackFx::process (float* l, float* r, int n, const FxParams& p, const float* keyL, const float* keyR)
 {
+    if (p.gateOn)   processGate (l, r, n, p);
     if (p.eqOn)     processEq (l, r, n, p);
+    if (p.analyse.load (std::memory_order_relaxed))
+        tap.write (l, r, n);
     if (p.compOn)   processCompressor (l, r, n, p, keyL, keyR);
     else            p.compGr.store (0.0f);
+    if (p.deEssOn)  processDeEsser (l, r, n, p);
+    if (p.satOn)    processSaturation (l, r, n, p);
+    if (p.mbOn)     processMultiband (l, r, n, p);
+    if (p.chorusOn) processChorus (l, r, n, p);
     if (p.delayOn)  processDelay (l, r, n, p);
     if (p.reverbOn) processReverb (l, r, n, p);
+    if (p.limOn)    processLimiter (l, r, n, p);
+
+    // what the chain delays the sound by now (the track is compensated for it): the limiter's lookahead, the oversampling of the saturation
+    int latency = 0;
+    if (p.satOn && p.satOversample)
+        latency += 12;
+    if (p.limOn)
+        latency += juce::jlimit (0, 480, (int) std::lround (p.limLookahead.load() * 0.001 * sampleRate));
+    p.latencySamples.store (latency, std::memory_order_relaxed);
 }
 
 void TrackFx::processEq (float* l, float* r, int n, const FxParams& p)
@@ -447,4 +536,397 @@ void TrackFx::processReverb (float* l, float* r, int n, const FxParams& p)
         }
         done += chunk;
     }
+}
+
+// ---- more effects
+
+namespace
+{
+    // the decimating / interpolating filter of the 4x oversampler: windowed sinc (Blackman), 49 taps, cut-off at the original Nyquist, gain 1
+    const float* overFilter()
+    {
+        static const auto taps = []
+        {
+            std::array<float, 49> h {};
+            double sum = 0.0;
+            for (int i = 0; i < 49; ++i)
+            {
+                const double x = i - 24;
+                const double sinc = x == 0.0 ? 1.0 : std::sin (3.14159265358979 * x * 0.25) / (3.14159265358979 * x * 0.25);
+                const double w = 0.42 - 0.5 * std::cos (2.0 * 3.14159265358979 * i / 48.0) + 0.08 * std::cos (4.0 * 3.14159265358979 * i / 48.0);
+                h[(size_t) i] = (float) (sinc * w * 0.25);
+                sum += h[(size_t) i];
+            }
+            for (auto& v : h) v = (float) (v / sum);
+            return h;
+        }();
+        return taps.data();
+    }
+
+    float shapeOf (int type, float x)
+    {
+        switch (type)
+        {
+            case 0:  return std::tanh (x);                                                 // tube: smooth
+            case 1:  return x > 0.0f ? x / (1.0f + x) : x / (1.0f - 0.7f * x);             // tape: uneven for + and - (even harmonics)
+            case 2:  return juce::jlimit (-1.0f, 1.0f, x);                                 // hard clip
+            case 3:  return std::sin (1.5707963f * juce::jlimit (-4.0f, 4.0f, x));         // fold: beyond full scale the wave folds back
+            default: return x >= 0.0f ? 1.0f - std::exp (-x) : -0.6f * (1.0f - std::exp (x));   // diode: one side harder than the other
+        }
+    }
+}
+
+// Gate: closes (by `range` dB) when the signal stays under the threshold. The detector can be filtered (so the bleed of other instruments doesn't open
+// it), it opens at the threshold and closes `hysteresis` dB lower (no chatter), with attack, hold and release.
+void TrackFx::processGate (float* l, float* r, int n, const FxParams& p)
+{
+    const float openLevel = juce::Decibels::decibelsToGain (p.gateThreshold.load());
+    const float closeLevel = juce::Decibels::decibelsToGain (p.gateThreshold.load() - juce::jmax (0.0f, p.gateHyst.load()));
+    const float closed = juce::Decibels::decibelsToGain (-juce::jmax (0.0f, p.gateRange.load()));
+    const float attack = std::exp (-1.0f / (0.001f * juce::jmax (0.05f, p.gateAttack.load()) * (float) sampleRate));
+    const float release = std::exp (-1.0f / (0.001f * juce::jmax (1.0f, p.gateRelease.load()) * (float) sampleRate));
+    const int hold = (int) (0.001f * p.gateHold.load() * (float) sampleRate);
+    const float envFall = std::exp (-1.0f / (0.02f * (float) sampleRate));   // the level follower falls in 20 ms
+
+    const float hp = p.gateScHpf, lp = p.gateScLpf;
+    const bool useHp = hp > 21.0f, useLp = lp < 19900.0f;
+    if (hp != lastGateHp) { lastGateHp = hp; gateHp = highpassCoef (sampleRate, hp, 0.707); }
+    if (lp != lastGateLp) { lastGateLp = lp; gateLp = lowpass (sampleRate, lp, 0.707); }
+
+    float minGain = 1.0f;
+    for (int i = 0; i < n; ++i)
+    {
+        float key = 0.5f * (l[i] + r[i]);
+        if (useHp) key = run (gateHp, gateState[0], key);
+        if (useLp) key = run (gateLp, gateState[1], key);
+        const float level = std::abs (key);
+        gateEnv = level > gateEnv ? level : envFall * gateEnv + (1.0f - envFall) * level;
+
+        if (gateEnv > openLevel)
+        {
+            gateOpen = true;
+            gateHoldLeft = hold;
+        }
+        else if (gateEnv < closeLevel)
+        {
+            if (gateHoldLeft > 0)
+                --gateHoldLeft;
+            else
+                gateOpen = false;
+        }
+        const float target = gateOpen ? 1.0f : closed;
+        const float coef = target > gateGain ? attack : release;
+        gateGain = coef * gateGain + (1.0f - coef) * target;
+        minGain = juce::jmin (minGain, gateGain);
+        l[i] *= gateGain;
+        r[i] *= gateGain;
+    }
+    p.gateGr.store (-juce::Decibels::gainToDecibels (minGain, -80.0f));
+}
+
+// De-esser: a band-pass at the sibilance frequency (with an adjustable width) is the detector; when it is loud, only that band is turned down - or the whole
+// sound in wide mode. Listen plays the detector's band, to find the right frequency.
+void TrackFx::processDeEsser (float* l, float* r, int n, const FxParams& p)
+{
+    const float freq = juce::jlimit (2000.0f, 14000.0f, p.deEssFreq.load());
+    const float q = juce::jlimit (0.3f, 6.0f, p.deEssQ.load());
+    if (freq != lastDeEssFreq || q != lastDeEssQ)
+    {
+        lastDeEssFreq = freq;
+        lastDeEssQ = q;
+        const double w = 2.0 * 3.14159265358979 * freq / sampleRate, al = std::sin (w) / (2.0 * q), cs = std::cos (w);
+        deEssCoef = normalised (al, 0.0, -al, 1.0 + al, -2.0 * cs, 1.0 - al);   // band-pass, constant 0 dB peak gain
+    }
+    const float threshold = p.deEssThreshold;
+    const float amount = juce::jmax (0.0f, p.deEssAmount.load());
+    const bool wide = p.deEssWide, listen = p.deEssListen;
+    const float attack = std::exp (-1.0f / (0.0005f * (float) sampleRate)), release = std::exp (-1.0f / (0.06f * (float) sampleRate));
+
+    float maxReduction = 0.0f;
+    for (int i = 0; i < n; ++i)
+    {
+        const float bl = run (deEssCoef, deEssState[0], l[i]);
+        const float br = run (deEssCoef, deEssState[1], r[i]);
+        const float level = juce::jmax (std::abs (bl), std::abs (br));
+        const float coef = level > deEssEnv ? attack : release;
+        deEssEnv = coef * deEssEnv + (1.0f - coef) * level;
+
+        const float over = 20.0f * std::log10 (juce::jmax (deEssEnv, 1.0e-6f)) - threshold;
+        const float reductionDb = juce::jlimit (0.0f, amount, over > 0.0f ? over * 0.8f : 0.0f);
+        maxReduction = juce::jmax (maxReduction, reductionDb);
+        const float gain = juce::Decibels::decibelsToGain (-reductionDb);
+        if (listen)
+        {
+            l[i] = bl;
+            r[i] = br;
+        }
+        else if (wide)
+        {
+            l[i] *= gain;
+            r[i] *= gain;
+        }
+        else
+        {
+            l[i] -= bl * (1.0f - gain);   // only the band is lowered
+            r[i] -= br * (1.0f - gain);
+        }
+    }
+    p.deEssGr.store (maxReduction);
+}
+
+// Saturation: five characters, drive in, bias (uneven clipping adds even harmonics), a tone tilt, a mix and a level that stays about the same. With
+// oversampling the clipping runs at 4x the sample rate (no folded-back harmonics, so it sounds clean instead of fizzy); the dry signal is delayed to match.
+void TrackFx::processSaturation (float* l, float* r, int n, const FxParams& p)
+{
+    const float drive = juce::Decibels::decibelsToGain (juce::jmax (0.0f, p.satDrive.load()));
+    const int type = juce::jlimit (0, 4, (int) std::lround (p.satType.load()));
+    const float mix = juce::jlimit (0.0f, 1.0f, p.satMix.load());
+    const float out = juce::Decibels::decibelsToGain (p.satOutput.load());
+    const float bias = juce::jlimit (0.0f, 1.0f, p.satBias.load()) * 0.4f;
+    const float tone = juce::jlimit (-1.0f, 1.0f, p.satTone.load());
+    const bool over = p.satOversample;
+
+    const float ref = shapeOf (type, drive * 0.25f + bias) - shapeOf (type, bias);
+    const float norm = ref > 1.0e-4f ? 0.25f / ref : 1.0f;   // a signal at -12 dBFS keeps its level
+    const float dc = shapeOf (type, bias);
+    auto shape = [&] (float x) { return (shapeOf (type, x * drive + bias) - dc) * norm; };
+
+    // tone: negative = a low-pass that goes down to 1 kHz, positive = the highs lifted (a split at 3 kHz)
+    const float lpHz = tone < 0.0f ? 20000.0f * std::pow (0.05f, -tone) : 3000.0f;
+    const float lpCoef = 1.0f - std::exp (-2.0f * 3.14159265f * lpHz / (float) sampleRate);
+
+    const float* h = overFilter();
+    float* chans[2] = { l, r };
+    for (int ch = 0; ch < 2; ++ch)
+    {
+        auto& o = satOver[ch];
+        float* x = chans[ch];
+        for (int i = 0; i < n; ++i)
+        {
+            const float in = x[i];
+            float wet;
+            float dry = in;
+            if (over)
+            {
+                for (int k = overHist - 1; k > 0; --k) o.up[k] = o.up[k - 1];
+                o.up[0] = in;
+                float acc = 0.0f;
+                for (int k = 0; k < 4; ++k)   // 4 interpolated samples (polyphase), shaped, into the decimating filter
+                {
+                    float y = 0.0f;
+                    for (int m = 0; 4 * m + k < overTaps; ++m)
+                        y += h[4 * m + k] * o.up[m];
+                    o.down[o.downPos] = shape (y * 4.0f);
+                    o.downPos = (o.downPos + 1) % overTaps;
+                    if (k == 0)   // the output of the decimating filter is taken at the first of the four: the whole path then delays exactly 12 samples
+                        for (int j = 0; j < overTaps; ++j)
+                            acc += h[j] * o.down[(o.downPos - 1 - j + overTaps * 2) % overTaps];
+                }
+                wet = acc;
+                dry = o.dry[o.dryPos];   // (12 samples late, like the wet signal)
+                o.dry[o.dryPos] = in;
+                o.dryPos = (o.dryPos + 1) % 12;
+            }
+            else
+                wet = shape (in);
+
+            if (tone < 0.0f)
+            {
+                satLp[ch] += lpCoef * (wet - satLp[ch]);
+                wet = satLp[ch];
+            }
+            else if (tone > 0.0f)
+            {
+                satTilt[ch] += lpCoef * (wet - satTilt[ch]);
+                wet += tone * 1.5f * (wet - satTilt[ch]);
+            }
+            x[i] = (dry * (1.0f - mix) + wet * mix) * out;
+        }
+    }
+}
+
+// Multiband compressor: the signal is split in low, mid and high with 4th order Linkwitz-Riley filters (they add up flat again); every band has its own
+// threshold and gain, the ratio, attack and release are shared. The meters show the reduction of each band.
+void TrackFx::processMultiband (float* l, float* r, int n, const FxParams& p)
+{
+    const float f1 = juce::jlimit (40.0f, 1000.0f, p.mbLowFreq.load());
+    const float f2 = juce::jlimit (juce::jmax (300.0f, f1 * 2.0f), 12000.0f, p.mbHighFreq.load());
+    if (f1 != lastMbFreq[0] || f2 != lastMbFreq[1])
+    {
+        lastMbFreq[0] = f1;
+        lastMbFreq[1] = f2;
+        mbLp1 = lowpass (sampleRate, f1, 0.70710678);
+        mbHp1 = highpassCoef (sampleRate, f1, 0.70710678);
+        mbLp2 = lowpass (sampleRate, f2, 0.70710678);
+        mbHp2 = highpassCoef (sampleRate, f2, 0.70710678);
+    }
+
+    const float thr[3] = { p.mbLowThr.load(), p.mbMidThr.load(), p.mbHighThr.load() };
+    const float bandGain[3] = { juce::Decibels::decibelsToGain (p.mbLowGain.load()), juce::Decibels::decibelsToGain (p.mbMidGain.load()),
+                                juce::Decibels::decibelsToGain (p.mbHighGain.load()) };
+    const float slope = 1.0f - 1.0f / juce::jmax (1.0f, p.mbRatio.load());
+    const float makeup = juce::Decibels::decibelsToGain (p.mbMakeup.load());
+    const float attack = std::exp (-1.0f / (0.001f * juce::jmax (0.5f, p.mbAttack.load()) * (float) sampleRate));
+    const float release = std::exp (-1.0f / (0.001f * juce::jmax (5.0f, p.mbRelease.load()) * (float) sampleRate));
+
+    float maxGr[3] = { 0.0f, 0.0f, 0.0f };
+    float* chans[2] = { l, r };
+    for (int i = 0; i < n; ++i)
+    {
+        float band[2][3];
+        for (int ch = 0; ch < 2; ++ch)
+        {
+            auto* st = mbState[ch];
+            const float x = chans[ch][i];
+            float low = run (mbLp1, st[1], run (mbLp1, st[0], x));
+            float rest = run (mbHp1, st[3], run (mbHp1, st[2], x));
+            // the low band gets the all-pass of the second split (low-pass + high-pass of it), so the phases of the three bands match
+            low = run (mbLp2, st[9], run (mbLp2, st[8], low)) + run (mbHp2, st[11], run (mbHp2, st[10], low));
+            band[ch][0] = low;
+            band[ch][1] = run (mbLp2, st[5], run (mbLp2, st[4], rest));
+            band[ch][2] = run (mbHp2, st[7], run (mbHp2, st[6], rest));
+        }
+
+        for (int b = 0; b < 3; ++b)
+        {
+            const float level = juce::jmax (std::abs (band[0][b]), std::abs (band[1][b]));
+            const float coef = level > mbEnv[b] ? attack : release;
+            mbEnv[b] = coef * mbEnv[b] + (1.0f - coef) * level;
+            const float over = 20.0f * std::log10 (juce::jmax (mbEnv[b], 1.0e-6f)) - thr[b];
+            const float reductionDb = over > 0.0f ? over * slope : 0.0f;
+            maxGr[b] = juce::jmax (maxGr[b], reductionDb);
+            const float gain = juce::Decibels::decibelsToGain (-reductionDb) * bandGain[b];
+            band[0][b] *= gain;
+            band[1][b] *= gain;
+        }
+
+        l[i] = (band[0][0] + band[0][1] + band[0][2]) * makeup;
+        r[i] = (band[1][0] + band[1][1] + band[1][2]) * makeup;
+    }
+    for (int b = 0; b < 3; ++b)
+        p.mbGr[b].store (maxGr[b]);
+}
+
+// Chorus / flanger: 1 to 4 modulated delays per side (the phases spread evenly, the right side a quarter turn behind, scaled by the width), a tone filter on
+// the effect, feedback, and a crossfade with the dry signal (mix 1 = vibrato). A short delay with feedback makes a flanger.
+void TrackFx::processChorus (float* l, float* r, int n, const FxParams& p)
+{
+    const int size = (int) chL.size();
+    const float baseSamples = juce::jlimit (0.5f, 40.0f, p.chorusDelay.load()) * 0.001f * (float) sampleRate;
+    const float depth = juce::jlimit (0.0f, 1.0f, p.chorusDepth.load()) * baseSamples * 0.8f;
+    const float feedback = juce::jlimit (0.0f, 0.9f, p.chorusFeedback.load());
+    const float mix = juce::jlimit (0.0f, 1.0f, p.chorusMix.load());
+    const float step = juce::jlimit (0.01f, 10.0f, p.chorusRate.load()) / (float) sampleRate;
+    const int voices = juce::jlimit (1, 4, (int) std::lround (p.chorusVoices.load()));
+    const float width = juce::jlimit (0.0f, 1.0f, p.chorusWidth.load());
+    const float toneCoef = 1.0f - std::exp (-2.0f * 3.14159265f * juce::jlimit (1000.0f, 20000.0f, p.chorusTone.load()) / (float) sampleRate);
+
+    auto read = [&] (const std::vector<float>& buf, float delay)
+    {
+        float rp = (float) chPos - delay;
+        while (rp < 0.0f) rp += (float) size;
+        const int i0 = (int) rp;
+        const float frac = rp - (float) i0;
+        return buf[(size_t) i0 % (size_t) size] * (1.0f - frac) + buf[(size_t) (i0 + 1) % (size_t) size] * frac;
+    };
+
+    for (int i = 0; i < n; ++i)
+    {
+        chPhase += step;
+        if (chPhase >= 1.0f) chPhase -= 1.0f;
+        float wl = 0.0f, wr = 0.0f;
+        for (int v = 0; v < voices; ++v)
+        {
+            const float phase = chPhase + (float) v / (float) voices;
+            wl += read (chL, juce::jlimit (1.0f, (float) size - 3.0f, baseSamples + depth * std::sin (6.2831853f * phase)));
+            wr += read (chR, juce::jlimit (1.0f, (float) size - 3.0f, baseSamples + depth * std::sin (6.2831853f * (phase + 0.25f * width))));
+        }
+        wl /= (float) voices;
+        wr /= (float) voices;
+        chToneL += toneCoef * (wl - chToneL);
+        chToneR += toneCoef * (wr - chToneR);
+        wl = chToneL;
+        wr = chToneR;
+        if (width < 1.0f)   // narrower: the two sides move towards each other
+        {
+            const float m = 0.5f * (wl + wr);
+            wl = m + (wl - m) * width;
+            wr = m + (wr - m) * width;
+        }
+
+        chL[(size_t) chPos] = l[i] + wl * feedback;
+        chR[(size_t) chPos] = r[i] + wr * feedback;
+        if (++chPos >= size) chPos = 0;
+        l[i] = l[i] * (1.0f - mix) + wl * mix;
+        r[i] = r[i] * (1.0f - mix) + wr * mix;
+    }
+}
+
+// Limiter with lookahead: the gain is brought down smoothly in the time before a peak arrives (a minimum-hold followed by a moving average over the
+// lookahead), so nothing is clipped; the release is slow and smooth. The sound is delayed by the lookahead (the track is compensated). Optionally the
+// peaks between the samples are found too (true peak, by 4x interpolation). The ceiling is also a hard stop for what is left.
+void TrackFx::processLimiter (float* l, float* r, int n, const FxParams& p)
+{
+    const float in = juce::Decibels::decibelsToGain (p.limGain.load());
+    const float ceiling = juce::Decibels::decibelsToGain (juce::jmin (0.0f, p.limCeiling.load()));
+    const float release = std::exp (-1.0f / (0.001f * juce::jmax (5.0f, p.limRelease.load()) * (float) sampleRate));
+    const int look = juce::jlimit (0, 480, (int) std::lround (p.limLookahead.load() * 0.001 * sampleRate));
+    const bool truePeak = p.limTruePeak;
+
+    if (look != limLastLook)   // a new lookahead: the delay line and the windows start again (silence)
+    {
+        limLastLook = look;
+        limDelayL.assign ((size_t) look + 1, 0.0f);
+        limDelayR.assign ((size_t) look + 1, 0.0f);
+        limNeed.assign ((size_t) look + 1, 1.0f);
+        limMin.assign ((size_t) look + 1, 1.0f);
+        limPos = 0;
+        limSumMin = (float) (look + 1);
+    }
+
+    float minGain = 1.0f;
+    const int window = look + 1;
+    for (int i = 0; i < n; ++i)
+    {
+        const float x = in * l[i], y = in * r[i];
+        float peak = juce::jmax (std::abs (x), std::abs (y));
+        if (truePeak)
+        {
+            // Catmull-Rom interpolation between the previous two samples at 1/4, 1/2 and 3/4 (history: oldest first)
+            for (int k = 0; k < 3; ++k) { limHistL[k] = limHistL[k + 1]; limHistR[k] = limHistR[k + 1]; }
+            limHistL[3] = x;
+            limHistR[3] = y;
+            for (float t : { 0.25f, 0.5f, 0.75f })
+            {
+                auto cr = [t] (const float* v) { return 0.5f * ((2.0f * v[1]) + (-v[0] + v[2]) * t + (2.0f * v[0] - 5.0f * v[1] + 4.0f * v[2] - v[3]) * t * t + (-v[0] + 3.0f * v[1] - 3.0f * v[2] + v[3]) * t * t * t); };
+                peak = juce::jmax (peak, std::abs (cr (limHistL)), std::abs (cr (limHistR)));
+            }
+        }
+        const float need = peak > ceiling ? ceiling / peak : 1.0f;
+
+        // delay line, the "needed gain" of the last window, the minimum of it, and the moving average of that minimum
+        limDelayL[(size_t) limPos] = x;
+        limDelayR[(size_t) limPos] = y;
+        limNeed[(size_t) limPos] = need;
+        float mn = 1.0f;
+        for (int k = 0; k < window; ++k)
+            mn = juce::jmin (mn, limNeed[(size_t) k]);
+        limSumMin += mn - limMin[(size_t) limPos];
+        limMin[(size_t) limPos] = mn;
+        const float target = juce::jmin (1.0f, limSumMin / (float) window);
+
+        if (target < limGainNow)
+            limGainNow = target;                                          // down: as fast as the window says
+        else
+            limGainNow = release * limGainNow + (1.0f - release) * target;   // up: the release
+        limGainNow = juce::jmin (limGainNow, 1.0f);
+
+        const int readPos = (limPos + 1) % window;   // the oldest sample: `look` samples ago
+        const float dx = limDelayL[(size_t) readPos], dy = limDelayR[(size_t) readPos];
+        limPos = (limPos + 1) % window;
+        minGain = juce::jmin (minGain, limGainNow);
+        l[i] = juce::jlimit (-ceiling, ceiling, dx * limGainNow);
+        r[i] = juce::jlimit (-ceiling, ceiling, dy * limGainNow);
+    }
+    p.limGr.store (-juce::Decibels::gainToDecibels (minGain, -60.0f));
 }

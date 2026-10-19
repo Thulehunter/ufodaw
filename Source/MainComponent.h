@@ -95,6 +95,7 @@ class TrackHeader;
 class TrackLane;
 class SubLaneRow;
 class SubLaneHeader;
+class GroupHeader;
 class SubLaneFooter;
 class TimeRuler;
 class PianoRoll;
@@ -228,6 +229,25 @@ public:
     void openFileHere (const juce::File& f) { loadProject (f); }
     void openInstrumentEditor (Track&);   // the plugin window of the track's instrument (or first effect); the VST panel if none
     double getPixelsPerSecond() const { return pixelsPerSecond; }
+
+    // While recording: the peaks of what an armed track has recorded so far, and where on the timeline they start (for drawing the waveform as it forms)
+    std::shared_ptr<const Engine::RecPeaks> liveRecordingFor (const Track& t, double& startSeconds, double& secondsPerPeak) const
+    {
+        if (! engine.isRecording() || recLoopTakes)
+            return nullptr;
+        const double start = engine.recordedStartSeconds();
+        if (start < 0.0)
+            return nullptr;
+        for (size_t i = 0; i < recordings.size(); ++i)
+            if (recordings[i].track == &t)
+                if (auto peaks = engine.getRecordingPeaks ((int) i))
+                {
+                    startSeconds = juce::jmax (0.0, start - recordLatencySeconds());
+                    secondsPerPeak = (double) peaks->bucket / engine.getSampleRate();
+                    return peaks;
+                }
+        return nullptr;
+    }
     int getScrollX() const { return laneViewport.getViewPositionX(); }
     const TempoMap& getTempoMap() const { return tempoMap; }   // tempo and time signature sections: grid, snapping, ruler
     void applyTempoMap (const TempoMap&);                       // also re-times MIDI, the loop and the punch region
@@ -272,6 +292,8 @@ private:
     void timerCallback() override;
     void addTrackUI (Track&);
     void removeTrackUI (Track*);
+    void freezeTrack (Track&);     // bounce the track to audio (on a new track right after it) and switch the original off: saves the CPU
+    void unfreezeTrack (Track&);   // remove the bounce, the track plays itself again
     void clearTracksUI();
     void layoutContent();
     void layoutMasterLane();                                    // keeps the master strip's lane scrolled with the arrangement
@@ -294,7 +316,16 @@ public:
     static constexpr int subFooterHeight = 28;             // the row under a track's sub-tracks: how many, with - and +
     void changeSubLaneCount (Track&, int delta);        // + adds a sub-track (the next pitch up), - takes the last one away
     void renameSubLane (Track&, int sub, const juce::String& name);
-    void showSubLaneMenu (Track&, int sub);              // right-click on a sub-track: rename, pitch, remove
+    // Track groups (folders): a header row above the tracks of a group, that collapses them and mutes / solos them together
+    static constexpr int groupRowHeight = 30;
+    void syncGroupUI();                                  // builds the group header rows to match the groups
+    void toggleGroupCollapsed (int groupId);
+    void muteSoloGroup (int groupId, bool solo);
+    void renameGroup (int groupId);
+    void showGroupMenu (int groupId);
+    void groupChanged();                                 // the order or the groups changed: headers and lanes again
+    void showTrackGroupMenuItems (juce::PopupMenu&, const Track&);
+    void showSubLaneMenu (Track&, int sub);            // right-click on a sub-track: rename, pitch, remove
     void applySubLaneChoice (Track&, int choice);       // 1 show / hide, 2 from the notes, 3 drum preset, 4 add one, 5 remove all
     void toggleSubLanes (Track&);                       // the + / - button of a track header
 private:
@@ -588,7 +619,10 @@ private:
     juce::OwnedArray<SubLaneRow> subRows;          // the sub-tracks shown under MIDI tracks (see Engine.h: SubLane), in arrangement order
     juce::OwnedArray<SubLaneHeader> subHeaders;
     juce::OwnedArray<SubLaneFooter> subFooters;
-    juce::String subSignature;                      // what they were built for: they are made again when this changes
+    juce::OwnedArray<GroupHeader> groupHeaders;     // one per group that has tracks, in the order they appear
+    juce::OwnedArray<juce::Component> groupBands;   // (the matching strip in the lane area)
+    juce::String groupSignature;
+    juce::String subSignature;                    // what they were built for: they are made again when this changes
     struct DropLine : juce::Component
     {
         DropLine() { setInterceptsMouseClicks (false, false); }

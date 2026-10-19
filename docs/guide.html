@@ -47,7 +47,8 @@
     <a href="#hardware">Hardware &amp; MIDI clock</a>
     <a href="#learn">MIDI learn, scales &amp; tap tempo</a>
     <a href="#mixing">Buses, sends &amp; sidechain</a>
-    <a href="#effects">EQ, compressor, delay, reverb</a>
+    <a href="#effects">EQ, compressor, delay, reverb, more</a>
+    <a href="#freeze">Freeze, groups &amp; plugin safety</a>
     <a href="#metering">Metering &amp; reference</a>
     <a href="#tempo">Tempo map &amp; sections</a>
     <a href="#export">Exporting &amp; stems</a>
@@ -226,11 +227,11 @@
     </section>
 
     <section id="effects">
-      <h2>EQ, compressor, delay and reverb</h2>
-      <p>Open a track's <b>FX</b> panel. Every effect has presets, and every parameter can be automated and MIDI-learned.</p>
+      <h2>The effects chain</h2>
+      <p>Open a track's <b>FX</b> panel. Along the top is the effects chain, in the order the sound goes through it: gate, EQ, compressor, de-esser, saturation, multiband compressor, chorus/flanger, delay, reverb and limiter. The light on a tile switches that effect on or off; click the tile to see its controls below. Every effect has presets, and every parameter can be automated and MIDI-learned.</p>
 
       <h3>Six-band parametric EQ</h3>
-      <p>A 24 dB/oct high-pass, low shelf, two peaks (with Q), high shelf and a 24 dB/oct low-pass, drawn as one frequency response curve with a node per band. Drag a node sideways for the frequency and up or down for the gain, scroll over a peak to change its Q, and double-click to reset a band. The selected band also has sliders under the curve.</p>
+      <p>A 24 dB/oct high-pass, low shelf, two peaks (with Q), high shelf and a 24 dB/oct low-pass, drawn as one frequency response curve with a node per band. Drag a node sideways for the frequency and up or down for the gain, scroll over a peak to change its Q, and double-click to reset a band. The selected band also has sliders next to the curve, and a live spectrum of the sound is drawn behind it while the panel is open.</p>
 
       <h3>Compressor</h3>
       <dl>
@@ -248,6 +249,38 @@
 
       <h3>Reverb</h3>
       <p>An 8-line feedback delay network with decay time, size, pre-delay, damping, low cut, width and motion. Presets cover room, plate, hall and cathedral. Projects from older versions load as before.</p>
+
+      <h3>Gate</h3>
+      <p>Closes when the sound stays under the threshold, with hysteresis (it closes a few dB lower than it opens, so it does not chatter), attack, hold and release, and a range for how far it turns the sound down. The detector can be filtered with a low and a high cut, so bleed from other instruments does not open it. A meter shows how closed it is.</p>
+
+      <h3>De-esser</h3>
+      <p>Listens to a band around the sibilance frequency (with an adjustable width) and lowers only that band when it is loud, or the whole sound in <b>Whole sound</b> mode. <b>Listen</b> plays the band the detector hears, so you can sweep the frequency until the harsh sounds are loudest.</p>
+
+      <h3>Multiband compressor</h3>
+      <p>Three bands with Linkwitz-Riley splits that add up flat again. Every band has its own threshold and gain; ratio, attack and release are shared. A meter per band shows what each is doing.</p>
+
+      <h3>Saturation</h3>
+      <p>Five characters (tube, tape, hard clip, wave fold and diode), drive, bias (adds even harmonics), a tone tilt and a dry/wet mix. <b>4x oversampling</b> runs the clipping at four times the sample rate, which removes most of the aliasing; the sound is delayed 12 samples and the track is compensated.</p>
+
+      <h3>Chorus and flanger</h3>
+      <p>One to four modulated voices per side, width, a tone filter and feedback. A delay of 10-25 ms with a mild depth is a chorus; 1-5 ms with feedback is a flanger; mix all the way up with one voice is a vibrato.</p>
+
+      <h3>Limiter</h3>
+      <p>A lookahead limiter: the gain comes down before a peak arrives, so nothing is clipped and nothing pumps. The track is delayed by the lookahead and the program compensates for that. <b>True peak</b> also catches the peaks between the samples.</p>
+    </section>
+
+    <section id="freeze">
+      <h2>Freeze, groups and plugin safety</h2>
+      <h3>Freeze</h3>
+      <p>Right-click a track &gt; <b>Freeze</b> bounces the track (instrument, effects, plugins, volume and pan) to audio on a new track right after it and switches the original off completely, so its plugins no longer use the CPU. A frozen track has a yellow frame. <b>Unfreeze</b> removes the bounce and plays the track itself again. Freeze is one undo step.</p>
+      <h3>Track groups (folders)</h3>
+      <p>Right-click a track &gt; <b>Group (folder)</b> to start a new group with it or move it into an existing one. The group gets a header row with a name, an arrow that collapses its tracks, and mute and solo for all of them together. Double-click the header to rename it; right-click it to ungroup. Groups are saved with the project.</p>
+      <h3>When a plugin misbehaves</h3>
+      <ul>
+        <li><b>Scanning</b> runs in a helper process (UFODAW starts itself as the helper), so a plugin that crashes while it is examined no longer takes the program down.</li>
+        <li><b>Loading:</b> a plugin that crashed the program while it was loaded is skipped the next time, so the project opens without it. Open the Plugins window to allow it again.</li>
+        <li><b>Playing:</b> a plugin that crashes while processing sound is caught and switched off. An effect lets the sound through, an instrument goes silent, and a message names the plugin. Save and reopen the project to load it again.</li>
+      </ul>
     </section>
 
     <section id="metering">
@@ -335,6 +368,7 @@
         <li>Delay compensation covers audio plugins (instrument and effect inserts) up to 2 s. When a plugin reports another latency while playing, the compensation crossfades over about 10 ms.</li>
         <li>What you do inside a plugin's own window is one undo step, taken when you open the window. Plugins that keep state outside what they save (a sample loaded by hand, say) may not go back completely.</li>
         <li>Effect and plugin parameter automation is applied every 64 samples (volume and pan are ramped); synth parameters once per audio block. While a parameter is automated, the envelope wins during playback.</li>
+        <li>The crash protection covers a plugin while it processes sound. A crash inside a plugin's own window can still end the program; the autosave then offers to restore your work.</li>
         <li>VST3 on Windows. VST2 cannot be hosted (Steinberg no longer licenses it) and CLAP is not supported by the hosting code UFODAW is built on. A macOS build can host Audio Units, but it is untested.</li>
         <li>Windows only so far.</li>
       </ul>

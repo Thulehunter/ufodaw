@@ -1,6 +1,7 @@
 #pragma once
 
 #include <juce_audio_basics/juce_audio_basics.h>
+#include "Loudness.h"
 #include <atomic>
 #include <functional>
 #include <vector>
@@ -21,7 +22,8 @@ struct FxParams
                        compRelease { 120.0f }, compMakeup { 0.0f };                              // dB, :1, ms, ms, dB
     std::atomic<float> compKnee { 6.0f }, compMix { 1.0f }, compRms { 0.3f }, compScHpf { 20.0f };   // dB, 0..1 (parallel), 0 = peak .. 1 = RMS, Hz
     std::atomic<bool> compAuto { false };                                                         // makeup that follows threshold and ratio
-    mutable std::atomic<float> compGr { 0.0f };                                                   // meter (audio thread writes): gain reduction in dB
+    mutable std::atomic<bool> analyse { false };                                                  // the FX panel is open on the EQ: keep a copy of the sound for its spectrum
+    mutable std::atomic<float> compGr { 0.0f };                                               // meter (audio thread writes): gain reduction in dB
 
     std::atomic<bool> delayOn { false };
     std::atomic<float> delayTime { 350.0f }, delayFeedback { 0.35f }, delayMix { 0.3f };          // ms
@@ -32,11 +34,43 @@ struct FxParams
     std::atomic<float> reverbSize { 0.5f }, reverbDamping { 0.5f }, reverbMix { 0.25f };
     std::atomic<float> reverbDecay { 2.0f }, reverbPreDelay { 0.0f }, reverbLowCut { 20.0f }, reverbWidth { 1.0f }, reverbMod { 0.3f };   // s (RT60), ms, Hz, 0..1, 0..1
 
+    // More effects. Order of the whole chain: gate, EQ, compressor, de-esser, saturation, multiband compressor, chorus/flanger, delay, reverb, limiter.
+    std::atomic<bool> gateOn { false };
+    std::atomic<float> gateThreshold { -50.0f }, gateRange { 40.0f }, gateAttack { 1.0f }, gateHold { 50.0f }, gateRelease { 150.0f };   // dB, dB, ms, ms, ms
+    std::atomic<float> gateHyst { 4.0f }, gateScHpf { 20.0f }, gateScLpf { 20000.0f };             // dB (it closes this far under the opening level), Hz, Hz (the detector's filters)
+    mutable std::atomic<float> gateGr { 0.0f };                                                    // meter: how far the gate is turned down (dB)
+
+    std::atomic<bool> deEssOn { false };
+    std::atomic<float> deEssFreq { 6500.0f }, deEssThreshold { -28.0f }, deEssAmount { 8.0f }, deEssQ { 1.5f };   // Hz, dB, dB (the most it takes off), width of the band
+    std::atomic<bool> deEssWide { false }, deEssListen { false };                                  // lower the whole sound instead of only the band / hear the band the detector listens to
+    mutable std::atomic<float> deEssGr { 0.0f };
+
+    std::atomic<bool> satOn { false };
+    std::atomic<float> satDrive { 6.0f }, satType { 0.0f }, satMix { 1.0f }, satOutput { 0.0f };  // dB, 0 tube / 1 tape / 2 hard clip / 3 fold / 4 diode, 0..1, dB
+    std::atomic<float> satBias { 0.0f }, satTone { 0.0f };                                         // 0..1 (uneven clipping: even harmonics), -1 dark .. +1 bright
+    std::atomic<bool> satOversample { true };                                                      // 4x oversampling: much less aliasing (the sound is delayed 12 samples, the dry signal too)
+
+    std::atomic<bool> mbOn { false };
+    std::atomic<float> mbLowFreq { 200.0f }, mbHighFreq { 2500.0f }, mbLowThr { -24.0f }, mbMidThr { -24.0f }, mbHighThr { -24.0f },
+                       mbRatio { 3.0f }, mbMakeup { 0.0f };                                       // Hz, Hz, dB, dB, dB, :1, dB
+    std::atomic<float> mbLowGain { 0.0f }, mbMidGain { 0.0f }, mbHighGain { 0.0f }, mbAttack { 8.0f }, mbRelease { 120.0f };   // dB per band (after compressing), ms, ms
+    mutable std::atomic<float> mbGr[3] = { { 0.0f }, { 0.0f }, { 0.0f } };                                                            // meters: gain reduction of the three bands (dB)
+
+    std::atomic<bool> chorusOn { false };
+    std::atomic<float> chorusRate { 0.8f }, chorusDepth { 0.5f }, chorusDelay { 12.0f }, chorusFeedback { 0.0f }, chorusMix { 0.4f };   // Hz, 0..1, ms, 0..0.9, 0..1 (crossfade: 1 = only the effect)
+    std::atomic<float> chorusVoices { 2.0f }, chorusWidth { 1.0f }, chorusTone { 20000.0f };       // 1..4, 0..1, Hz (low-pass on the effect)
+
+    std::atomic<bool> limOn { false };
+    std::atomic<float> limGain { 0.0f }, limCeiling { -1.0f }, limRelease { 80.0f }, limLookahead { 2.0f };   // dB, dB, ms, ms (the sound is delayed by this; the track is compensated)
+    std::atomic<bool> limTruePeak { false };                                                       // also catch the peaks between the samples
+    mutable std::atomic<float> limGr { 0.0f };                                                     // meter (dB)
+    mutable std::atomic<int> latencySamples { 0 };                                                 // what the chain delays the sound by now (the limiter's lookahead, saturation oversampling)
+
     // Not an effect of the chain: the channel plays in mono (left and right summed) after its effects and plugins.
     std::atomic<bool> mono { false };
 
-    bool anyOn() const { return eqOn || compOn || delayOn || reverbOn; }
-    bool hasTail() const { return delayOn || reverbOn; }
+    bool anyOn() const { return eqOn || compOn || delayOn || reverbOn || gateOn || deEssOn || satOn || mbOn || chorusOn || limOn || analyse.load(); }
+    bool hasTail() const { return delayOn || reverbOn || chorusOn; }
 
     // Used for saving/loading projects.
     void forEachFloat (const std::function<void (const char*, std::atomic<float>&)>&);
@@ -75,9 +109,18 @@ public:
     // null = it listens to its own signal.
     void process (float* left, float* right, int numSamples, const FxParams&, const float* keyL = nullptr, const float* keyR = nullptr);
 
+    // The sound after the EQ (written while FxParams::analyse is set), for the spectrum behind the EQ curve
+    const SpectrumTap& getSpectrumTap() const { return tap; }
+
 private:
     void processEq (float* l, float* r, int n, const FxParams&);
     void processCompressor (float* l, float* r, int n, const FxParams&, const float* keyL, const float* keyR);
+    void processGate (float* l, float* r, int n, const FxParams&);
+    void processDeEsser (float* l, float* r, int n, const FxParams&);
+    void processSaturation (float* l, float* r, int n, const FxParams&);
+    void processMultiband (float* l, float* r, int n, const FxParams&);
+    void processChorus (float* l, float* r, int n, const FxParams&);
+    void processLimiter (float* l, float* r, int n, const FxParams&);
     void processDelay (float* l, float* r, int n, const FxParams&);
     void processReverb (float* l, float* r, int n, const FxParams&);
 
@@ -101,6 +144,49 @@ private:
     EqCoef scCoef;                       // high-pass in the detector's path
     Biquad scState[2];
     float lastScHpf = -1.0f;
+
+    SpectrumTap tap;
+    // gate
+    float gateEnv = 0.0f, gateGain = 1.0f;
+    int gateHoldLeft = 0;
+    bool gateOpen = false;
+    EqCoef gateHp, gateLp;
+    Biquad gateState[2];
+    float lastGateHp = -1.0f, lastGateLp = -1.0f;
+    // de-esser: band-pass of the detector, per channel
+    EqCoef deEssCoef;
+    Biquad deEssState[2];
+    float lastDeEssFreq = -1.0f, lastDeEssQ = -1.0f, deEssEnv = 0.0f, deEssGain = 1.0f;
+    // multiband: 3 bands (4th order Linkwitz-Riley splits) with their own gain reduction
+    EqCoef mbLp1, mbHp1, mbLp2, mbHp2;                 // (first split: low / rest; second split: mid / high; the low band also gets an all-pass at the second)
+    Biquad mbState[2][12];                             // [channel][filter]: low-pass 1 (x2), high-pass 1 (x2), low-pass 2 (x2), high-pass 2 (x2), all-pass of the low band (x4)
+    float lastMbFreq[2] = { -1.0f, -1.0f };
+    float mbEnv[3] = { 0.0f, 0.0f, 0.0f };
+    // chorus / flanger
+    std::vector<float> chL, chR;
+    int chPos = 0;
+    float chPhase = 0.0f;
+    // saturation: 4x oversampling (windowed sinc), the dry signal delayed to match, and the tone filters
+    static constexpr int overTaps = 49, overHist = 13;
+    struct Over4
+    {
+        float up[overHist] = {};             // the newest input samples (for the 4 polyphase outputs)
+        float down[overTaps] = {};           // the newest samples at 4x (for the decimating filter)
+        int downPos = 0;
+        float dry[16] = {};                  // delay line of the dry signal (12 samples)
+        int dryPos = 0;
+    };
+    Over4 satOver[2];
+    float satLp[2] = { 0.0f, 0.0f }, satTilt[2] = { 0.0f, 0.0f };
+    // chorus extras
+    float chToneL = 0.0f, chToneR = 0.0f;
+    // limiter: lookahead with a minimum-hold and a smoothing window (the gain is down in time for the peak), a true-peak detector
+    std::vector<float> limDelayL, limDelayR, limNeed, limMin;
+    int limPos = 0;
+    float limSumMin = 0.0f;
+    float limHistL[4] = {}, limHistR[4] = {};
+    float limGainNow = 1.0f;
+    int limLastLook = -1;
 
     std::vector<float> delayL, delayR;
     int delayPos = 0;
