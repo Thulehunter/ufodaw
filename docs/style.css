@@ -155,3 +155,6 @@ th { color: var(--muted); font-size: .8rem; text-transform: uppercase; letter-sp
 .log small { color: var(--bg); background: var(--orange); border-radius: 999px; padding: 1px 10px; font-size: .75rem; margin-left: 8px; vertical-align: middle; }
 .log ul { margin: 0; padding-left: 20px; color: var(--muted); }
 .log b { color: var(--text); }
+
+/* demo video */
+.demo { display: block; width: 100%; max-width: 960px; aspect-ratio: 5 / 3; margin: 0 auto; border-radius: 16px; border: 1px solid var(--line); background: #000; box-shadow: 0 20px 60px rgba(255, 110, 0, .15); }
