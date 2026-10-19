@@ -45,7 +45,7 @@ private:
     int clipId = -1;
 
     juce::Label title;
-    juce::ComboBox waveform;
+    juce::ComboBox waveform, presetBox;   // (presetBox: sounds for the built-in synth)
     juce::Label attackLabel { {}, "Attack" }, releaseLabel { {}, "Release" }, cutoffLabel { {}, "Cutoff" };
     juce::Slider attack, release, cutoff;
     juce::TextButton closeButton { "x" }, pluginButton { "Plugin window" }, fitButton { "Show notes" };

@@ -57,6 +57,8 @@ target_sources(UFODAW PRIVATE
     Source/PianoRoll.cpp
     Source/Stretch.cpp
     Source/Sampler.cpp
+    Source/StarterPack.cpp
+    Source/ProjectTemplates.cpp
     Source/AudioExport.cpp
     ${SHINE_SOURCES}
     Source/MainComponent.cpp

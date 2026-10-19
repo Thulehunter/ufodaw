@@ -1,4 +1,5 @@
-# Builds UFODAW in Release and packs it into dist\UFODAW-<version>-win64.zip.
+# Builds UFODAW in Release and packs it into dist\UFODAW-<version>-win64.zip, and (when Inno Setup is installed) into the installer
+# dist\UFODAW-<version>-setup.exe.
 # Run from anywhere:  powershell -ExecutionPolicy Bypass -File scripts\package.ps1
 #
 # The build must include ASIO (the SDK goes in third_party\, see the README). Without it the script stops, so a
@@ -42,3 +43,18 @@ Copy-Item "$root\LICENSE" $stage
 Compress-Archive -Path "$stage\*" -DestinationPath $zip
 
 Write-Host "Created $zip ($([math]::Round((Get-Item $zip).Length / 1MB, 1)) MB)"
+
+# the installer (needs Inno Setup: winget install JRSoftware.InnoSetup)
+$iscc = (Get-Command iscc -ErrorAction SilentlyContinue).Source
+if (-not $iscc) {
+    $iscc = @("$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe", "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe", "$env:ProgramFiles\Inno Setup 6\ISCC.exe") |
+        Where-Object { Test-Path $_ } | Select-Object -First 1
+}
+if ($iscc) {
+    & $iscc "/DAppVersion=$version" "$root\installer\UFODAW.iss" | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'The installer could not be built' }
+    $setup = "$root\dist\UFODAW-$version-setup.exe"
+    Write-Host "Created $setup ($([math]::Round((Get-Item $setup).Length / 1MB, 1)) MB)"
+} else {
+    Write-Host 'Inno Setup not found: no installer made (winget install JRSoftware.InnoSetup).'
+}

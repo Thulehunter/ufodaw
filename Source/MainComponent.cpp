@@ -14,6 +14,10 @@
 #include "SectionsPanel.h"
 #include "Commands.h"
 #include "MasterMeter.h"
+#include "ProjectTemplates.h"
+#include "SampleBrowser.h"
+#include "UpdateCheck.h"
+#include "StarterPack.h"
 #include "MidiLearn.h"
 #include "AudioExport.h"
 #include "SamplerPanel.h"
@@ -2959,6 +2963,24 @@ MainComponent::MainComponent (int slot, std::shared_ptr<juce::AudioDeviceManager
     stopAllButton.onClick = [this] { finishRecording(); engine.silenceEverything(); engine.setPositionSeconds (playStartSeconds); };
     addAndMakeVisible (stopAllButton);
 
+    // a newer version exists: this button shows up (see checkForUpdates)
+    updateButton.getProperties().set ("pill", true);
+    updateButton.setColour (juce::TextButton::buttonColourId, Theme::orange);
+    updateButton.setColour (juce::TextButton::textColourOffId, Theme::background);
+    updateButton.setWantsKeyboardFocus (false);
+    updateButton.onClick = [this] { showUpdateInfo(); grabKeyboardFocus(); };
+    addChildComponent (updateButton);
+    {
+        static bool startupCheckDone = false;   // (once per program start, not for every tab)
+        const bool dueToday = juce::Time::currentTimeMillis() - UiSettings::lastUpdateCheck > 20ll * 3600ll * 1000ll;
+        if (! startupCheckDone && UiSettings::autoUpdateCheck && dueToday)
+        {
+            startupCheckDone = true;
+            juce::Component::SafePointer<MainComponent> safe (this);
+            juce::Timer::callAfterDelay (7000, [safe] { if (safe != nullptr) safe->checkForUpdates (false); });
+        }
+    }
+
     // the icon rail replaces these buttons; they stay (hidden, placed over their rail icon) as the anchors of their menus
     for (auto* hidden : { &addButton, &addMidiButton, &addDrumButton, &pluginsButton, &audioButton, &tunerButton, &fileButton })
         hidden->setVisible (false);
@@ -3129,6 +3151,7 @@ MainComponent::~MainComponent()
     pluginHost.onEditorClosed = nullptr;
     mixerWindow.reset();
     meterWindow.reset();
+    browserWindow.reset();
     shortcutsWindow.reset();
     palette.reset();
     warpWindow.reset();
@@ -3410,6 +3433,8 @@ void MainComponent::loadUiSettings()
         UiSettings::countInBars = juce::jlimit (0, 4, xml->getIntAttribute ("countInBars", 0));
         UiSettings::follow = xml->getBoolAttribute ("follow", true);
         UiSettings::exportChoice = juce::jlimit (0, (int) AudioExport::choices().size() - 1, xml->getIntAttribute ("exportChoice", 0));
+        UiSettings::autoUpdateCheck = xml->getBoolAttribute ("autoUpdateCheck", true);
+        UiSettings::lastUpdateCheck = (juce::int64) xml->getDoubleAttribute ("lastUpdateCheck", 0.0);
         UiSettings::tourDone = xml->getBoolAttribute ("tourDone", true);   // (settings from before the tour existed: no tour)
         UiSettings::latencyMode = juce::jlimit (0, 2, xml->getIntAttribute ("latencyMode", 0));
         UiSettings::latencyMeasuredMs = xml->getDoubleAttribute ("latencyMeasuredMs", 0.0);
@@ -3432,6 +3457,8 @@ void MainComponent::saveUiSettings()
     xml.setAttribute ("follow", UiSettings::follow);
     xml.setAttribute ("exportChoice", UiSettings::exportChoice);
     xml.setAttribute ("tourDone", UiSettings::tourDone);
+    xml.setAttribute ("autoUpdateCheck", UiSettings::autoUpdateCheck);
+    xml.setAttribute ("lastUpdateCheck", (double) UiSettings::lastUpdateCheck);
     xml.setAttribute ("latencyMode", UiSettings::latencyMode);
     xml.setAttribute ("latencyMeasuredMs", UiSettings::latencyMeasuredMs);
     xml.setAttribute ("latencyExtraMs", UiSettings::latencyExtraMs);
@@ -5093,6 +5120,12 @@ void MainComponent::resized()
     topSeparators.clear();
     auto top = juce::Rectangle<int> (R, 0, getWidth() - R, topBarHeight - 3).reduced (12, 9);
     stopAllButton.setBounds (top.removeFromRight (104));   // (far right, away from the transport)
+    updateButton.setVisible (updateVersion.isNotEmpty());
+    if (updateVersion.isNotEmpty())
+    {
+        top.removeFromRight (10);
+        updateButton.setBounds (top.removeFromRight (150));
+    }
     timeLabel.setBounds (top.removeFromLeft (150));
     top.removeFromLeft (14);
     bpmLabel.setBounds (top.removeFromLeft (36));
@@ -5235,7 +5268,7 @@ void MainComponent::paintOverChildren (juce::Graphics& g)
     if (engine.getNumTracks() == 0)   // empty project: say what to do
     {
         auto area = juce::Rectangle<int> (railWidth, topBarHeight + rulerHeight, getWidth() - railWidth, getHeight() - topBarHeight - rulerHeight - bottomBarHeight);
-        auto block = area.withSizeKeepingCentre (560, 230);
+        auto block = area.withSizeKeepingCentre (800, 292);
         g.setColour (Theme::background.withAlpha (0.85f));
         g.fillRoundedRectangle (block.toFloat().expanded (24.0f, 16.0f), 14.0f);
 
@@ -5263,7 +5296,16 @@ void MainComponent::paintOverChildren (juce::Graphics& g)
             g.setFont (juce::FontOptions (15.0f));
             g.drawText (c.what, row.withTrimmedLeft (140), juce::Justification::centredLeft);
         }
-        block.removeFromTop (10);
+        block.removeFromTop (6);
+        g.setColour (Theme::yellow);
+        g.setFont (juce::FontOptions (14.0f, juce::Font::bold));
+        g.drawText ("Or start from a ready-made project: top-left menu > New from a template",
+                    block.removeFromTop (26), juce::Justification::centred);
+        g.setColour (Theme::textDim);
+        g.setFont (juce::FontOptions (13.0f));
+        g.drawText ("Sounds to play with: menu > Sample browser (a starter pack of drums, bass and loops, free to use)",
+                    block.removeFromTop (22), juce::Justification::centred);
+        block.removeFromTop (8);
         g.setColour (Theme::textFaint);
         g.setFont (juce::FontOptions (13.0f));
         g.drawText ("Space = play / pause    R = record    S = split    Ctrl+Z = undo    hover over a button for a hint",
@@ -5696,6 +5738,7 @@ void MainComponent::buildCommands()
     // windows and panels
     add ("mixer", "Open the mixer", "Windows", none, [this] { openMixer(); });
     add ("midilearn", "MIDI controllers: tie knobs and faders to parameters (MIDI learn)...", "Windows", none, [this] { openMidiLearn(); });
+    add ("samples", "Sample browser: the starter pack and your own samples, with preview...", "Windows", none, [this] { openSampleBrowser(); });
     add ("meter", "Master meter: loudness (LUFS) and spectrum...", "Windows", none, [this] { openMasterMeter(); });
     add ("refab", "Reference track: switch between your mix and the reference", "Windows", K ('B'), [this]
         {
@@ -5718,6 +5761,95 @@ void MainComponent::buildCommands()
 }
 
 // The master meter (loudness, spectrum) and the reference track
+// ---- updates: the latest release on GitHub
+
+void MainComponent::checkForUpdates (bool userAsked)
+{
+    juce::Component::SafePointer<MainComponent> safe (this);
+    UiSettings::lastUpdateCheck = juce::Time::currentTimeMillis();
+    saveUiSettings();
+    // (UFODAW_VERSION_OVERRIDE: pretend to be another version, to try this out)
+    UpdateCheck::checkAsync (juce::SystemStats::getEnvironmentVariable ("UFODAW_VERSION_OVERRIDE", JUCE_APPLICATION_VERSION_STRING), [safe, userAsked] (UpdateCheck::Result r)
+    {
+        if (safe == nullptr)
+            return;
+        auto& self = *safe;
+        if (r.ok && r.newer)
+        {
+            self.updateVersion = r.version;
+            self.updateNotes = r.notes;
+            self.updateDownload = r.downloadUrl;
+            self.resized();
+            self.updateButton.setTooltip ("UFODAW " + r.version + " is available. Click to see what is new and to download it.");
+            if (userAsked)
+                self.showUpdateInfo();
+        }
+        else if (userAsked)
+        {
+            juce::AlertWindow::showMessageBoxAsync (r.ok ? juce::MessageBoxIconType::InfoIcon : juce::MessageBoxIconType::WarningIcon,
+                                                    r.ok ? "You are up to date" : "Could not check for updates",
+                                                    r.ok ? "UFODAW " + juce::String (JUCE_APPLICATION_VERSION_STRING) + " is the newest version."
+                                                         : "No answer from GitHub. Are you online? You can also look at\nhttps://github.com/Thulehunter/ufodaw/releases");
+        }
+    });
+}
+
+void MainComponent::showUpdateInfo()
+{
+    if (updateVersion.isEmpty())
+        return;
+    // the release notes are markdown: plain text lines of at most about 90 characters, the first ones only
+    juce::StringArray shownLines;
+    for (auto line : juce::StringArray::fromLines (updateNotes))
+    {
+        line = line.replace ("**", "").replace ("`", "").trim();
+        if (line.startsWithChar ('#'))
+            line = line.trimCharactersAtStart ("# ").toUpperCase();
+        else if (line.startsWith ("- "))
+            line = juce::String (juce::CharPointer_UTF8 ("\xe2\x80\xa2 ")) + line.substring (2);
+        if (line.isEmpty() || line.startsWithIgnoreCase ("DOWNLOAD"))
+            continue;
+        while (line.length() > 90)   // wrap at a space
+        {
+            int cut = line.substring (0, 90).lastIndexOfChar (' ');
+            if (cut < 40)
+                cut = 90;
+            shownLines.add (line.substring (0, cut));
+            line = "   " + line.substring (cut).trim();
+        }
+        shownLines.add (line);
+    }
+    if (shownLines.size() > 14)
+    {
+        shownLines.removeRange (14, shownLines.size() - 14);
+        shownLines.add (juce::String (juce::CharPointer_UTF8 ("\xe2\x80\xa6")));
+    }
+    const auto notes = shownLines.joinIntoString ("\n");
+    const auto download = updateDownload;
+    juce::AlertWindow::showAsync (juce::MessageBoxOptions::makeOptionsOkCancel (juce::MessageBoxIconType::InfoIcon, "UFODAW " + updateVersion + " is available",
+                                      "You have " + juce::SystemStats::getEnvironmentVariable ("UFODAW_VERSION_OVERRIDE", JUCE_APPLICATION_VERSION_STRING) + ".\n\n" + notes + "\n\nDownload the new version? Your projects open as before.",
+                                      "Download", "Later", this),
+                                  [download] (int result)
+    {
+        if (result == 1)
+            juce::URL (download).launchInDefaultBrowser();
+    });
+}
+
+void MainComponent::openSampleBrowser()
+{
+    if (browserWindow != nullptr)
+    {
+        browserWindow->toFront (true);
+        return;
+    }
+    juce::Component::SafePointer<MainComponent> safe (this);
+    SampleBrowserPanel::Hooks hooks;
+    hooks.addToProject = [safe] (const juce::File& f) { if (safe != nullptr) safe->importFiles (juce::StringArray (f.getFullPathName()), nullptr, 0.0); };
+    auto closeIt = [safe] { juce::MessageManager::callAsync ([safe] { if (safe != nullptr) safe->browserWindow.reset(); }); };
+    browserWindow = std::make_unique<SampleBrowserWindow> (new SampleBrowserPanel (engine, std::move (hooks)), closeIt);
+}
+
 void MainComponent::openMasterMeter()
 {
     if (meterWindow != nullptr)
@@ -5873,6 +6005,11 @@ void MainComponent::openMidiLearn()
 void MainComponent::timerCallback()
 {
     applyMidiMappings();
+    if (updateVersion.isNotEmpty() != updateButton.isVisible())   // (a check that finished while another tab was shown)
+    {
+        updateButton.setTooltip ("UFODAW " + updateVersion + " is available. Click to see what is new and to download it.");
+        resized();
+    }
     if (juce::String crashed; engine.takeCrashedPlugin (crashed))   // a plugin crashed while playing: it was caught and switched off
         juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "A plugin crashed",
                                                 crashed + " crashed while it was playing. UFODAW caught it and switched the plugin off, so the program could go on: "
@@ -7530,6 +7667,11 @@ void MainComponent::fileMenu()
 
     juce::PopupMenu menu;
     menu.addItem (1, "New project   Ctrl+N");
+    juce::PopupMenu templateMenu;   // projects made from the starter pack
+    const auto templateList = ProjectTemplates::list();
+    for (int i = 0; i < (int) templateList.size(); ++i)
+        templateMenu.addItem (400 + i, templateList[(size_t) i].name + "   -   " + templateList[(size_t) i].description.substring (0, 70));
+    menu.addSubMenu ("New from a template", templateMenu);
     menu.addItem (2, "Open...   Ctrl+O");
     menu.addSubMenu ("Open recent", recentMenu, ! recent.isEmpty());
     menu.addSeparator();
@@ -7546,12 +7688,19 @@ void MainComponent::fileMenu()
     menu.addItem (12, "Command palette...   Ctrl+K");
     menu.addItem (13, "Keyboard shortcuts...");
     menu.addItem (14, "MIDI controllers (MIDI learn)...");
+    menu.addItem (15, "Sample browser (starter pack and your folders)...");
+    menu.addSeparator();
+    menu.addItem (16, updateVersion.isNotEmpty() ? "Update available: " + updateVersion + "..." : juce::String ("Check for updates..."));
+    menu.addItem (17, "Check for updates once a day at start-up", true, UiSettings::autoUpdateCheck);
     menu.addItem (10, "Quick tour...");
-    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&railFile), [this, recent] (int result)
+    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&railFile), [this, recent, templateList] (int result)
     {
         if (result == 12) openPalette();
         else if (result == 13) openShortcuts();
         else if (result == 14) openMidiLearn();
+        else if (result == 15) openSampleBrowser();
+        else if (result == 16) { if (updateVersion.isNotEmpty()) showUpdateInfo(); else checkForUpdates (true); }
+        else if (result == 17) { UiSettings::autoUpdateCheck = ! UiSettings::autoUpdateCheck; saveUiSettings(); }
         if (result == 1) newProject();
         else if (result == 2) openProjectDialog();
         else if (result == 3) saveButton.triggerClick();
@@ -7563,6 +7712,16 @@ void MainComponent::fileMenu()
         else if (result == 8) exportDialog();
         else if (result == 9) exportStemsDialog();
         if (result == 10) startTour();
+        else if (result >= 400 && result - 400 < (int) templateList.size())
+        {
+            StarterPack::ensureInstalled();
+            ProjectTemplates::ensureWritten();
+            const auto file = templateList[(size_t) result - 400].file;
+            if (requestOpenTemplate)
+                requestOpenTemplate (file);
+            else
+                openTemplateHere (file);
+        }
         else if (result >= 100 && result - 100 < recent.size())
         {
             const juce::File chosen (recent[result - 100]);
@@ -7572,6 +7731,18 @@ void MainComponent::fileMenu()
                 loadProject (chosen);
         }
     });
+}
+
+void MainComponent::openTemplateHere (const juce::File& templateFile)
+{
+    if (! templateFile.existsAsFile())
+        return;
+    loadProject (templateFile);
+    currentProject = juce::File();                           // (the template itself is never overwritten: saving asks for a name)
+    untitledTitle = templateFile.getFileNameWithoutExtension();
+    ++editCounter;                                           // unsaved: closing it asks
+    if (onTitleChanged)
+        onTitleChanged();
 }
 
 void MainComponent::newProject()
@@ -7610,6 +7781,7 @@ void MainComponent::newProject()
 
 void MainComponent::resetToEmptyProject()
 {
+    untitledTitle = {};
     finishRecording();
     engine.silenceEverything();
     engine.setPositionSeconds (0.0);

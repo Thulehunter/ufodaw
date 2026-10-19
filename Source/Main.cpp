@@ -1,6 +1,8 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 #include "ProjectTabs.h"
 #include "PluginScan.h"
+#include "ProjectTemplates.h"
+#include "StarterPack.h"
 #if JUCE_WINDOWS
  #include <shlobj.h>
 #endif
@@ -21,6 +23,8 @@ public:
 
         migrateOldSettings();
         registerProjectFileType();
+        StarterPack::ensureInstalled();      // the sounds, drum kits and project templates that are made by the program (a fraction of a second, once)
+        ProjectTemplates::ensureWritten();
         juce::LookAndFeel::setDefaultLookAndFeel (&lookAndFeel);   // the warm red/orange/yellow theme
         window = std::make_unique<MainWindow> (getApplicationName());
 

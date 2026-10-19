@@ -2488,7 +2488,7 @@ void Engine::getNextAudioBlock (const juce::AudioSourceChannelInfo& info)
             wasRunning = false;
             emitClock (0, 0, false);   // playback ended: hardware gets a MIDI Stop
         }
-        if (! anySynthActive() && ! anyMonitoring() && ! counting)   // (monitoring keeps the mixer running while stopped)
+        if (! anySynthActive() && ! anyMonitoring() && ! counting && ! previewActive.load())   // (monitoring and a preview keep the mixer running while stopped)
         {
             for (auto& t : tracks) { t->level = 0.0f; t->dspLoad = 0.0f; }
             setMasterLevel (0.0f);
@@ -2952,6 +2952,26 @@ bool Engine::processPlugin (PluginSlot& slot, juce::AudioBuffer<float>& buffer, 
     PluginSlot* expected = nullptr;
     crashedPlugin.compare_exchange_strong (expected, &slot);
     return false;
+}
+
+void Engine::startPreview (std::shared_ptr<const juce::AudioBuffer<float>> buffer, double bufferRate, float gain)
+{
+    const juce::ScopedLock sl (lock);
+    previewBuffer = std::move (buffer);
+    previewRate = bufferRate > 0.0 ? bufferRate : 44100.0;
+    previewGain = gain;
+    previewPhase = 0.0;
+    previewPosition = 0.0;
+    previewActive = previewBuffer != nullptr && previewBuffer->getNumSamples() > 2;
+    if (! previewActive.load())
+        previewBuffer.reset();
+}
+
+void Engine::stopPreview()
+{
+    const juce::ScopedLock sl (lock);
+    previewBuffer.reset();
+    previewActive = false;
 }
 
 bool Engine::takeCrashedPlugin (juce::String& name)
@@ -3538,6 +3558,30 @@ void Engine::mixBlock (float* outL, float* outR, int n, juce::int64 pos, bool wi
             const auto s = (float) (std::sin (juce::MathConstants<double>::twoPi * freq * t) * std::exp (-t * 80.0) * 0.4);
             outL[i] += s;
             if (outR) outR[i] += s;
+        }
+    }
+
+    if (previewBuffer != nullptr && ! offlineRendering.load())   // the sample browser's preview (linear interpolation, mono or stereo)
+    {
+        const auto& b = *previewBuffer;
+        const int len = b.getNumSamples();
+        const double ratio = previewRate / sampleRate;
+        const float* src0 = b.getReadPointer (0);
+        const float* src1 = b.getNumChannels() > 1 ? b.getReadPointer (1) : src0;
+        double sp = previewPhase;
+        for (int i = 0; i < n && sp < len - 1; ++i, sp += ratio)
+        {
+            const int i0 = (int) sp;
+            const float f = (float) (sp - i0);
+            outL[i] += (src0[i0] + f * (src0[i0 + 1] - src0[i0])) * previewGain;
+            if (outR) outR[i] += (src1[i0] + f * (src1[i0 + 1] - src1[i0])) * previewGain;
+        }
+        previewPhase = sp;
+        previewPosition = sp / previewRate;
+        if (sp >= len - 1)
+        {
+            previewBuffer.reset();
+            previewActive = false;
         }
     }
 

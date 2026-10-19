@@ -733,6 +733,45 @@ PianoRoll::PianoRoll (MainComponent& m) : main (m)
     waveform.onChange = [this] { main.beginEdit(); applySynthParams(); };
     addAndMakeVisible (waveform);
 
+    // sounds for the built-in synth: wave, attack, decay, sustain, release, cutoff
+    struct SynthPreset { const char* name; int wave; float a, d, s, r, cutoff; };
+    static const SynthPreset presets[] = {
+        { "Default saw",  1, 0.005f, 0.15f, 0.7f,  0.25f, 8000.0f },
+        { "Soft pluck",   1, 0.002f, 0.18f, 0.0f,  0.12f, 4500.0f },
+        { "Warm pad",     1, 0.6f,   0.5f,  0.8f,  1.4f,  1800.0f },
+        { "Strings",      1, 0.35f,  0.3f,  0.85f, 0.8f,  3000.0f },
+        { "Brass",        1, 0.06f,  0.25f, 0.7f,  0.2f,  3500.0f },
+        { "Lead",         2, 0.005f, 0.2f,  0.7f,  0.2f,  5000.0f },
+        { "Keys",         3, 0.004f, 0.5f,  0.35f, 0.4f,  7000.0f },
+        { "Bell",         0, 0.001f, 1.2f,  0.0f,  1.2f,  12000.0f },
+        { "Sub bass",     0, 0.003f, 0.2f,  0.9f,  0.12f, 600.0f },
+        { "Fat bass",     1, 0.003f, 0.25f, 0.6f,  0.15f, 900.0f },
+    };
+    presetBox.setTextWhenNothingSelected ("Sounds...");
+    for (int i = 0; i < (int) std::size (presets); ++i)
+        presetBox.addItem (presets[i].name, i + 1);
+    presetBox.setTooltip ("Ready-made sounds for the built-in synth: they set the wave, the envelope and the filter (you can adjust them after)");
+    presetBox.onChange = [this]
+    {
+        const int id = presetBox.getSelectedId();
+        presetBox.setSelectedId (0, juce::dontSendNotification);
+        if (track == nullptr || id < 1 || id > (int) std::size (presets))
+            return;
+        const auto& pr = presets[id - 1];
+        main.beginEdit();
+        track->synth.waveform = pr.wave;
+        track->synth.attack = pr.a;
+        track->synth.decay = pr.d;
+        track->synth.sustain = pr.s;
+        track->synth.release = pr.r;
+        track->synth.cutoff = pr.cutoff;
+        waveform.setSelectedId (pr.wave + 1, juce::dontSendNotification);
+        attack.setValue (pr.a, juce::dontSendNotification);
+        release.setValue (pr.r, juce::dontSendNotification);
+        cutoff.setValue (pr.cutoff, juce::dontSendNotification);
+    };
+    addAndMakeVisible (presetBox);
+
     auto setupSlider = [this] (juce::Slider& s, double lo, double hi, double mid)
     {
         s.setSliderStyle (juce::Slider::LinearHorizontal);
@@ -926,7 +965,7 @@ void PianoRoll::updateToolbar()
     toolbarShowsPlugin = plugin;
 
     pluginButton.setVisible (plugin);
-    for (juce::Component* c : std::initializer_list<juce::Component*> { &waveform, &attackLabel, &attack, &releaseLabel, &release, &cutoffLabel, &cutoff })
+    for (juce::Component* c : std::initializer_list<juce::Component*> { &waveform, &presetBox, &attackLabel, &attack, &releaseLabel, &release, &cutoffLabel, &cutoff })
         c->setVisible (! plugin);
 }
 
@@ -986,6 +1025,8 @@ void PianoRoll::resized()
     bar.removeFromLeft (10);
     cutoffLabel.setBounds (bar.removeFromLeft (46));
     cutoff.setBounds (bar.removeFromLeft (130));
+    bar.removeFromLeft (14);
+    presetBox.setBounds (bar.removeFromLeft (150));
 
     {   // the key, in the empty space to the left of the keys
         const int x = 12, w = MainComponent::controlsWidth - keyWidth - 24;

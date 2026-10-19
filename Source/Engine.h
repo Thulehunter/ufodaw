@@ -669,6 +669,12 @@ public:
     bool renderToFile (const juce::File&, double lengthSeconds, bool withMetronome);
     bool renderToFile (const juce::File&, double lengthSeconds, const RenderOptions&);
     static int latencyOf (const Track& t) { return trackLatency (t); }   // samples of delay the plugins of the track add
+    // Preview (the sample browser): a sound is played through the master output, apart from the project (not in exports). A new one replaces the old.
+    void startPreview (std::shared_ptr<const juce::AudioBuffer<float>> buffer, double bufferRate, float gain = 0.8f);
+    void stopPreview();
+    bool isPreviewing() const { return previewActive.load(); }
+    double getPreviewPosition() const { return previewPosition.load(); }   // seconds into the sound
+
     // Message thread: true once when a plugin crashed while it was playing (it is switched off), with its name
     bool takeCrashedPlugin (juce::String& name);
     bool trackHasOutput (const Track&) const;       // whether the track would give a non-empty stem
@@ -835,7 +841,12 @@ private:
     void renderPluginInstrument (Track&, int numSamples, float* outL, float* outR);
     void processInsert (PluginSlot&, float* l, float* r, int numSamples);
     bool processPlugin (PluginSlot&, juce::AudioBuffer<float>&, juce::MidiBuffer&);   // processBlock behind the crash guard; false = the plugin crashed (now or before)
-    std::atomic<PluginSlot*> crashedPlugin { nullptr };                                // the first plugin that crashed and was not reported yet
+    std::atomic<PluginSlot*> crashedPlugin { nullptr };
+    std::shared_ptr<const juce::AudioBuffer<float>> previewBuffer;   // (guarded by `lock`)
+    double previewPhase = 0.0, previewRate = 44100.0;
+    float previewGain = 0.8f;
+    std::atomic<bool> previewActive { false };
+    std::atomic<double> previewPosition { 0.0 };                                // the first plugin that crashed and was not reported yet
 
     Clip* findClip (Track&, int clipId);
     const Clip* findClip (const Track&, int clipId) const;

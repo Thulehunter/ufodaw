@@ -29,6 +29,8 @@ namespace UiSettings
     inline bool panSnap = true;        // pan sliders and pan envelopes snap to panStep (Alt while dragging flips it)
     inline int countInBars = 0;        // bars of metronome clicks before a recording starts (0 = none)
     inline bool follow = true;         // the arrangement scrolls along with the playhead while playing
+    inline bool autoUpdateCheck = true;     // look for a new version once a day at start-up (one small request to GitHub)
+    inline juce::int64 lastUpdateCheck = 0; // when (milliseconds since 1970)
     inline bool tourDone = false;      // the first-run tour was shown (or skipped); not shown again for people who already had settings
     inline int exportChoice = 0;       // the last audio format chosen for an export (an index into AudioExport::choices())
 
@@ -96,6 +98,7 @@ class TrackLane;
 class SubLaneRow;
 class SubLaneHeader;
 class GroupHeader;
+class SampleBrowserWindow;
 class SubLaneFooter;
 class TimeRuler;
 class PianoRoll;
@@ -217,7 +220,7 @@ public:
     // ---- Project tabs
     void suspendAudio();     // another tab takes the audio device: stop, close editors, let go of the device and the MIDI inputs
     void resumeAudio();      // this tab is shown again and takes the device back
-    juce::String getTitle() const { return currentProject != juce::File() ? currentProject.getFileNameWithoutExtension() : juce::String ("Untitled"); }
+    juce::String getTitle() const { return currentProject != juce::File() ? currentProject.getFileNameWithoutExtension() : untitledTitle.isNotEmpty() ? untitledTitle : juce::String ("Untitled"); }
     bool hasUnsavedChanges() const { return editCounter != savedEdit; }
     int getTabSlot() const { return tabSlot; }
     void markClean() { savedEdit = editCounter; }   // closing a project without saving: it leaves no recovery file behind
@@ -227,6 +230,9 @@ public:
     std::function<void (int)> requestSwitchTab;   // Ctrl+Tab / Ctrl+Shift+Tab: +1 or -1
     std::function<void (const juce::File&)> requestOpenInTab;
     void openFileHere (const juce::File& f) { loadProject (f); }
+    void openTemplateHere (const juce::File& templateFile);   // a project from the starter pack: opened as a new, unsaved project (it is named after the template)
+    std::function<void (const juce::File&)> requestOpenTemplate;
+    juce::String untitledTitle;
     void openInstrumentEditor (Track&);   // the plugin window of the track's instrument (or first effect); the VST panel if none
     double getPixelsPerSecond() const { return pixelsPerSecond; }
 
@@ -361,6 +367,13 @@ private:
     std::unique_ptr<SamplerWindow> padSamplerWindow;
     std::unique_ptr<WarpWindow> warpWindow;
     std::unique_ptr<MasterMeterWindow> meterWindow;
+    std::unique_ptr<SampleBrowserWindow> browserWindow;
+    // Updates: the latest release on GitHub. A button in the top bar appears when a newer version exists.
+    juce::TextButton updateButton { "Update available" };
+    static inline juce::String updateVersion, updateNotes, updateDownload;   // (empty version: none; shared by all the tabs)
+    void checkForUpdates (bool userAsked);                      // File > Check for updates; also once a day at start-up
+    void showUpdateInfo();
+    void openSampleBrowser();                         // the starter pack and your own folders, with preview
     void openMasterMeter();                           // loudness, spectrum and the reference track
     std::unique_ptr<VersionHistoryWindow> historyWindow;
     std::unique_ptr<DrumRackWindow> drumRackWindow;

@@ -2,6 +2,7 @@
 
 #include <juce_gui_basics/juce_gui_basics.h>
 #include "DrumKit.h"
+#include "StarterPack.h"
 #include "Theme.h"
 
 // The drum rack's window: a 4x4 grid of pads (pad 1 bottom left, like a drum machine). Click a pad to hear it and select it; below
@@ -142,6 +143,32 @@ public:
             }
         }
 
+        // kits from the starter pack: all pads at once
+        kitBox.setTextWhenNothingSelected ("Load a drum kit from the starter pack...");
+        for (int i = 0; i < (int) StarterPack::kits().size(); ++i)
+            kitBox.addItem (StarterPack::kits()[(size_t) i].name + "  -  " + StarterPack::kits()[(size_t) i].description, i + 1);
+        kitBox.setTooltip ("Fills the pads with the sounds of a kit (made by the program, free to use). Your own samples on those pads are replaced; undo brings them back.");
+        kitBox.onChange = [this]
+        {
+            const int id = kitBox.getSelectedId();
+            kitBox.setSelectedId (0, juce::dontSendNotification);
+            if (id < 1 || id > (int) StarterPack::kits().size())
+                return;
+            StarterPack::ensureInstalled();
+            begin();
+            const auto& kitDef = StarterPack::kits()[(size_t) id - 1];
+            for (int pad = 0; pad < DrumKit::numPads && pad < (int) kitDef.pads.size(); ++pad)
+            {
+                const auto file = StarterPack::sample (kitDef.pads[(size_t) pad].first, kitDef.pads[(size_t) pad].second);
+                if (file.existsAsFile() && hooks.load)
+                    hooks.load (pad, file);
+            }
+            edited();
+            refreshControls();
+            repaint();
+        };
+        addAndMakeVisible (kitBox);
+
         hint.setText ("Click a pad, or play the keys Z X C V / A S D F / Q W E R / 1 2 3 4 (like the pads). Drop an audio file on a pad to load it. "
                       "Each pad is a small Simpler: Edit sampler... for start, "
                       "end, pitch, envelope and filter.", juce::dontSendNotification);
@@ -151,7 +178,7 @@ public:
 
         refreshControls();
         setWantsKeyboardFocus (true);
-        setSize (520, 700);
+        setSize (520, 736);
         startTimerHz (15);   // lights the pads that are playing
     }
 
@@ -271,8 +298,10 @@ public:
 
     void resized() override
     {
-        gridArea = { 12, 12, getWidth() - 24, 330 };
         auto r = getLocalBounds().reduced (12);
+        kitBox.setBounds (r.removeFromTop (28));
+        r.removeFromTop (8);
+        gridArea = { 12, r.getY(), getWidth() - 24, 330 };
         r.removeFromTop (330 + 10);
 
         nameLabel.setBounds (r.removeFromTop (24));
@@ -436,7 +465,7 @@ private:
     juce::Label nameLabel, fileLabel, gainLabel, panLabel, chokeLabel, hint;
     juce::Slider gain, pan;
     juce::ToggleButton muteButton { "Mute" }, soloButton { "Solo" };
-    juce::ComboBox chokeBox;
+    juce::ComboBox chokeBox, kitBox;
     juce::TextButton loadButton { "Load sample..." }, editButton { "Edit sampler..." }, resetButton { "Built-in sound" };
 };
 

@@ -67,6 +67,17 @@ public:
         repaint();
     }
 
+    // A template of the starter pack: an empty untitled project takes it, otherwise a new tab; it is opened as a new, unsaved project
+    void openTemplate (const juce::File& file)
+    {
+        if (auto* current = getActive(); current != nullptr && current->isEmptyUntitled())
+            current->openTemplateHere (file);
+        else if (auto* tab = newTab())
+            tab->openTemplateHere (file);
+        refreshTitle();
+        repaint();
+    }
+
     MainComponent* newTab (int forcedSlot = -1)
     {
         if ((int) tabs.size() >= maxTabs)
@@ -106,6 +117,10 @@ public:
         raw->requestCloseTab = [safe = juce::Component::SafePointer<ProjectTabs> (this), raw]
         {
             juce::MessageManager::callAsync ([safe, raw] { if (safe != nullptr) safe->closeTab (safe->indexOf (raw)); });
+        };
+        raw->requestOpenTemplate = [safe = juce::Component::SafePointer<ProjectTabs> (this)] (const juce::File& f)
+        {
+            juce::MessageManager::callAsync ([safe, f] { if (safe != nullptr) safe->openTemplate (f); });
         };
         raw->requestSwitchTab = [safe = juce::Component::SafePointer<ProjectTabs> (this)] (int delta)
         {
