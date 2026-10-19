@@ -5,6 +5,14 @@
 <h1 align="center">UFODAW</h1>
 
 <p align="center">
+  <a href="../../releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/Thulehunter/ufodaw?color=ff8a00"></a>
+  <a href="../../releases"><img alt="Downloads" src="https://img.shields.io/github/downloads/Thulehunter/ufodaw/total?color=ffd60a"></a>
+  <a href="LICENSE"><img alt="License: AGPLv3" src="https://img.shields.io/badge/license-AGPLv3-e5383b"></a>
+  <a href="https://github.com/Thulehunter/ufodaw/actions/workflows/tests.yml"><img alt="Tests" src="https://github.com/Thulehunter/ufodaw/actions/workflows/tests.yml/badge.svg"></a>
+  <a href="https://discord.gg/BhvKsN6knU"><img alt="Discord" src="https://img.shields.io/badge/chat-Discord-5865f2"></a>
+</p>
+
+<p align="center">
   <b>A free, open-source digital audio workstation for Windows.</b><br>
   Audio and MIDI tracks, VST3 plugins, sampler, drum rack, deep automation and a full effects chain.
 </p>
@@ -13,6 +21,7 @@
   <a href="https://ufodaw.eu">Website</a> ·
   <a href="../../releases/latest">Download</a> ·
   <a href="https://ufodaw.eu/guide.html">Guide</a> ·
+  <a href="https://ufodaw.eu/compare.html">How it compares</a> ·
   <a href="https://discord.gg/BhvKsN6knU">Discord</a> ·
   <a href="../../issues/new/choose">Report a bug or request a feature</a>
 </p>
