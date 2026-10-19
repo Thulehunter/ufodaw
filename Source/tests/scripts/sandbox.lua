@@ -1,0 +1,11 @@
+-- A script has no access to files, programs, the network or other code.
+assert(io == nil and package == nil and debug == nil, "no io, package or debug")
+assert(load == nil and loadfile == nil and dofile == nil and require == nil, "no loading of code")
+assert(os.execute == nil and os.remove == nil and os.getenv == nil and os.exit == nil, "no os")
+assert(collectgarbage == nil)
+assert(string.dump == nil)
+assert(type(os.time()) == "number")
+assert(type(math.random()) == "number" and #table.concat({ "a", "b" }) == 2)
+assert(_G == _ENV or true)
+assert(rawget(_G, "io") == nil)
+print("sandbox ok")

@@ -52,6 +52,7 @@
     <a href="#mixing">Buses, sends &amp; sidechain</a>
     <a href="#effects">EQ, compressor, delay, reverb, more</a>
     <a href="#freeze">Freeze, groups &amp; plugin safety</a>
+    <a href="#scripting">Scripting (Lua)</a>
     <a href="#synth">Synth, piano &amp; drums</a>
     <a href="#launcher">Clip launcher</a>
     <a href="#starter">Starter pack &amp; templates</a>
@@ -308,6 +309,28 @@
       </ul>
     </section>
 
+    <section id="scripting">
+      <h2>Scripting with Lua</h2>
+      <p>Scripts are small Lua programs that look at the project and change it: write a chord progression, spread a euclidean rhythm over a drum track, humanize a clip, set up many tracks at once, render the project. They are text files in <code>%APPDATA%\UFODAW\Scripts</code>; six examples are written there the first time.</p>
+      <h3>Running a script</h3>
+      <p><b>File &gt; Scripts (Lua)...</b>, or the command palette (<kbd>Ctrl</kbd>+<kbd>K</kbd>, <i>run a lua script</i>). The program asks for the settings of the script first, runs it, and shows what it printed. The whole run is <b>one undo step</b>, so <kbd>Ctrl</kbd>+<kbd>Z</kbd> takes back everything it did.</p>
+      <h3>A first script</h3>
+      <pre><code>--@param bars 4 How many bars
+local track = ufodaw.add_track("midi", "Bass line")
+ufodaw.synth_preset(track, "Moog bass")
+local clip = ufodaw.add_clip(track, 1, params.bars)
+local notes = {}
+for bar = 0, params.bars - 1 do
+  notes[#notes + 1] = { pitch = music.note("A1"), beat = bar * 4, length = 3, velocity = 0.9 }
+end
+ufodaw.set_notes(track, clip, notes)</code></pre>
+      <p>The lines that start with <code>--@param name default Label</code> become the settings dialog; the script reads them from the table <code>params</code>. A <code>ufodaw</code> table gives access to the tracks, MIDI clips and notes, the synth, the tempo, the transport and rendering, and a <code>music</code> table has note names, scales, chords and euclidean rhythms.</p>
+      <h3>Safe by design</h3>
+      <p>A script runs in a sandbox: it cannot read or write files (apart from the audio file you tell it to render), start programs or use the network. A script that runs for more than 20 seconds or uses too much memory is stopped. Even so, only run scripts you trust.</p>
+      <h3>The full reference</h3>
+      <p>Every function, the conventions (tracks and bars count from 1, notes in beats from the start of the clip), the synth settings and the command line are in <a href="https://github.com/Thulehunter/ufodaw/blob/main/SCRIPTING.md">SCRIPTING.md</a>. From the command line: <code>UFODAW.exe --run-script script.lua [project.mdaw]</code>.</p>
+    </section>
+
     <section id="synth">
       <h2>Synth, piano and drums</h2>
       <h3>The built-in synth</h3>
@@ -482,7 +505,7 @@
   ["fr-nav", "fr-link"].forEach(function (id) {
     var a = document.getElementById(id); a.href = fr; a.target = "_blank"; a.rel = "noopener";
   });
-  var VERSION = "0.9.2";   // (update with every release)
+  var VERSION = "0.9.3";   // (update with every release)
   var body = "**What happened?**\n\n\n**What did you expect?**\n\n\n**How can it be repeated?**\n1. \n2. \n3. \n\n**Version:** UFODAW " + VERSION + "\n**Windows version:**\n**Audio device and driver (ASIO / WASAPI):**\n**Plugins involved (name, maker):**\n";
   var bug = REPO + "/issues/new?labels=bug&title=" + encodeURIComponent("Bug: ") + "&body=" + encodeURIComponent(body);
   ["bug-nav", "bug-link"].forEach(function (id) {

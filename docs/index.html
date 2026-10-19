@@ -15,7 +15,7 @@
 <meta property="og:image" content="https://ufodaw.eu/icon.png">
 <meta name="twitter:card" content="summary">
 <script type="application/ld+json">
-{"@context":"https://schema.org","@type":"SoftwareApplication","name":"UFODAW","applicationCategory":"MultimediaApplication","applicationSubCategory":"Digital audio workstation","operatingSystem":"Windows","softwareVersion":"0.9.2","license":"https://www.gnu.org/licenses/agpl-3.0.html","url":"https://ufodaw.eu/","image":"https://ufodaw.eu/icon.png","downloadUrl":"https://github.com/Thulehunter/ufodaw/releases/latest","offers":{"@type":"Offer","price":"0","priceCurrency":"EUR"}}
+{"@context":"https://schema.org","@type":"SoftwareApplication","name":"UFODAW","applicationCategory":"MultimediaApplication","applicationSubCategory":"Digital audio workstation","operatingSystem":"Windows","softwareVersion":"0.9.3","license":"https://www.gnu.org/licenses/agpl-3.0.html","url":"https://ufodaw.eu/","image":"https://ufodaw.eu/icon.png","downloadUrl":"https://github.com/Thulehunter/ufodaw/releases/latest","offers":{"@type":"Offer","price":"0","priceCurrency":"EUR"}}
 </script>
 <script type="application/ld+json">
 {"@context":"https://schema.org","@type":"VideoObject","name":"UFODAW demo: record, arrange and mix","description":"A two-minute tour of UFODAW, a free digital audio workstation for Windows: piano roll, EQ and effects chain, track groups, freeze and the loudness meter.","thumbnailUrl":"https://ufodaw.eu/ufodaw-demo-poster.jpg","contentUrl":"https://ufodaw.eu/ufodaw-demo.mp4","uploadDate":"2026-10-19","duration":"PT2M19S"}
@@ -48,7 +48,7 @@
       <a class="btn primary" href="#download">Download for Windows</a>
       <a class="btn" href="#features">See what it does</a>
     </div>
-    <p class="meta">Version 0.9.2 · Free &amp; open source · AGPLv3 · Windows 64-bit · installer, no admin rights needed</p>
+    <p class="meta">Version 0.9.3 · Free &amp; open source · AGPLv3 · Windows 64-bit · installer, no admin rights needed</p>
   </section>
 
   <section class="strip" aria-label="Highlights">
@@ -126,6 +126,10 @@
         <p>LUFS loudness meter, clipping lamps on every meter, a reference-track A/B switch, and a CPU readout so you see trouble before it crackles.</p>
       </article>
       <article>
+        <h3 class="c-orange">Scripting with Lua</h3>
+        <p>Write small scripts that make chord progressions, drum patterns and melodies, humanize clips or set up a project, with a built-in music library. They run in a safe sandbox and are one undo step.</p>
+      </article>
+      <article>
         <h3 class="c-red">A much better synth, piano and drums</h3>
         <p>Unison, filters with their own envelopes, an LFO and glide; a piano engine; 808 and legato basses; remade drums with soft and round-robin hits, and two new kits. 43 ready-made sounds.</p>
       </article>
@@ -172,6 +176,7 @@
       <a href="guide.html#hardware"><b>Hardware &amp; clock</b><span>External synths and MIDI clock out</span></a>
       <a href="guide.html#mixing"><b>Sidechain &amp; buses</b><span>Ducking, sends and plugin delay compensation</span></a>
       <a href="guide.html#effects"><b>The effects chain</b><span>EQ, compressor, gate, saturation, limiter and more</span></a>
+      <a href="guide.html#scripting"><b>Scripting (Lua)</b><span>Scripts that write music and edit the project</span></a>
       <a href="guide.html#synth"><b>Synth, piano &amp; drums</b><span>Sounds, the synth window, kits</span></a>
       <a href="guide.html#launcher"><b>Clip launcher</b><span>Start clips live in a grid, in time</span></a>
       <a href="guide.html#starter"><b>Starter pack &amp; templates</b><span>Kits, synth sounds, project templates, sample browser</span></a>
@@ -198,7 +203,10 @@
   <section id="new" class="alt">
     <h2>What's new</h2>
     <div class="log">
-      <div><h3>0.9.2 <small>latest</small></h3><ul>
+      <div><h3>0.9.3 <small>latest</small></h3><ul>
+        <li><b>Scripting with Lua:</b> <i>File &gt; Scripts (Lua)</i> runs scripts from your scripts folder. They can add tracks, write and change MIDI notes, set up the synth, change the tempo and render the project, with a music library (note names, scales, chords, euclidean rhythms). A settings dialog for each script, one undo step per run, a safe sandbox with time and memory limits. Six example scripts are included.</li>
+        <li><b>Command line:</b> <code>UFODAW.exe --run-script script.lua [project.mdaw]</code> runs a script without a dialog.</li></ul></div>
+      <div><h3>0.9.2</h3><ul>
         <li><b>New synth:</b> up to five unison oscillators, a second and a sub oscillator, a resonant filter with its own envelope, an LFO, glide, a pitch envelope and mono legato mode. <i>Edit sound...</i> in the piano roll opens every setting.</li>
         <li><b>Piano engine</b> with six pianos, and bass sounds such as 808 sub, Moog bass and Legato bass: 43 sounds in all, balanced to the same loudness.</li>
         <li><b>Remade drums:</b> better kicks, snares, claps, hats and cymbals; soft and round-robin versions of every kit sound as velocity layers; two new kits, <i>909</i> and <i>Acoustic</i> (with a small room and stereo).</li>
@@ -246,10 +254,10 @@
 
   <section id="download">
     <h2>Download</h2>
-    <p class="center">Grab <code>UFODAW-0.9.2-setup.exe</code> (the installer) from the Releases page and run it, or take <code>UFODAW-0.9.2-win64.zip</code>, unzip it anywhere and run <code>UFODAW.exe</code>. Double-click any <code>.mdaw</code> file to open a project directly.</p>
+    <p class="center">Grab <code>UFODAW-0.9.3-setup.exe</code> (the installer) from the Releases page and run it, or take <code>UFODAW-0.9.3-win64.zip</code>, unzip it anywhere and run <code>UFODAW.exe</code>. Double-click any <code>.mdaw</code> file to open a project directly.</p>
     <div class="cta center">
       <!-- TODO: replace # with your GitHub Releases URL -->
-      <a class="btn primary" href="#" id="dl">Download 0.9.2 (Windows 64-bit)</a>
+      <a class="btn primary" href="#" id="dl">Download 0.9.3 (Windows 64-bit)</a>
       <a class="btn" href="#" id="src">Source code</a>
     </div>
     <p class="meta center">Releases are not code-signed yet, so Windows SmartScreen may show a warning. Choose “More info” → “Run anyway”.</p>
@@ -295,7 +303,7 @@
     document.getElementById("fr-nav").href = fr;
     document.getElementById("fr-nav").target = "_blank";
     document.getElementById("fr-list").href = REPO + "/issues?q=label%3Aenhancement";
-    var VERSION = "0.9.2";   // (update with every release)
+    var VERSION = "0.9.3";   // (update with every release)
     var body = "**What happened?**\n\n\n**What did you expect?**\n\n\n**How can it be repeated?**\n1. \n2. \n3. \n\n**Version:** UFODAW " + VERSION + "\n**Windows version:**\n**Audio device and driver (ASIO / WASAPI):**\n**Plugins involved (name, maker):**\n";
     var bug = REPO + "/issues/new?labels=bug&title=" + encodeURIComponent("Bug: ") + "&body=" + encodeURIComponent(body);
     document.getElementById("bug").href = bug;

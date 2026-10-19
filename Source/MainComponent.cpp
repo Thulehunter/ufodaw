@@ -18,6 +18,7 @@
 #include "SampleBrowser.h"
 #include "ClipLauncher.h"
 #include "SynthPanel.h"
+#include "Scripting.h"
 #include "UpdateCheck.h"
 #include "UpdateInstall.h"
 #include "CrashReport.h"
@@ -5809,6 +5810,7 @@ void MainComponent::buildCommands()
     add ("midilearn", "MIDI controllers: tie knobs and faders to parameters (MIDI learn)...", "Windows", none, [this] { openMidiLearn(); });
     add ("samples", "Sample browser: the starter pack and your own samples, with preview...", "Windows", none, [this] { openSampleBrowser(); });
     add ("launcher", "Clip launcher: start clips live in a grid...", "Windows", none, [this] { openClipLauncher(); });
+    add ("scripts", "Scripts: run a Lua script...", "Windows", none, [this] { showScriptMenu(); });
     add ("meter", "Master meter: loudness (LUFS) and spectrum...", "Windows", none, [this] { openMasterMeter(); });
     add ("refab", "Reference track: switch between your mix and the reference", "Windows", K ('B'), [this]
         {
@@ -5934,6 +5936,99 @@ void MainComponent::openSampleBrowser()
     hooks.addToProject = [safe] (const juce::File& f) { if (safe != nullptr) safe->importFiles (juce::StringArray (f.getFullPathName()), nullptr, 0.0); };
     auto closeIt = [safe] { juce::MessageManager::callAsync ([safe] { if (safe != nullptr) safe->browserWindow.reset(); }); };
     browserWindow = std::make_unique<SampleBrowserWindow> (new SampleBrowserPanel (engine, std::move (hooks)), closeIt);
+}
+
+//==============================================================================
+// Scripting: the parts of the window that scripts use (the rest goes straight to the engine, see Scripting.cpp)
+
+Track* MainComponent::scriptAddTrack (const juce::String& kind, const juce::String& name)
+{
+    Track* t = nullptr;
+    if (kind == "drums")      t = engine.addDrumTrack (name.isEmpty() ? "Drums" : name);
+    else if (kind == "midi")  t = engine.addTrack (name.isEmpty() ? "Synth" : name, Track::Type::Midi);
+    else if (kind == "audio") t = engine.addTrack (name.isEmpty() ? "Audio" : name);
+    if (t != nullptr)
+        addTrackUI (*t);
+    return t;
+}
+
+void MainComponent::scriptSetBpm (double bpm)
+{
+    auto sections = tempoMap.getSections();
+    sections[0].bpm = juce::jlimit (20.0, 400.0, bpm);
+    TempoMap m;
+    m.setSections (sections);
+    applyTempoMap (m);
+    bpmSlider.setValue (sections[0].bpm, juce::dontSendNotification);
+}
+
+void MainComponent::scriptDone()
+{
+    clipsChanged();
+    repaint();
+}
+
+void MainComponent::runScriptFile (const juce::File& file)
+{
+    const auto source = file.loadFileAsString();
+    const auto params = Scripting::readParams (source);
+    juce::Component::SafePointer<MainComponent> safe (this);
+
+    auto execute = [safe, file, source] (std::map<juce::String, juce::String> values)
+    {
+        if (safe == nullptr)
+            return;
+        const auto result = Scripting::run (*safe, source, file.getFileName(), values);
+        if (! result.ok)
+            juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "The script stopped: " + file.getFileNameWithoutExtension(),
+                                                    result.error.substring (0, 900) + (result.output.isNotEmpty() ? "\n\nIt printed:\n" + result.output.substring (0, 400) : juce::String()));
+        else if (result.output.isNotEmpty())
+            juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::InfoIcon, file.getFileNameWithoutExtension(), result.output.substring (0, 1800));
+    };
+
+    if (params.empty())
+    {
+        execute ({});
+        return;
+    }
+
+    auto* window = new juce::AlertWindow (file.getFileNameWithoutExtension(), "Settings for this script:", juce::MessageBoxIconType::QuestionIcon);
+    for (auto& p : params)
+        window->addTextEditor (p.key, p.defaultValue, p.label);
+    window->addButton ("Run", 1, juce::KeyPress (juce::KeyPress::returnKey));
+    window->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+    window->enterModalState (true, juce::ModalCallbackFunction::create ([window, params, execute] (int result)
+    {
+        std::map<juce::String, juce::String> values;
+        for (auto& p : params)
+            values[p.key] = window->getTextEditorContents (p.key);
+        delete window;
+        if (result == 1)
+            execute (values);
+    }), false);
+}
+
+void MainComponent::showScriptMenu()
+{
+    Scripting::ensureExamples();
+    const auto scripts = Scripting::listScripts();
+    juce::PopupMenu menu;
+    for (int i = 0; i < scripts.size(); ++i)
+        menu.addItem (100 + i, scripts[i].getFileNameWithoutExtension());
+    if (scripts.isEmpty())
+        menu.addItem (1, "(no scripts yet)", false);
+    menu.addSeparator();
+    menu.addItem (2, "Open the scripts folder");
+    juce::Component::SafePointer<MainComponent> safe (this);
+    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&railFile), [safe, scripts] (int result)
+    {
+        if (safe == nullptr || result == 0)
+            return;
+        if (result == 2)
+            Scripting::scriptsFolder().revealToUser();
+        else if (result >= 100 && result - 100 < scripts.size())
+            safe->runScriptFile (scripts[result - 100]);
+    });
 }
 
 void MainComponent::openSynthPanel (Track& t)
@@ -7841,6 +7936,7 @@ void MainComponent::fileMenu()
     menu.addItem (14, "MIDI controllers (MIDI learn)...");
     menu.addItem (15, "Sample browser (starter pack and your folders)...");
     menu.addItem (19, "Clip launcher (start clips live)...");
+    menu.addItem (20, "Scripts (Lua)...");
     menu.addSeparator();
     menu.addItem (16, updateVersion.isNotEmpty() ? "Update available: " + updateVersion + "..." : juce::String ("Check for updates..."));
     menu.addItem (17, "Check for updates once a day at start-up", true, UiSettings::autoUpdateCheck);
@@ -7853,6 +7949,7 @@ void MainComponent::fileMenu()
         else if (result == 14) openMidiLearn();
         else if (result == 15) openSampleBrowser();
         else if (result == 19) openClipLauncher();
+        else if (result == 20) showScriptMenu();
         else if (result == 16) { if (updateVersion.isNotEmpty()) showUpdateInfo(); else checkForUpdates (true); }
         else if (result == 17) { UiSettings::autoUpdateCheck = ! UiSettings::autoUpdateCheck; saveUiSettings(); }
         else if (result == 18) CrashReport::showProblemDialog();

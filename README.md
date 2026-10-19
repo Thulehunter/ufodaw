@@ -219,6 +219,7 @@ New to it? The [guide](https://ufodaw.eu/guide.html) explains the deeper feature
 
 ### Workflow and interface
 
+- **Scripting (Lua)** - *File > Scripts (Lua)...* runs Lua scripts from `%APPDATA%\UFODAW\Scripts`: they can read and change the project (tracks, MIDI clips and notes, the synth, the tempo, the transport, rendering) through a `ufodaw` table, with a small music library (note names, scales, chords, euclidean rhythms). The program asks for a script's settings (`--@param` lines) first, a run is one undo step, and scripts run in a sandbox (no files, programs or network; time and memory limits). Six example scripts are written on the first start. Command line: `UFODAW.exe --run-script script.lua [project.mdaw]`. See [SCRIPTING.md](SCRIPTING.md).
 - **Command palette** - **Ctrl+K** (or File > Command palette): type a few letters of what you want to do (warp, export, mixer, add drums...) and press Enter. Up / Down choose, Esc closes.
 - **Keyboard shortcuts you can change** - *File > Keyboard shortcuts...* lists every command with its key. Select one, press *Change* and then the new key; a key that another command had moves to the new one. *Default* and *Reset all* put the original keys back. Saved for all projects.
 - **Tap tempo and an EQ curve** - the *Tap* button next to the tempo (or the key **T**) sets the project tempo from your taps; the EQ in the FX panel draws its frequency response.
@@ -426,6 +427,7 @@ powershell -ExecutionPolicy Bypass -File scripts\selftest.ps1
 | `Source/RoutingPanel.h`, `Source/MidiTools.h` | Output and sends of a track; quantize / swing / humanize |
 | `Source/FxPanel.*`, `Source/PluginPanel.*` | Per-track effect and plugin panels |
 | `Source/EngineLauncher.cpp`, `Source/ClipLauncher.h` | The clip launcher: cells, quantized launching, and its window |
+| `Source/Scripting.*` | Lua scripting: the sandbox, the `ufodaw` and `music` libraries, the example scripts |
 | `Source/PluginCrash.h`, `Source/CrashReport.h`, `Source/UpdateInstall.h` | Plugin crash handling, problem reports, in-program updates |
 
 The audio thread never blocks: the UI edits the project under a lock that the audio callback only *tries* to take. Undo works with cheap snapshots of the whole project (sample data is shared, not copied).

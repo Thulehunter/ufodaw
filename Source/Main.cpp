@@ -4,6 +4,7 @@
 #include "PluginScan.h"
 #include "PluginCrash.h"
 #include "CrashReport.h"
+#include "Scripting.h"
 #include "ProjectTemplates.h"
 #include "StarterPack.h"
 #if JUCE_WINDOWS
@@ -28,6 +29,7 @@ public:
         PluginCrash::processLastCrash();   // the plugin that closed the program last time is blocked now
         PluginCrash::install();
         registerProjectFileType();
+        Scripting::ensureExamples();         // the example scripts (Lua)
         StarterPack::ensureInstalled();      // the sounds, drum kits and project templates that are made by the program (a fraction of a second, once)
         ProjectTemplates::ensureWritten();
         juce::LookAndFeel::setDefaultLookAndFeel (&lookAndFeel);   // the warm red/orange/yellow theme
@@ -59,6 +61,49 @@ public:
                     ok = tabs->getActive()->renderForCommandLine (juce::File (args[1].unquoted()));
                 }
                 std::cout << (ok ? "rendered " : "FAILED ") << (args.size() >= 2 ? args[1] : juce::String()) << std::endl;
+                setApplicationReturnValue (ok ? 0 : 1);
+                quit();
+            });
+            return;
+        }
+
+        // "UFODAW.exe --run-script script.lua [project.mdaw] [name=value ...]": runs a Lua script without dialogs (on the project, if one is given), prints
+        // what it printed and the error if there is one, and ends with exit code 0 (ok) or 1 (the script failed)
+        if (commandLine.trim().startsWith ("--run-script"))
+        {
+            auto args = juce::StringArray::fromTokens (commandLine.trim(), true);
+            args.removeRange (0, 1);
+            juce::MessageManager::callAsync ([this, args]
+            {
+                auto* tabs = dynamic_cast<ProjectTabs*> (window->getContentComponent());
+                bool ok = false;
+                if (tabs != nullptr && tabs->getActive() != nullptr && args.size() >= 1 && juce::File (args[0].unquoted()).existsAsFile())
+                {
+                    MainComponent::selfTesting = true;   // (no dialogs)
+                    std::map<juce::String, juce::String> params;
+                    for (int i = 1; i < args.size(); ++i)
+                    {
+                        const auto a = args[i].unquoted();
+                        if (a.contains ("=") && ! juce::File (a).existsAsFile())
+                            params[a.upToFirstOccurrenceOf ("=", false, false)] = a.fromFirstOccurrenceOf ("=", false, false);
+                        else if (juce::File (a).existsAsFile())
+                            tabs->getActive()->openFileHere (juce::File (a));
+                    }
+                    const juce::File script (args[0].unquoted());
+                    const auto source = script.loadFileAsString();
+                    for (auto& p : Scripting::readParams (source))   // (a parameter that is not given takes its default, as the dialog would)
+                        if (params.find (p.key) == params.end())
+                            params[p.key] = p.defaultValue;
+                    const double maxSeconds = params.count ("max_seconds") ? params["max_seconds"].getDoubleValue() : 20.0;
+                    const auto result = Scripting::run (*tabs->getActive(), source, script.getFileName(), params, maxSeconds);
+                    if (result.output.isNotEmpty())
+                        std::cout << result.output << std::endl;
+                    if (! result.ok)
+                        std::cout << "ERROR " << result.error << std::endl;
+                    ok = result.ok;
+                }
+                else
+                    std::cout << "ERROR script not found" << std::endl;
                 setApplicationReturnValue (ok ? 0 : 1);
                 quit();
             });

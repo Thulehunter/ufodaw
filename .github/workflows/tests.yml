@@ -24,6 +24,10 @@ jobs:
       - name: Engine tests
         run: build/EngineTest_artefacts/Release/EngineTest.exe 3
 
+      - name: Lua scripts
+        shell: pwsh
+        run: scripts/scripttest.ps1
+
       - name: Open the test projects in the program
         shell: pwsh
         run: scripts/selftest.ps1

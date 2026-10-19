@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.22)
 # Link the C++ runtime statically so UFODAW.exe runs on a PC without the Visual C++ Redistributable.
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
-project(UFODAW VERSION 0.9.2 LANGUAGES C CXX)
+project(UFODAW VERSION 0.9.3 LANGUAGES C CXX)
 
 # /EHa: catch(...) also catches access violations, so a crash in a plugin's window (or another callback from the message loop) is caught by JUCE's
 # loop and handled by UFODAWApplication::unhandledException instead of ending the program.
@@ -48,6 +48,18 @@ FetchContent_Declare(shine
     GIT_TAG ab5e3526b64af1a2eaa43aa6f441a7312e013519
     GIT_SHALLOW OFF)
 FetchContent_MakeAvailable(shine)
+
+# Lua 5.4: the scripting language of UFODAW (small, fast, easy to keep in a sandbox). Compiled from source into a static library.
+FetchContent_Declare(lua
+    GIT_REPOSITORY https://github.com/lua/lua.git
+    GIT_TAG v5.4.7
+    GIT_SHALLOW ON)
+FetchContent_MakeAvailable(lua)
+file(GLOB LUA_SOURCES "${lua_SOURCE_DIR}/*.c")
+list(FILTER LUA_SOURCES EXCLUDE REGEX "/(lua|luac|onelua|ltests)\.c$")
+add_library(lua_core STATIC ${LUA_SOURCES})
+target_include_directories(lua_core PUBLIC "${lua_SOURCE_DIR}")
+set_target_properties(lua_core PROPERTIES LINKER_LANGUAGE C)
 set(SHINE_SOURCES
     "${shine_SOURCE_DIR}/src/lib/bitstream.c" "${shine_SOURCE_DIR}/src/lib/huffman.c" "${shine_SOURCE_DIR}/src/lib/l3bitstream.c"
     "${shine_SOURCE_DIR}/src/lib/l3loop.c" "${shine_SOURCE_DIR}/src/lib/l3mdct.c" "${shine_SOURCE_DIR}/src/lib/l3subband.c"
@@ -64,6 +76,7 @@ target_sources(UFODAW PRIVATE
     Source/Main.cpp
     Source/Engine.cpp
     Source/EngineLauncher.cpp
+    Source/Scripting.cpp
     Source/Theme.cpp
     Source/ExternalMidi.cpp
     Source/Tuner.cpp
@@ -127,6 +140,7 @@ ufodaw_use_async_exceptions()
 
 target_link_libraries(UFODAW
     PRIVATE
+        lua_core
         juce::juce_audio_utils
         juce::juce_audio_formats
         juce::juce_audio_devices

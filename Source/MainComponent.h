@@ -216,6 +216,15 @@ public:
     // ---- Used by the timeline components
     Engine& getEngine() { return engine; }
     void openSynthPanel (Track&);                    // every setting of a track's built-in synth
+
+    // ---- Scripting (see Scripting.cpp): what a script needs that only the window can do
+    Track* scriptAddTrack (const juce::String& kind, const juce::String& name);   // kind: "audio", "midi" (the built-in synth) or "drums"
+    void scriptBeginEdit() { beginEdit(); }          // one undo step for the whole script
+    void scriptSetBpm (double bpm);
+    void scriptDone();                               // the project changed: show it
+    std::pair<Track*, int> scriptSelection() const { return { selTrack, selClip }; }
+    void runScriptFile (const juce::File&);          // asks for the script's parameters, runs it, tells the result
+    void showScriptMenu();                           // a menu of the scripts in the scripts folder
     SyncViewport& getLaneViewport() { return laneViewport; }
     juce::Component& getLaneHolder() { return laneHolder; }
     Track* trackAtY (int yInLaneHolder) const;       // the track whose lane contains this y, or nullptr
