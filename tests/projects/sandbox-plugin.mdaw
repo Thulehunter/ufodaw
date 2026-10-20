@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "bpm": 120.0,
+  "masterGain": 0.8,
+  "tracks": [
+    {
+      "name": "Test plugin (helper process)", "type": "midi", "gain": 0.8,
+      "clips": [],
+      "midiClips": [ { "start": 0.0, "length": 2.0, "notes": [ { "pitch": 60, "start": 0.0, "length": 0.5, "velocity": 0.8 }, { "pitch": 67, "start": 0.5, "length": 0.5, "velocity": 0.7 }, { "pitch": 72, "start": 1.0, "length": 0.5, "velocity": 0.7 } ] } ],
+      "plugins": {
+        "instrument": {
+          "description": "<PLUGIN name=\"UFODAW Test synth\" descriptiveName=\"Test plugin for the plugin sandbox\" format=\"UFODAW Test\" category=\"\" manufacturer=\"UFODAW\" version=\"1.0\" file=\"synth\" uniqueId=\"0\" isInstrument=\"1\" fileTime=\"0\" infoUpdateTime=\"0\" numInputs=\"2\" numOutputs=\"2\" isShell=\"0\" hasARAExtension=\"0\" uid=\"0\"/>",
+          "state": "",
+          "bypass": false,
+          "key": 1
+        },
+        "inserts": [], "midiFx": []
+      }
+    }
+  ]
+}

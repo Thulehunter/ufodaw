@@ -3,6 +3,9 @@
 #include "SynthPresets.h"
 #include "StarterPack.h"
 #include <iostream>
+#if JUCE_WINDOWS
+ #include "SandboxTests.h"
+#endif
 #include <cmath>
 #include <algorithm>
 
@@ -154,13 +157,22 @@ static double largestDifference (const std::vector<float>& a, const std::vector<
 
 static bool report (bool ok, const juce::String& what)
 {
-    std::cout << (ok ? "ok   " : "FAIL ") << what << "\n";
+    std::cout << (ok ? "ok   " : "FAIL ") << what << std::endl;
     return ok;
 }
 
 int main (int argc, char** argv)
 {
     juce::ScopedJuceInitialiser_GUI gui;
+   #if JUCE_WINDOWS
+    if (argc > 1 && juce::String (argv[1]) == "sandbox")   // only the tests of plugins in a separate process (EngineTest sandbox)
+    {
+        const auto helper = SandboxTests::findHelper();
+        const bool ok = helper.existsAsFile() && SandboxTests::run (helper, [] (bool ok, const juce::String& what) { return report (ok, what); });
+        std::cout << (ok ? "ALL PASSED\n" : "FAILED\n");
+        return ok ? 0 : 1;
+    }
+   #endif
     const int workers = juce::jmax (1, argc > 1 ? juce::String (argv[1]).getIntValue() : 3);
     std::cout << "cores: " << juce::SystemStats::getNumCpus() << ", workers: " << workers << "\n";
     bool all = true;
@@ -450,6 +462,17 @@ int main (int argc, char** argv)
         all &= report (fine, "drums: the new acoustic and electronic drums have the right length, width and weight" + detail);
         all &= report (ms < 6000.0, "starter pack: written in " + juce::String (ms, 0) + " ms");
     }
+
+    // 9. plugins in a separate process (the test plugin in a helper process of UFODAW.exe, against the same plugin in this program)
+   #if JUCE_WINDOWS
+    {
+        const auto helper = SandboxTests::findHelper();
+        if (helper.existsAsFile())
+            all &= SandboxTests::run (helper, [] (bool ok, const juce::String& what) { return report (ok, what); });
+        else
+            all &= report (false, "sandbox: UFODAW.exe not found (build it too, or set UFODAW_HELPER)");
+    }
+   #endif
 
     std::cout << (all ? "ALL PASSED\n" : "FAILED\n");
     return all ? 0 : 1;

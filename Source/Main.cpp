@@ -3,6 +3,7 @@
 #include <iostream>
 #include <thread>
 #include "PluginScan.h"
+#include "PluginHostWorker.h"
 #include "PluginCrash.h"
 #include "CrashReport.h"
 #include "Scripting.h"
@@ -46,6 +47,14 @@ public:
         if (scanWorker->initialiseFromCommandLine (commandLine, PluginScan::commandLineId))
             return;
         scanWorker.reset();
+
+       #if JUCE_WINDOWS
+        // Started by the program as the home of one plugin (see PluginProxy.h): no window of its own, it hosts the plugin and shows its editor on request
+        hostWorker = std::make_unique<PluginSandbox::HostWorker>();
+        if (hostWorker->initialiseFromCommandLine (commandLine, PluginSandbox::commandLineId, 30000))
+            return;
+        hostWorker.reset();
+       #endif
 
         migrateOldSettings();
         PluginCrash::processLastCrash();   // the plugin that closed the program last time is blocked now
@@ -203,6 +212,13 @@ public:
     // block the plugin that did it and carry on.
     void unhandledException (const std::exception*, const juce::String&, int) override
     {
+       #if JUCE_WINDOWS
+        if (hostWorker != nullptr)   // the helper process of a plugin: the plugin faulted in its window or a callback; the program is told and this process ends
+        {
+            hostWorker->reportFault ("The plugin crashed.");
+            return;
+        }
+       #endif
         static juce::int64 lastShown = 0;
         juce::String name;
        #if JUCE_WINDOWS
@@ -278,6 +294,9 @@ public:
     void shutdown() override
     {
         scanWorker = nullptr;
+       #if JUCE_WINDOWS
+        hostWorker = nullptr;
+       #endif
         rendererGuard = nullptr;
         window = nullptr;
         juce::LookAndFeel::setDefaultLookAndFeel (nullptr);
@@ -288,6 +307,9 @@ public:
 private:
     WarmLookAndFeel lookAndFeel;
     std::unique_ptr<PluginScan::Worker> scanWorker;
+   #if JUCE_WINDOWS
+    std::unique_ptr<PluginSandbox::HostWorker> hostWorker;
+   #endif
 
     class MainWindow : public juce::DocumentWindow
     {

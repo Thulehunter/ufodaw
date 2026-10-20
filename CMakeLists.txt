@@ -87,6 +87,8 @@ target_sources(UFODAW PRIVATE
     Source/DrumKit.cpp
     Source/DrumSequencer.cpp
     Source/PluginHost.cpp
+    Source/PluginProxy.cpp
+    Source/PluginHostWorker.cpp
     Source/PluginPanel.cpp
     Source/PianoRoll.cpp
     Source/Stretch.cpp
@@ -165,12 +167,13 @@ if(UFODAW_BUILD_TESTS)
     juce_add_console_app(EngineTest PRODUCT_NAME "EngineTest")
     target_sources(EngineTest PRIVATE
         tests/engine/EngineTest.cpp
+        Source/PluginProxy.cpp
         Source/Engine.cpp Source/EngineLauncher.cpp Source/ExternalMidi.cpp Source/Tuner.cpp Source/Synth.cpp Source/Fx.cpp Source/DrumKit.cpp
         Source/Stretch.cpp Source/Sampler.cpp Source/StarterPack.cpp Source/ProjectTemplates.cpp Source/AudioExport.cpp
         ${SHINE_SOURCES}
         "${rubberband_SOURCE_DIR}/single/RubberBandSingle.cpp")
     target_include_directories(EngineTest PRIVATE Source "${rubberband_SOURCE_DIR}" "${shine_SOURCE_DIR}/src/lib")
-    target_compile_definitions(EngineTest PRIVATE ENGINE_HAS_THREADS=1 JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_PLUGINHOST_VST3=1)
+    target_compile_definitions(EngineTest PRIVATE JUCE_MODAL_LOOPS_PERMITTED=1 ENGINE_HAS_THREADS=1 JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_PLUGINHOST_VST3=1)
     target_link_libraries(EngineTest PRIVATE
         juce::juce_audio_formats juce::juce_audio_devices juce::juce_audio_processors juce::juce_gui_basics
         juce::juce_recommended_config_flags)

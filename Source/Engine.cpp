@@ -2979,11 +2979,18 @@ void Engine::applyMidiFx (Track& t, int n)
 // A plugin's processBlock behind the safety net; the first plugin that crashes is reported to the message thread (see takeCrashedPlugin).
 bool Engine::processPlugin (PluginSlot& slot, juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi)
 {
+    const bool crashedBefore = slot.crashed.load();
     if (guardedProcess (slot, buffer, midi))
         return true;
+    if (! crashedBefore)   // (reported once; a plugin that was switched off earlier just stays silent)
+        reportCrashedPlugin (slot);
+    return false;
+}
+
+void Engine::reportCrashedPlugin (PluginSlot& slot)
+{
     PluginSlot* expected = nullptr;
     crashedPlugin.compare_exchange_strong (expected, &slot);
-    return false;
 }
 
 void Engine::setWorkerThreads (int numWorkers)
@@ -3013,22 +3020,24 @@ void Engine::stopPreview()
     previewActive = false;
 }
 
-bool Engine::takeCrashedPlugin (juce::String& name)
+bool Engine::takeCrashedPlugin (juce::String& name, std::shared_ptr<PluginSlot>* slotOut)
 {
     auto* slot = crashedPlugin.exchange (nullptr);
     if (slot == nullptr)
         return false;
     const juce::ScopedLock sl (lock);   // (the slot may be gone by now: only name it when it is still in a track)
+    std::shared_ptr<PluginSlot> found;
     auto find = [&] (const Track& t)
     {
-        bool found = t.instrument.get() == slot;
-        for (auto& p : t.inserts) found = found || p.get() == slot;
-        for (auto& p : t.midiFx) found = found || p.get() == slot;
-        return found;
+        if (t.instrument.get() == slot) found = t.instrument;
+        for (auto& p : t.inserts) if (p.get() == slot) found = p;
+        for (auto& p : t.midiFx) if (p.get() == slot) found = p;
     };
-    bool present = find (*master);
-    for (auto& t : tracks) present = present || find (*t);
-    name = present ? slot->description.name : juce::String ("A plugin");
+    find (*master);
+    for (auto& t : tracks) find (*t);
+    name = found != nullptr ? found->description.name : juce::String ("A plugin");
+    if (slotOut != nullptr)
+        *slotOut = found;
     return true;
 }
 
