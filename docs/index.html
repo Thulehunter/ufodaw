@@ -15,7 +15,7 @@
 <meta property="og:image" content="https://ufodaw.eu/icon.png">
 <meta name="twitter:card" content="summary">
 <script type="application/ld+json">
-{"@context":"https://schema.org","@type":"SoftwareApplication","name":"UFODAW","applicationCategory":"MultimediaApplication","applicationSubCategory":"Digital audio workstation","operatingSystem":"Windows","softwareVersion":"0.9.3.7","license":"https://www.gnu.org/licenses/agpl-3.0.html","url":"https://ufodaw.eu/","image":"https://ufodaw.eu/icon.png","downloadUrl":"https://github.com/Thulehunter/ufodaw/releases/latest","offers":{"@type":"Offer","price":"0","priceCurrency":"EUR"}}
+{"@context":"https://schema.org","@type":"SoftwareApplication","name":"UFODAW","applicationCategory":"MultimediaApplication","applicationSubCategory":"Digital audio workstation","operatingSystem":"Windows","softwareVersion":"0.9.3.8","license":"https://www.gnu.org/licenses/agpl-3.0.html","url":"https://ufodaw.eu/","image":"https://ufodaw.eu/icon.png","downloadUrl":"https://github.com/Thulehunter/ufodaw/releases/latest","offers":{"@type":"Offer","price":"0","priceCurrency":"EUR"}}
 </script>
 <script type="application/ld+json">
 {"@context":"https://schema.org","@type":"VideoObject","name":"UFODAW demo: record, arrange and mix","description":"A two-minute tour of UFODAW, a free digital audio workstation for Windows: piano roll, EQ and effects chain, track groups, freeze and the loudness meter.","thumbnailUrl":"https://ufodaw.eu/ufodaw-demo-poster.jpg","contentUrl":"https://ufodaw.eu/ufodaw-demo.mp4","uploadDate":"2026-10-19","duration":"PT2M19S"}
@@ -48,7 +48,7 @@
       <a class="btn primary" href="#download">Download for Windows</a>
       <a class="btn" href="#features">See what it does</a>
     </div>
-    <p class="meta">Version 0.9.3.7 · Free &amp; open source · AGPLv3 · Windows 64-bit · installer, no admin rights needed</p>
+    <p class="meta">Version 0.9.3.8 · Free &amp; open source · AGPLv3 · Windows 64-bit · installer, no admin rights needed</p>
   </section>
 
   <section class="strip" aria-label="Highlights">
@@ -208,7 +208,15 @@
   <section id="new" class="alt">
     <h2>What's new</h2>
     <div class="log">
-      <div><h3>0.9.3.7 <small>latest</small></h3><ul>
+      <div><h3>0.9.3.8 <small>latest</small></h3><ul>
+        <li><b>Clips: drag either end</b> to make an audio, MIDI or drum clip shorter or longer; the middle still moves it. A MIDI clip cut at the start loses the notes before it; an audio clip can be trimmed back out again.</li>
+        <li><b>Drum pattern:</b> every hit can be stretched (drag its end, or drag right after adding it), moved (the middle) and is drawn in its real length. Shift+drag still paints one hit per step.</li>
+        <li><b>Piano roll:</b> drag either end of a note; the key, scale, single notes, snap to scale, fit notes and velocity controls could not be clicked and now can.</li>
+        <li><b>Your own synth sounds:</b> <i>My sounds...</i> in the synth window saves the current sound under a name, for every project; load or delete them from the same menu. (Piano engine and mono mode are now saved in the project too.)</li>
+        <li><b>Space</b> twice goes back to the start. With a MIDI track open in the roll, Space plays only that track, from the start of its clip.</li>
+        <li><b>Effects windows</b> are real windows now: drag them anywhere and keep several open at once.</li>
+        <li>The sampler windows remember where you put them; the sample editor has bigger ranges (tune, volume, filter, attack, decay, release, stretch).</li></ul></div>
+      <div><h3>0.9.3.7</h3><ul>
         <li><b>Fixed a crash:</b> when Windows cannot make the bitmap of a window (for example when the system runs out of graphics resources) the program wrote to an empty place and closed. It now keeps running.</li></ul></div>
       <div><h3>0.9.3.6</h3><ul>
         <li><b>Fixed:</b> windows (plugin editors, menus, dialogs) can no longer turn white on some PCs: they start with the software renderer from the first moment, so Direct2D is never used. Crash reports now also contain the error code and place.</li></ul></div>
@@ -274,10 +282,10 @@
 
   <section id="download">
     <h2>Download</h2>
-    <p class="center">Grab <code>UFODAW-0.9.3.7-setup.exe</code> (the installer) from the Releases page and run it, or take <code>UFODAW-0.9.3.7-win64.zip</code>, unzip it anywhere and run <code>UFODAW.exe</code>. Double-click any <code>.mdaw</code> file to open a project directly.</p>
+    <p class="center">Grab <code>UFODAW-0.9.3.8-setup.exe</code> (the installer) from the Releases page and run it, or take <code>UFODAW-0.9.3.8-win64.zip</code>, unzip it anywhere and run <code>UFODAW.exe</code>. Double-click any <code>.mdaw</code> file to open a project directly.</p>
     <div class="cta center">
       <!-- TODO: replace # with your GitHub Releases URL -->
-      <a class="btn primary" href="#" id="dl">Download 0.9.3.7 (Windows 64-bit)</a>
+      <a class="btn primary" href="#" id="dl">Download 0.9.3.8 (Windows 64-bit)</a>
       <a class="btn" href="#" id="src">Source code</a>
     </div>
     <p class="meta center">Releases are not code-signed yet, so Windows SmartScreen may show a warning. Choose “More info” → “Run anyway”.</p>
@@ -323,7 +331,7 @@
     document.getElementById("fr-nav").href = fr;
     document.getElementById("fr-nav").target = "_blank";
     document.getElementById("fr-list").href = REPO + "/issues?q=label%3Aenhancement";
-    var VERSION = "0.9.3.7";   // (update with every release)
+    var VERSION = "0.9.3.8";   // (update with every release)
     var body = "**What happened?**\n\n\n**What did you expect?**\n\n\n**How can it be repeated?**\n1. \n2. \n3. \n\n**Version:** UFODAW " + VERSION + "\n**Windows version:**\n**Audio device and driver (ASIO / WASAPI):**\n**Plugins involved (name, maker):**\n";
     var bug = REPO + "/issues/new?labels=bug&title=" + encodeURIComponent("Bug: ") + "&body=" + encodeURIComponent(body);
     document.getElementById("bug").href = bug;

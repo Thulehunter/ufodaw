@@ -168,22 +168,28 @@ public:
             g.drawVerticalLine (x, 0.0f, (float) getHeight());
         }
 
-        // hits
-        for (auto& n : clip.notes)
+        // hits (a hit is as long as its length: drag an end to make it shorter or longer, the middle moves it)
+        for (int i = 0; i < (int) clip.notes.size(); ++i)
         {
+            const auto& n = clip.notes[(size_t) i];
             const int pad = track->kit->padForNote (n.pitch);
             if (pad < 0)
                 continue;
-            const int x = timeToX (clip.start + n.start);
-            const int w = juce::jmax (3, (int) std::round (step * pps) - 1);
-            // a hit's height shows its velocity (Ctrl+drag a hit up or down to change it)
+            // the height of a hit shows its velocity (Ctrl+drag a hit up or down to change it)
             const int full = rowH - 4;
             const int h = juce::jmax (4, (int) std::round ((float) full * (0.2f + 0.8f * n.velocity)));
-            const juce::Rectangle<int> r (x + 1, padToY (pad) + 2 + (full - h), w - 1, h);
+            const auto cell = noteRect (n, pad);
+            const juce::Rectangle<int> r (cell.getX(), cell.getY() + 2 + (full - h), cell.getWidth(), h);
             if (! r.intersects (area))
                 continue;
             g.setColour (padColour (pad).withMultipliedBrightness (0.7f + 0.4f * n.velocity));
             g.fillRoundedRectangle (r.toFloat(), 3.0f);
+            if (r.getWidth() > 12)   // small grips at both ends
+            {
+                g.setColour (juce::Colours::white.withAlpha (i == hoverNote ? 0.5f : 0.22f));
+                g.fillRect (r.getX() + 2, r.getY() + 2, 2, juce::jmax (2, r.getHeight() - 4));
+                g.fillRect (r.getRight() - 4, r.getY() + 2, 2, juce::jmax (2, r.getHeight() - 4));
+            }
         }
 
         // dim everything outside the clip
@@ -203,29 +209,66 @@ public:
             return;
 
         gestureEdited = false;
+        moved = false;
         lastCell = { -1, -1 };
+        active = -1;
 
+        const int hit = noteAt (e.getPosition());
         const auto cell = cellAt (e.getPosition());
-        if (cell.x < 0)
-            return;
 
-        const int existingIndex = findNote (cell.x, cell.y);
-        const bool exists = existingIndex >= 0;
-
-        if (e.mods.isCtrlDown() && exists)   // velocity: drag up for harder, down for softer
+        if (e.mods.isPopupMenu())   // right click erases (also by dragging over hits)
         {
-            mode = Mode::Velocity;
-            velIndex = existingIndex;
-            velStartY = e.y;
-            velStartValue = clip.notes[(size_t) existingIndex].velocity;
+            mode = Mode::Erase;
+            if (hit >= 0)
+            {
+                main.beginEdit();
+                gestureEdited = true;
+                clip.notes.erase (clip.notes.begin() + hit);
+                main.getEngine().setMidiNotes (*track, clipId, clip.notes);
+                repaint();
+            }
             return;
         }
 
-        if (e.mods.isPopupMenu())
-            mode = Mode::Erase;
-        else
-            mode = exists ? Mode::Erase : Mode::Add;
+        if (hit >= 0)
+        {
+            if (e.mods.isCtrlDown())   // velocity: drag up for harder, down for softer
+            {
+                mode = Mode::Velocity;
+                velIndex = hit;
+                velStartY = e.y;
+                velStartValue = clip.notes[(size_t) hit].velocity;
+                return;
+            }
+
+            // the ends of a hit change its length, the middle moves it (a click without a drag erases it, as before)
+            active = hit;
+            original = clip.notes[(size_t) hit];
+            const auto r = noteRect (original, track->kit->padForNote (original.pitch));
+            const int edge = edgeAt (r, e.x);
+            mode = edge > 0 ? Mode::ResizeEnd : edge < 0 ? Mode::ResizeStart : Mode::Move;
+            grabTime = xToTime (e.x) - (clip.start + original.start);
+            main.getEngine().previewNote (*track, original.pitch, true, original.velocity);
+            return;
+        }
+
+        if (cell.x < 0)
+        {
+            mode = Mode::None;
+            return;
+        }
+
+        // an empty spot: a new hit; drag right to make it longer (Shift+drag paints one hit per step instead)
+        mode = e.mods.isShiftDown() ? Mode::Paint : Mode::Stretch;
         apply (cell);
+        if (mode == Mode::Stretch)
+        {
+            active = findNote (cell.x, cell.y);
+            if (active >= 0)
+                original = clip.notes[(size_t) active];
+            else
+                mode = Mode::None;
+        }
     }
 
     void mouseDrag (const juce::MouseEvent& e) override
@@ -251,12 +294,104 @@ public:
             return;
         }
 
-        const auto cell = cellAt (e.getPosition());
-        if (cell.x >= 0)
-            apply (cell);
+        if (mode == Mode::Paint || mode == Mode::Erase)
+        {
+            const auto cell = cellAt (e.getPosition());
+            if (cell.x >= 0)
+                apply (cell);
+            return;
+        }
+
+        if (active < 0 || active >= (int) clip.notes.size())
+            return;
+
+        const double s = step();
+        const bool free = e.mods.isAltDown();
+        const double t = xToTime (e.x) - clip.start;   // (seconds from the start of the clip)
+        auto onGrid = [&] (double seconds) { return free ? seconds : std::round (seconds / s) * s; };
+        const double room = juce::jmax (s, clip.length - original.start);
+        double newStart = original.start, newLength = original.length;
+        int newPitch = original.pitch;
+
+        if (mode == Mode::Stretch)   // (the step under the pointer is part of the new hit)
+            newLength = juce::jmin (room, juce::jmax (s, free ? t - original.start : std::floor ((t - original.start) / s + 1.0) * s));
+        else if (mode == Mode::ResizeEnd)
+            newLength = juce::jlimit (free ? 0.01 : s, room, onGrid (t) - original.start);
+        else if (mode == Mode::ResizeStart)
+        {
+            const double end = original.start + original.length;
+            newStart = juce::jlimit (0.0, end - (free ? 0.01 : s), onGrid (t));
+            newLength = end - newStart;
+        }
+        else   // Move
+        {
+            newStart = juce::jlimit (0.0, juce::jmax (0.0, clip.length - original.length), onGrid (xToTime (e.x) - grabTime - clip.start));
+            const int pad = yToPad (e.y);
+            if (pad >= 0)
+                newPitch = track->kit->getPad (pad).note;
+        }
+
+        auto& n = clip.notes[(size_t) active];
+        if (std::abs (newStart - n.start) < 1.0e-9 && std::abs (newLength - n.length) < 1.0e-9 && newPitch == n.pitch)
+            return;
+        if (std::abs (newStart - original.start) > 1.0e-9 || std::abs (newLength - original.length) > 1.0e-9 || newPitch != original.pitch)
+            moved = true;
+        if (! gestureEdited)
+        {
+            main.beginEdit();
+            gestureEdited = true;
+        }
+        if (newPitch != n.pitch)
+            main.getEngine().previewNote (*track, newPitch, true, original.velocity);
+        n.start = newStart;
+        n.length = newLength;
+        n.pitch = newPitch;
+        main.getEngine().setMidiNotes (*track, clipId, clip.notes);
+        repaint();
     }
 
-    void mouseUp (const juce::MouseEvent&) override { mode = Mode::None; }
+    void mouseUp (const juce::MouseEvent& e) override
+    {
+        // a click on a hit (no drag) erases it, like before
+        if (mode == Mode::Move && ! moved && load() && active >= 0 && active < (int) clip.notes.size())
+        {
+            main.beginEdit();
+            clip.notes.erase (clip.notes.begin() + active);
+            main.getEngine().setMidiNotes (*track, clipId, clip.notes);
+            repaint();
+        }
+        mode = Mode::None;
+        active = -1;
+        mouseMove (e);
+    }
+
+    // the pointer shows what a drag does: an end of a hit stretches it, the middle moves it
+    void mouseMove (const juce::MouseEvent& e) override
+    {
+        int newHover = -1, newEdge = 0;
+        if (load() && track != nullptr && track->kit != nullptr)
+        {
+            newHover = noteAt (e.getPosition());
+            if (newHover >= 0)
+                newEdge = edgeAt (noteRect (clip.notes[(size_t) newHover], track->kit->padForNote (clip.notes[(size_t) newHover].pitch)), e.x);
+        }
+        setMouseCursor (newEdge != 0 ? juce::MouseCursor::LeftRightResizeCursor
+                                     : newHover >= 0 ? juce::MouseCursor::DraggingHandCursor : juce::MouseCursor::NormalCursor);
+        if (newHover != hoverNote)
+        {
+            hoverNote = newHover;
+            repaint();
+        }
+    }
+
+    void mouseExit (const juce::MouseEvent&) override
+    {
+        if (hoverNote != -1)
+        {
+            hoverNote = -1;
+            repaint();
+        }
+    }
 
     void mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& w) override
     {
@@ -267,7 +402,30 @@ public:
     }
 
 private:
-    enum class Mode { None, Add, Erase, Velocity };
+    enum class Mode { None, Paint, Stretch, Erase, Velocity, Move, ResizeStart, ResizeEnd };
+
+    // the rectangle of a hit (its whole row high), its grab zone at each end, and the hit under a point
+    juce::Rectangle<int> noteRect (const Note& n, int pad) const
+    {
+        return { timeToX (clip.start + n.start) + 1, padToY (pad), juce::jmax (3, (int) std::round (n.length * main.getPixelsPerSecond()) - 1), rowH };
+    }
+    static int edgeAt (juce::Rectangle<int> r, int x)
+    {
+        if (r.getWidth() <= 14)   // (a short hit at a small zoom: its right half stretches it, its left half moves it)
+            return x >= r.getX() + r.getWidth() / 2 ? 1 : 0;
+        const int w = juce::jlimit (4, 8, r.getWidth() / 3);
+        return x >= r.getRight() - w ? 1 : x <= r.getX() + w ? -1 : 0;
+    }
+    int noteAt (juce::Point<int> p) const
+    {
+        for (int i = (int) clip.notes.size() - 1; i >= 0; --i)
+        {
+            const int pad = track->kit->padForNote (clip.notes[(size_t) i].pitch);
+            if (pad >= 0 && noteRect (clip.notes[(size_t) i], pad).contains (p))
+                return i;
+        }
+        return -1;
+    }
 
     bool load() { return track != nullptr && main.getEngine().getMidiClip (*track, clipId, clip); }
 
@@ -302,7 +460,8 @@ private:
         lastCell = cell;
 
         const int existing = findNote (cell.x, cell.y);
-        if (mode == Mode::Add && existing >= 0) return;
+        const bool adding = mode == Mode::Paint || mode == Mode::Stretch;
+        if (adding && existing >= 0) return;
         if (mode == Mode::Erase && existing < 0) return;
 
         if (! gestureEdited)
@@ -312,7 +471,7 @@ private:
         }
 
         const int pitch = track->kit->getPad (cell.y).note;
-        if (mode == Mode::Add)
+        if (adding)
         {
             Note n;
             n.pitch = pitch;
@@ -340,6 +499,10 @@ private:
     int velIndex = -1, velStartY = 0;
     float velStartValue = 0.8f;
     juce::Point<int> lastCell { -1, -1 };
+    int active = -1, hoverNote = -1;   // (the hit being dragged, the hit under the mouse)
+    bool moved = false;
+    Note original;                     // (the hit as it was when the drag began)
+    double grabTime = 0.0;
 };
 
 //==============================================================================

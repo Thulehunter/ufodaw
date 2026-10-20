@@ -1,6 +1,7 @@
 #pragma once
 
 #include <juce_gui_basics/juce_gui_basics.h>
+#include <array>
 #include "Engine.h"
 #include "Theme.h"
 #include "Tuner.h"
@@ -285,7 +286,7 @@ private:
         setButton.setEnabled (bpm >= 20.0 && bpm <= 400.0);
         const double ratio = ratioFor (n);
         stretchButton.setButtonText ("Stretch the sample to the project's " + juce::String (projBpm, 1) + " BPM");
-        stretchButton.setEnabled (ratio >= 0.25 && ratio <= 4.0 && std::abs (ratio - stretchNow) > 0.001);
+        stretchButton.setEnabled (ratio >= 0.1 && ratio <= 10.0 && std::abs (ratio - stretchNow) > 0.001);
     }
 
     double seconds, stretchNow, projBpm, detected = 0.0;
@@ -382,17 +383,18 @@ public:
             s.onValueChange = [this, &s, set] { if (! s.isMouseButtonDown()) beginEditFn(); set (s.getValue()); changedFn(); };
             addAndMakeVisible (s);
         };
-        addSlider (tune, tuneLabel, "Tune", -100.0, 100.0, p.tuneCents, 0.0, " ct", 0, [this] (double v) { sampler.params.tuneCents = (float) v; });
-        addSlider (volume, volumeLabel, "Volume", 0.0, 1.5, p.volume, 0.0, "", 2, [this] (double v) { sampler.params.volume = (float) v; });
+        addSlider (tune, tuneLabel, "Tune", -2400.0, 2400.0, p.tuneCents, 0.0, " ct", 0, [this] (double v) { sampler.params.tuneCents = (float) v; });
+        tune.setTooltip ("In cents: 100 = one semitone, 1200 = one octave (up to two octaves either way).");
+        addSlider (volume, volumeLabel, "Volume", 0.0, 3.0, p.volume, 1.0, "", 2, [this] (double v) { sampler.params.volume = (float) v; });
         addSlider (velocity, velocityLabel, "Velocity", 0.0, 1.0, p.velocitySens, 0.0, "", 2, [this] (double v) { sampler.params.velocitySens = (float) v; });
-        addSlider (filter, filterLabel, "Filter", 40.0, 20000.0, p.cutoff, 1500.0, " Hz", 0, [this] (double v) { sampler.params.cutoff = (float) v; });
-        addSlider (attack, attackLabel, "Attack", 0.0005, 5.0, p.attack, 0.1, " s", 3, [this] (double v) { sampler.params.attack = (float) v; });
-        addSlider (decay, decayLabel, "Decay", 0.001, 8.0, p.decay, 0.3, " s", 3, [this] (double v) { sampler.params.decay = (float) v; });
+        addSlider (filter, filterLabel, "Filter", 20.0, 20000.0, p.cutoff, 1500.0, " Hz", 0, [this] (double v) { sampler.params.cutoff = (float) v; });
+        addSlider (attack, attackLabel, "Attack", 0.0001, 20.0, p.attack, 0.1, " s", 3, [this] (double v) { sampler.params.attack = (float) v; });
+        addSlider (decay, decayLabel, "Decay", 0.001, 30.0, p.decay, 0.5, " s", 3, [this] (double v) { sampler.params.decay = (float) v; });
         addSlider (sustain, sustainLabel, "Sustain", 0.0, 1.0, p.sustain, 0.0, "", 2, [this] (double v) { sampler.params.sustain = (float) v; });
-        addSlider (release, releaseLabel, "Release", 0.002, 8.0, p.release, 0.3, " s", 3, [this] (double v) { sampler.params.release = (float) v; });
+        addSlider (release, releaseLabel, "Release", 0.002, 30.0, p.release, 0.5, " s", 3, [this] (double v) { sampler.params.release = (float) v; });
         addSlider (slices, slicesLabel, "Slices", 1.0, 32.0, p.slices, 0.0, "", 0,
                    [this] (double v) { sampler.setMarks ({}); sampler.params.slices = (int) v; waveform.repaint(); });   // (equal slices again)
-        addSlider (stretch, stretchLabel, "Stretch", 0.25, 4.0, sampler.getStretch(), 1.0, " x", 2, [] (double) {});
+        addSlider (stretch, stretchLabel, "Stretch", 0.1, 10.0, sampler.getStretch(), 1.0, " x", 2, [] (double) {});
         stretch.setTooltip ("Time-stretch: 2 = twice as long, 0.5 = twice as fast. The pitch stays the same (Rubber Band, applied when you let go)");
         stretch.onValueChange = [this] { if (! stretch.isMouseButtonDown()) applyStretch(); };
         stretch.onDragStart = nullptr;   // (the snapshot is taken when the stretch is applied)
@@ -746,7 +748,36 @@ public:
             closed();   // the owner deletes this window
     }
 
+    // The window stays where the user put it: opened again (a double click on another pad), it goes back to its last place instead of the screen centre.
+    // `slot` tells which kind of window this is (the sampler of a track, or the one of a drum pad), each remembers its own place.
+    void rememberPosition (int slot)
+    {
+        auto& saved = savedPositions()[(size_t) juce::jlimit (0, 3, slot)];
+        positionSlot = juce::jlimit (0, 3, slot);
+        if (saved.valid)
+        {
+            const juce::Point<int> where (saved.x, saved.y);
+            const auto area = juce::Desktop::getInstance().getDisplays().getRectangleList (true);
+            if (area.containsPoint (where.x + 40, where.y + 20))   // (not on a screen that has gone away)
+                setTopLeftPosition (where);
+        }
+    }
+
+    void moved() override
+    {
+        juce::DocumentWindow::moved();
+        if (positionSlot >= 0 && isShowing())
+        {
+            auto& saved = savedPositions()[(size_t) positionSlot];
+            saved = { true, getX(), getY() };
+        }
+    }
+
 private:
+    struct Saved { bool valid = false; int x = 0, y = 0; };
+    static std::array<Saved, 4>& savedPositions() { static std::array<Saved, 4> positions; return positions; }
+
+    int positionSlot = -1;
     SamplerPanel* panel = nullptr;
     std::function<void()> closed;
 };

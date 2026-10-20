@@ -1028,6 +1028,8 @@ public:
 
         dragId = -1;
         resizing = false;
+        edgeMode = 0;
+        resizeAudio = false;
         rightPending = rightDragging = false;
         fadeDrag = 0;
 
@@ -1132,9 +1134,26 @@ public:
             dragLength = h.length;
             edited = false;
             grabOffset = t - h.start;
-            resizing = h.midi && r.getWidth() > 16 && e.x >= r.getRight() - 6;   // right edge of a MIDI clip
-            if (resizing && ! main.getEngine().getMidiClip (track, dragId, resizeOriginal))
-                resizing = false;
+            // either end of a clip resizes it, the middle moves it
+            edgeMode = 0;
+            resizeAudio = false;
+            if (r.getWidth() > 16)
+                edgeMode = e.x >= r.getRight() - 6 ? 1 : e.x <= r.getX() + 6 ? -1 : 0;
+            if (edgeMode != 0)
+            {
+                if (h.midi)
+                {
+                    if (! main.getEngine().getMidiClip (track, dragId, resizeOriginal))
+                        edgeMode = 0;
+                }
+                else
+                {
+                    resizeAudio = true;
+                    if (! main.getEngine().getClip (track, dragId, resizeAudioOriginal))
+                        edgeMode = 0, resizeAudio = false;
+                }
+            }
+            resizing = edgeMode != 0;
             main.selectClip (&track, dragId);
             return;
         }
@@ -1146,19 +1165,23 @@ public:
     // the right edge of a MIDI / drum clip: the pointer says it can be dragged, the tooltip says what the modifiers do
     void mouseMove (const juce::MouseEvent& e) override
     {
-        bool edge = false;
+        bool edge = false, edgeIsMidi = false;
         if (track.autoEditId.isEmpty())
         {
             const double pps = main.getPixelsPerSecond();
             for (auto& h : hits())
             {
                 const auto r = rectFor (h.start, h.length, pps);
-                if (h.midi && r.getWidth() > 16 && r.contains (e.getPosition()) && e.x >= r.getRight() - 6)
+                if (r.getWidth() > 16 && r.contains (e.getPosition()) && (e.x >= r.getRight() - 6 || e.x <= r.getX() + 6))
+                {
                     edge = true;
+                    edgeIsMidi = h.midi;
+                }
             }
         }
-        setTooltip (edge ? "Drag the edge: a longer clip repeats the pattern, a shorter one cuts it off.  Shift+drag: stretch the pattern (half as long = twice as fast).  Alt: no snapping."
-                         : juce::String());
+        setTooltip (! edge ? juce::String()
+                           : edgeIsMidi ? "Drag an end of the clip to make it shorter or longer (the middle moves it). At the end: a longer clip repeats the pattern, a shorter one cuts it off; Shift+drag stretches the pattern. Alt: no snapping."
+                                        : "Drag an end of the clip to trim it or bring back what was trimmed off (the middle moves it). Alt: no snapping.");
         setMouseCursor (edge ? juce::MouseCursor::LeftRightResizeCursor : juce::MouseCursor::NormalCursor);
     }
 
@@ -1265,6 +1288,77 @@ public:
         if (dragId < 0)
         {
             main.setPlayhead (t);   // scrub
+            return;
+        }
+
+        if (resizing && resizeAudio)   // trimming an audio clip: the start and the length change, the sound stays where it is
+        {
+            const auto& o = resizeAudioOriginal;
+            const double minLen = 0.02;
+            const double pos = e.mods.isAltDown() ? t : main.snapTime (t);
+            double nStart = o.start, nOffset = o.offset, nLength = o.length;
+            if (edgeMode > 0)
+                nLength = juce::jlimit (minLen, juce::jmax (minLen, o.sourceLength() - o.offset), pos - o.start);
+            else
+            {
+                const double delta = juce::jlimit (-juce::jmin (o.start, o.offset), o.length - minLen, pos - o.start);
+                nStart = o.start + delta;
+                nOffset = o.offset + delta;
+                nLength = o.length - delta;
+            }
+            if (! edited)
+            {
+                if (std::abs (nStart - o.start) < 1.0e-6 && std::abs (nLength - o.length) < 1.0e-6)
+                    return;
+                main.beginEdit();
+                edited = true;
+            }
+            main.getEngine().setClipRegion (*dragTrack, dragId, nStart, nOffset, nLength);
+            main.getEngine().setClipFades (*dragTrack, dragId, o.fadeIn, o.fadeOut);   // (clamped to the new length)
+            main.clipsChanged();
+            return;
+        }
+
+        if (resizing && edgeMode < 0)   // the start of a MIDI clip: what is before the new start is cut off, the end stays where it is
+        {
+            const auto& o = resizeOriginal;
+            const double pos = e.mods.isAltDown() ? t : main.snapTime (t);
+            const double minLen = main.getTempoMap().beatSecondsAt (o.start);
+            const double delta = juce::jlimit (-o.start, juce::jmax (-o.start, o.length - minLen), pos - o.start);
+            if (! edited)
+            {
+                if (std::abs (delta) < 1.0e-6)
+                    return;
+                main.beginEdit();
+                edited = true;
+            }
+            const double newLength = o.length - delta;
+            std::vector<Note> notes;
+            std::vector<CcEvent> ccs;
+            for (auto n : o.notes)
+            {
+                n.start -= delta;
+                if (n.start + n.length <= 1.0e-6 || n.start >= newLength - 1.0e-6)
+                    continue;
+                if (n.start < 0.0)
+                {
+                    n.length += n.start;
+                    n.start = 0.0;
+                }
+                n.length = juce::jmin (n.length, newLength - n.start);
+                notes.push_back (n);
+            }
+            for (auto c : o.ccs)
+            {
+                c.time -= delta;
+                if (c.time >= 0.0 && c.time < newLength)
+                    ccs.push_back (c);
+            }
+            main.getEngine().setMidiNotes (*dragTrack, dragId, std::move (notes));
+            main.getEngine().setMidiCcs (*dragTrack, dragId, std::move (ccs));
+            main.getEngine().setMidiClipLength (*dragTrack, dragId, newLength);
+            main.getEngine().moveClip (*dragTrack, dragId, o.start + delta);
+            main.clipsChanged();
             return;
         }
 
@@ -2195,6 +2289,9 @@ private:
     int dragId = -1;
     Track* dragTrack = nullptr;   // the track the dragged clip currently lives on
     bool resizing = false;
+    int edgeMode = 0;            // which end of the clip is being dragged: 1 = the end, -1 = the start (the middle moves the clip)
+    bool resizeAudio = false;    // (an audio clip is trimmed; a MIDI clip is cut or repeated)
+    Clip resizeAudioOriginal;
     int fadeDrag = 0;                                    // 1 = dragging a fade-in handle, 2 = a fade-out handle
     int fadeClipId = -1;
     int envDrag = -1, envClipId = -1;                    // the point of a clip's volume curve being dragged
@@ -3212,6 +3309,7 @@ MainComponent::~MainComponent()
     warpWindow.reset();
     historyWindow.reset();
     stopTimer();
+    fxWindows.clear();
     synthWindow.reset();
     samplerWindow.reset();   // (it points into the engine's tracks)
     padSamplerWindow.reset();
@@ -3949,6 +4047,7 @@ void MainComponent::openSampler (Track& t)
             else if (done)
                 done (false);
         });
+    samplerWindow->rememberPosition (0);
     samplerWindow->getPanel().onBeginEdit = [safe] { if (safe != nullptr) safe->beginEdit(); };
     samplerWindow->getPanel().onAbortEdit = [safe] { if (safe != nullptr) safe->cancelEdit(); };
     samplerWindow->getPanel().onSlicesToMidi = [safe, tr] { if (safe != nullptr && safe->engine.indexOfTrack (tr) >= 0) safe->slicesToMidi (*tr); };
@@ -3983,6 +4082,7 @@ void MainComponent::openPadSampler (Track& t, int pad)
             else if (done)
                 done (false);
         });
+    padSamplerWindow->rememberPosition (1);
     padSamplerWindow->getPanel().onBeginEdit = [safe] { if (safe != nullptr) safe->beginEdit(); };
     padSamplerWindow->getPanel().onAbortEdit = [safe] { if (safe != nullptr) safe->cancelEdit(); };
     padSamplerWindow->getPanel().projectBpm = [safe] { return safe != nullptr ? safe->tempoMap.getSections().front().bpm : 120.0; };
@@ -4658,6 +4758,9 @@ void MainComponent::restoreSnapshot (const ProjectState& state)
 {
     // The tool windows stay open when the sampler / drum rack they edit still exists after the undo (it is the same object, with the
     // old settings put back): they are pointed at the rebuilt track and refreshed. Otherwise they are closed.
+    std::vector<int> fxIndex;   // (where the tracks of the open effects windows are, to find them again after the undo)
+    for (auto& e : fxWindows)
+        fxIndex.push_back (e.master ? -1 : engine.indexOfTrack (e.track));
     const int idxSampler = samplerWindow != nullptr ? engine.indexOfTrack (samplerRef) : -1;
     const int idxPad = padSamplerWindow != nullptr ? engine.indexOfTrack (padRef) : -1;
     const int idxRack = drumRackWindow != nullptr ? engine.indexOfTrack (rackRef) : -1;
@@ -4741,6 +4844,21 @@ void MainComponent::restoreSnapshot (const ProjectState& state)
             padSamplerWindow.reset();
             drumRackWindow.reset();
         }
+    }
+
+    // the effects windows stay open: each gets the rebuilt track (a window whose track is gone closes)
+    for (size_t i = fxWindows.size(); i-- > 0;)
+    {
+        auto& e = fxWindows[i];
+        Track* nt = e.master ? &engine.getMaster() : fxIndex[i] >= 0 ? engine.getTrack (fxIndex[i]) : nullptr;
+        if (nt == nullptr)
+        {
+            fxWindows.erase (fxWindows.begin() + (long) i);
+            continue;
+        }
+        e.track = nt;
+        juce::Component::SafePointer<MainComponent> safe (this);
+        e.window->setContentOwned (new FxPanel (*nt, [safe] { if (safe != nullptr) safe->beginEdit(); }, e.master ? nullptr : &engine), true);
     }
 }
 
@@ -4982,11 +5100,7 @@ std::unique_ptr<TrackHeader> MainComponent::makeHeader (Track& t, bool master)
         header->reorder = [this] (Track& tr, int y, bool finished) { dragTrackHeader (tr, y, finished); };
     if (master)
         header->openMeter = [this] { openMasterMeter(); };
-    header->openFxPanel = [this, master] (Track& tr, juce::Component& anchor)
-    {
-        juce::CallOutBox::launchAsynchronously (std::make_unique<FxPanel> (tr, [this] { beginEdit(); }, master ? nullptr : &engine),
-                                                anchor.getScreenBounds(), nullptr);
-    };
+    header->openFxPanel = [this, master] (Track& tr, juce::Component& anchor) { openFxWindow (tr, master, anchor); };
     return header;
 }
 
@@ -5019,8 +5133,39 @@ void MainComponent::addTrackUI (Track& t)
     layoutContent();
 }
 
+void MainComponent::openFxWindow (Track& t, bool master, juce::Component& anchor)
+{
+    for (auto& e : fxWindows)
+        if (e.track == &t)
+        {
+            e.window->toFront (true);   // (already open)
+            return;
+        }
+
+    juce::Component::SafePointer<MainComponent> safe (this);
+    Track* tp = &t;
+    auto window = std::make_unique<FxWindow> ((master ? juce::String ("Master") : t.name) + " - effects",
+                                              new FxPanel (t, [safe] { if (safe != nullptr) safe->beginEdit(); }, master ? nullptr : &engine),
+                                              [safe, tp] { juce::MessageManager::callAsync ([safe, tp] { if (safe != nullptr) safe->closeFxWindow (tp); }); });
+
+    // next to the button that was pressed, each new window a little lower so that they do not hide each other
+    const auto button = anchor.getScreenBounds();
+    const auto area = juce::Desktop::getInstance().getDisplays().getDisplayForPoint (button.getCentre())->userArea;
+    const int step = 28 * (int) fxWindows.size();
+    window->setTopLeftPosition (juce::jlimit (area.getX(), juce::jmax (area.getX(), area.getRight() - window->getWidth()), button.getRight() + 12 + step),
+                                juce::jlimit (area.getY(), juce::jmax (area.getY(), area.getBottom() - window->getHeight()), button.getY() + step));
+    window->toFront (true);
+    fxWindows.push_back ({ std::move (window), tp, master });
+}
+
+void MainComponent::closeFxWindow (Track* t)
+{
+    fxWindows.erase (std::remove_if (fxWindows.begin(), fxWindows.end(), [t] (const FxEntry& e) { return e.track == t; }), fxWindows.end());
+}
+
 void MainComponent::removeTrackUI (Track* t)
 {
+    closeFxWindow (t);
     if (mixerWindow != nullptr)
         mixerWindow->getPanel().detach();   // (the strips would point at the removed track)
     synthWindow.reset();
@@ -5051,6 +5196,7 @@ void MainComponent::removeTrackUI (Track* t)
 
 void MainComponent::clearTracksUI()
 {
+    fxWindows.clear();
     if (mixerWindow != nullptr)
         mixerWindow->getPanel().detach();
     synthWindow.reset();
@@ -5756,7 +5902,26 @@ void MainComponent::buildCommands()
     auto hasMidiClip = [this] { return selTrack != nullptr && selClip >= 0 && engine.isMidiClip (*selTrack, selClip); };
 
     // transport
-    add ("play", "Play / pause", "Transport", K (K::spaceKey), [this] { if (engine.isPlaying()) pausePlayback(); else startPlayback(); });
+    add ("play", "Play / pause", "Transport", K (K::spaceKey), [this]
+        {
+            // Space twice in quick succession: back to the start, stopped (the first press has already started or paused playback)
+            const auto now = juce::Time::getMillisecondCounter();
+            const bool twice = now - lastSpacePress < 350;
+            lastSpacePress = twice ? 0 : now;
+            if (twice)
+            {
+                if (engine.isPlaying())
+                    pausePlayback();
+                rewindButton.triggerClick();
+            }
+            else if (engine.isPlaying())
+                pausePlayback();
+            else
+            {
+                startSoloPreview();   // (a MIDI track that is open in the roll: only that sound, from the start of the clip)
+                startPlayback();
+            }
+        });
     add ("rewind", "Back to the start", "Transport", K (K::returnKey), [this] { rewindButton.triggerClick(); });
     add ("record", "Record", "Transport", K ('R'), [this] { toggleRecording(); });
     add ("stopall", "STOP ALL (stops everything, cuts every sound)", "Transport", K (K::spaceKey, ctrl | shift, 0), [this] { stopAllButton.triggerClick(); });
@@ -6351,14 +6516,41 @@ void MainComponent::startPlayback()
     }
 }
 
+void MainComponent::startSoloPreview()
+{
+    if (! rollVisible || selTrack == nullptr || selTrack->type != Track::Type::Midi || selTrack->bus || engine.isPlaying())
+        return;
+    endSoloPreview();
+    for (int i = 0; i < engine.getNumTracks(); ++i)
+        if (auto* t = engine.getTrack (i))
+        {
+            soloPreviewSaved.push_back ({ t, t->solo.load() });
+            t->solo = (t == selTrack);
+        }
+    MidiClip c;
+    engine.setPositionSeconds (selClip >= 0 && engine.getMidiClip (*selTrack, selClip, c) ? c.start : 0.0);
+}
+
+void MainComponent::endSoloPreview()
+{
+    if (soloPreviewSaved.empty())
+        return;
+    for (auto& s : soloPreviewSaved)
+        if (engine.indexOfTrack (s.first) >= 0)
+            s.first->solo = s.second;
+    soloPreviewSaved.clear();
+}
+
 void MainComponent::pausePlayback()
 {
+    endSoloPreview();
     finishRecording();
     engine.stop();
 }
 
 void MainComponent::stopPlayback()
 {
+    endSoloPreview();
     finishRecording();
     if (engine.isPlaying())
     {
@@ -7252,6 +7444,8 @@ void MainComponent::saveProject (const juce::File& file, SaveKind kind)
             if (t->synth.osc2Wave.load() != 1) s->setProperty ("osc2Wave", t->synth.osc2Wave.load());
             if (t->synth.unison.load() != 1)   s->setProperty ("unison", t->synth.unison.load());
             if (t->synth.lfoShape.load() != 0) s->setProperty ("lfoShape", t->synth.lfoShape.load());
+            if (t->synth.engine.load() != 0)   s->setProperty ("engine", t->synth.engine.load());
+            if (t->synth.mono.load() != 0)     s->setProperty ("mono", t->synth.mono.load());
             o->setProperty ("synth", juce::var (s));
 
             juce::Array<juce::var> midiList;
@@ -8386,6 +8580,8 @@ void MainComponent::loadProject (const juce::File& file, bool asTemplate, bool r
             t->synth.osc2Wave = (int) s.getProperty ("osc2Wave", (int) SynthParams::Saw);
             t->synth.unison = juce::jlimit (1, 5, (int) s.getProperty ("unison", 1));
             t->synth.lfoShape = juce::jlimit (0, 3, (int) s.getProperty ("lfoShape", 0));
+            t->synth.engine = juce::jlimit (0, 1, (int) s.getProperty ("engine", 0));
+            t->synth.mono = juce::jlimit (0, 1, (int) s.getProperty ("mono", 0));
 
             if ((bool) item.getProperty ("subAuto", false))
                 t->subAutoDone = true;

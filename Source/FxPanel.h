@@ -2,6 +2,7 @@
 
 #include <juce_gui_basics/juce_gui_basics.h>
 #include "Engine.h"
+#include "Theme.h"
 
 // Controls for one track's effect chain (EQ -> compressor -> delay -> reverb).
 // Shown in a callout from the track header; every change applies immediately.
@@ -93,4 +94,23 @@ private:
     std::vector<std::unique_ptr<Section>> sections;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (FxPanel)
+};
+
+// The effects of a track in a window of its own: it can be dragged anywhere, and the windows of several tracks can be open next to each other.
+class FxWindow : public juce::DocumentWindow
+{
+public:
+    FxWindow (const juce::String& title, FxPanel* panel, std::function<void()> onClosed)
+        : juce::DocumentWindow (title, Theme::background, juce::DocumentWindow::closeButton), closed (std::move (onClosed))
+    {
+        setUsingNativeTitleBar (true);
+        setContentOwned (panel, true);
+        setResizable (false, false);
+        setVisible (true);
+    }
+
+    void closeButtonPressed() override { if (closed) closed(); }
+
+private:
+    std::function<void()> closed;   // (the owner deletes this window)
 };

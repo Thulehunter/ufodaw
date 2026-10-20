@@ -105,6 +105,7 @@ class GroupHeader;
 class SampleBrowserWindow;
 class ClipLauncherWindow;
 class SynthWindow;
+class FxWindow;   // (FxPanel.h)
 class SubLaneFooter;
 class TimeRuler;
 class PianoRoll;
@@ -392,6 +393,11 @@ private:
     std::unique_ptr<SampleBrowserWindow> browserWindow;
     std::unique_ptr<ClipLauncherWindow> launcherWindow;
     std::unique_ptr<SynthWindow> synthWindow;
+    // The effects windows (one per track, any number open at once, each can be dragged anywhere)
+    struct FxEntry { std::unique_ptr<FxWindow> window; Track* track = nullptr; bool master = false; };
+    std::vector<FxEntry> fxWindows;
+    void openFxWindow (Track&, bool master, juce::Component& anchor);
+    void closeFxWindow (Track*);
     // Updates: the latest release on GitHub. A button in the top bar appears when a newer version exists.
     juce::TextButton updateButton { "Update available" };
     static inline juce::String updateVersion, updateNotes, updateDownload, updateSha;   // (empty version: none; shared by all the tabs)
@@ -654,6 +660,10 @@ private:
     double pixelsPerSecond = 100.0;
     Track* selTrack = nullptr;
     int selClip = -1;
+    std::vector<std::pair<Track*, bool>> soloPreviewSaved;   // (the solo buttons as they were before "Space plays only the selected MIDI track")
+    void startSoloPreview();
+    void endSoloPreview();
+    juce::uint32 lastSpacePress = 0;   // (for "space twice = back to the start")
 
     juce::OwnedArray<TrackHeader> headers;
     juce::OwnedArray<TrackLane> lanes;

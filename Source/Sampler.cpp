@@ -151,7 +151,7 @@ void Sampler::render (float* outL, float* outR, int n)
     const float chokeDec = 1.0f / (0.006f * (float) outRate);   // a choked voice is gone in about 6 ms
     const float volume = params.volume.load(), sens = juce::jlimit (0.0f, 1.0f, params.velocitySens.load());
 
-    const float cutoff = juce::jlimit (40.0f, 20000.0f, params.cutoff.load());
+    const float cutoff = juce::jlimit (20.0f, 20000.0f, params.cutoff.load());
     const bool filtering = cutoff < 19000.0f;
     const float a = 1.0f - std::exp (-2.0f * juce::MathConstants<float>::pi * cutoff / (float) outRate);
 

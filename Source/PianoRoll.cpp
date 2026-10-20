@@ -222,6 +222,19 @@ public:
             g.setColour (sel ? Theme::text : Theme::noteOutline);
             g.drawRect (r, 1);
 
+            if (r.getWidth() > 12)   // the two ends can be dragged to make the note shorter or longer: a small grip shows where
+            {
+                const int grip = edgeWidth (r);
+                g.setColour (juce::Colours::white.withAlpha (sel ? 0.35f : 0.18f));
+                g.fillRect (r.getX() + 1, r.getY() + 2, 2, r.getHeight() - 4);
+                g.fillRect (r.getRight() - 3, r.getY() + 2, 2, r.getHeight() - 4);
+                if (i == hoverNote && hoverEdge != 0)   // the end under the mouse lights up
+                {
+                    g.setColour (juce::Colours::white.withAlpha (0.35f));
+                    g.fillRect (hoverEdge < 0 ? r.getX() : r.getRight() - grip, r.getY(), grip, r.getHeight());
+                }
+            }
+
             if (r.getWidth() >= 26)   // wide enough: name the note on the note itself
             {
                 g.setColour (playingNow || sel ? Theme::noteOutline : Theme::text);
@@ -260,7 +273,8 @@ public:
             selected = hit;
             const auto& n = clip.notes[(size_t) hit];
             const auto r = noteRect (n);
-            mode = (e.x >= r.getRight() - 6 && r.getWidth() > 12) ? Mode::Resize : Mode::Move;
+            const int edge = r.getWidth() > 12 ? edgeAt (r, e.x) : 0;
+            mode = edge > 0 ? Mode::Resize : edge < 0 ? Mode::ResizeLeft : Mode::Move;
             grabTime = xToTime (e.x) - (clip.start + n.start);
             preview (n.pitch);
         }
@@ -313,6 +327,12 @@ public:
             const double end = rawOrSnapped (xToTime (e.x), e) - clip.start;
             newLength = juce::jmax (minLen, end - n.start);
         }
+        else if (mode == Mode::ResizeLeft)   // the start moves, the end stays where it is
+        {
+            const double end = n.start + n.length;
+            newStart = juce::jlimit (0.0, end - minLen, rawOrSnapped (xToTime (e.x), e) - clip.start);
+            newLength = end - newStart;
+        }
         else
         {
             const double start = rawOrSnapped (xToTime (e.x) - grabTime, e) - clip.start;
@@ -341,9 +361,40 @@ public:
         repaint();
     }
 
-    void mouseUp (const juce::MouseEvent&) override
+    void mouseUp (const juce::MouseEvent& e) override
     {
         mode = Mode::None;
+        mouseMove (e);
+    }
+
+    // the mouse pointer shows what a drag does: the ends of a note stretch it, the middle moves it
+    void mouseMove (const juce::MouseEvent& e) override
+    {
+        int newHover = -1, newEdge = 0;
+        if (track != nullptr && load())
+        {
+            newHover = hitNote (e.getPosition());
+            if (newHover >= 0)
+            {
+                const auto r = noteRect (clip.notes[(size_t) newHover]);
+                newEdge = r.getWidth() > 12 ? edgeAt (r, e.x) : 0;
+            }
+        }
+        setMouseCursor (newEdge != 0 ? juce::MouseCursor::LeftRightResizeCursor
+                                     : newHover >= 0 ? juce::MouseCursor::DraggingHandCursor : juce::MouseCursor::NormalCursor);
+        if (newHover != hoverNote || newEdge != hoverEdge)
+        {
+            hoverNote = newHover;
+            hoverEdge = newEdge;
+            repaint();
+        }
+    }
+
+    void mouseExit (const juce::MouseEvent&) override
+    {
+        hoverNote = -1;
+        hoverEdge = 0;
+        repaint();
     }
 
     void mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& w) override
@@ -355,7 +406,16 @@ public:
     }
 
 private:
-    enum class Mode { None, Move, Resize };
+    enum class Mode { None, Move, Resize, ResizeLeft };
+    int hoverNote = -1, hoverEdge = 0;   // (the note under the mouse, and which end of it: -1 start, 1 end, 0 the middle)
+
+    // the width of the grab zone at each end of a note: wide enough to hit, never more than a third of a short note
+    static int edgeWidth (juce::Rectangle<int> r) { return juce::jlimit (4, 9, r.getWidth() / 3); }
+    static int edgeAt (juce::Rectangle<int> r, int x)
+    {
+        const int w = edgeWidth (r);
+        return x >= r.getRight() - w ? 1 : x < r.getX() + w ? -1 : 0;
+    }
 
     bool load() { return track != nullptr && main.getEngine().getMidiClip (*track, clipId, clip); }
     void commit() { main.getEngine().setMidiNotes (*track, clipId, clip.notes); }
@@ -842,6 +902,7 @@ PianoRoll::PianoRoll (MainComponent& m) : main (m)
     viewport.setViewedComponent (&holder, false);
     viewport.setScrollBarsShown (true, false);
     addAndMakeVisible (viewport);
+    viewport.toBack();   // (it spans the whole width, also the space left of the keys where the key, scale and snap controls are: they must stay on top to be clickable)
 }
 
 PianoRoll::~PianoRoll() = default;
@@ -989,7 +1050,7 @@ void PianoRoll::paint (juce::Graphics& g)
     // how-to in the empty space to the left of the keys (under the controls of the key)
     g.setColour (Theme::textDim);
     g.setFont (juce::FontOptions (12.0f));
-    g.drawFittedText ("Click an empty spot to add a note, then drag right to make it longer. Drag a note to move it, its right edge to resize, "
+    g.drawFittedText ("Click an empty spot to add a note, then drag right to make it longer. Drag the middle of a note to move it, drag either end to make it shorter or longer, "
                       "right-click to delete. Alt = free (no snapping). Ctrl + mouse wheel = zoom.",
                       juce::Rectangle<int> (14, toolbarHeight + 128, MainComponent::controlsWidth - keyWidth - 24, 110),
                       juce::Justification::topLeft, 8);

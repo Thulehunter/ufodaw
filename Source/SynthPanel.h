@@ -40,6 +40,10 @@ public:
         };
         addAndMakeVisible (presets);
 
+        myButton.setTooltip ("Your own sounds: save the current settings under a name, load them again later, in any project");
+        myButton.onClick = [this] { showMySounds(); };
+        addAndMakeVisible (myButton);
+
         // oscillators
         section ("ENGINE");
         choiceCombo ("Sound engine", track.synth.engine, { "Synth", "Piano" });
@@ -122,6 +126,7 @@ public:
     void resized() override
     {
         presets.setBounds (getWidth() - 190, 8, 180, 26);
+        myButton.setBounds (getWidth() - 190 - 130, 8, 120, 26);
         for (auto& r : rows)
         {
             r.label->setBounds (r.x, r.y, 104, rowHeight - 4);
@@ -143,6 +148,56 @@ public:
     }
 
     const Track* getTrack() const { return &track; }
+
+    // ---- your own sounds: one small file per sound in %APPDATA%\UFODAW\presets\synth, usable in every project
+    static juce::File userFolder()
+    {
+        auto dir = juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory).getChildFile ("UFODAW").getChildFile ("presets").getChildFile ("synth");
+        dir.createDirectory();
+        return dir;
+    }
+
+    static juce::StringArray userNames()
+    {
+        juce::StringArray names;
+        for (auto& f : userFolder().findChildFiles (juce::File::findFiles, false, "*.json"))
+            names.add (f.getFileNameWithoutExtension());
+        names.sort (true);
+        return names;
+    }
+
+    static bool saveUser (const juce::String& name, const SynthValues& v)
+    {
+        auto* o = new juce::DynamicObject();
+        o->setProperty ("format", 1);
+       #define UFODAW_X(n, def, lo, hi, label) o->setProperty (#n, (double) v.n);
+        UFODAW_SYNTH_FLOATS (UFODAW_X)
+       #undef UFODAW_X
+       #define UFODAW_X(n, def) o->setProperty (#n, v.n);
+        UFODAW_SYNTH_INTS (UFODAW_X)
+       #undef UFODAW_X
+        return userFolder().getChildFile (name + ".json").replaceWithText (juce::JSON::toString (juce::var (o)));
+    }
+
+    static bool loadUser (const juce::String& name, SynthValues& v)
+    {
+        const auto parsed = juce::JSON::parse (userFolder().getChildFile (name + ".json"));
+        if (! parsed.isObject())
+            return false;
+       #define UFODAW_X(n, def, lo, hi, label) v.n = juce::jlimit ((float) (lo), (float) (hi), (float) (double) parsed.getProperty (#n, (double) (def)));
+        UFODAW_SYNTH_FLOATS (UFODAW_X)
+       #undef UFODAW_X
+       #define UFODAW_X(n, def) v.n = (int) parsed.getProperty (#n, def);
+        UFODAW_SYNTH_INTS (UFODAW_X)
+       #undef UFODAW_X
+        v.unison = juce::jlimit (1, 5, v.unison);
+        v.waveform = juce::jlimit (0, 3, v.waveform);
+        v.osc2Wave = juce::jlimit (0, 3, v.osc2Wave);
+        v.lfoShape = juce::jlimit (0, 3, v.lfoShape);
+        v.engine = juce::jlimit (0, 1, v.engine);
+        v.mono = juce::jlimit (0, 1, v.mono);
+        return true;
+    }
 
 private:
     static constexpr int columnWidth = 300, rowHeight = 30, top = 42;
@@ -234,6 +289,65 @@ private:
         floats.push_back ({ info, s });
     }
 
+    void showMySounds()
+    {
+        const auto names = userNames();
+        juce::PopupMenu menu;
+        menu.addItem (1, "Save the current sound...");
+        menu.addSeparator();
+        if (names.isEmpty())
+            menu.addItem (2, "(nothing saved yet)", false);
+        for (int i = 0; i < names.size(); ++i)
+            menu.addItem (100 + i, names[i]);
+        if (! names.isEmpty())
+        {
+            juce::PopupMenu remove;
+            for (int i = 0; i < names.size(); ++i)
+                remove.addItem (1000 + i, names[i]);
+            menu.addSeparator();
+            menu.addSubMenu ("Delete a sound", remove);
+        }
+
+        juce::Component::SafePointer<SynthPanel> safe (this);
+        menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&myButton), [safe, names] (int result)
+        {
+            if (safe == nullptr || result == 0)
+                return;
+            if (result == 1)
+                safe->askNameAndSave();
+            else if (result >= 1000 && result - 1000 < names.size())
+                safe->userFolder().getChildFile (names[result - 1000] + ".json").deleteFile();
+            else if (result >= 100 && result - 100 < names.size())
+            {
+                SynthValues v;
+                if (loadUser (names[result - 100], v))
+                {
+                    safe->begin();
+                    safe->track.synth.apply (v);
+                    safe->refresh();
+                    safe->changedFn();
+                }
+            }
+        });
+    }
+
+    void askNameAndSave()
+    {
+        juce::Component::SafePointer<SynthPanel> safe (this);
+        auto* box = new juce::AlertWindow ("Save a sound", "A name for this sound (it is kept for every project, under My sounds):", juce::MessageBoxIconType::NoIcon);
+        box->addTextEditor ("name", "My sound");
+        box->addButton ("Save", 1, juce::KeyPress (juce::KeyPress::returnKey));
+        box->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+        box->enterModalState (true, juce::ModalCallbackFunction::create ([safe, box] (int ok)
+        {
+            if (ok != 1 || safe == nullptr)
+                return;
+            const auto name = juce::File::createLegalFileName (box->getTextEditorContents ("name").trim());
+            if (name.isNotEmpty())
+                saveUser (name, safe->track.synth.capture());
+        }));
+    }
+
     void timerCallback() override
     {
         // keep the controls in step with the synth (undo, automation) unless one is being dragged
@@ -246,6 +360,7 @@ private:
     Track& track;
     std::function<void()> begin, changedFn;
     juce::ComboBox presets;
+    juce::TextButton myButton { "My sounds..." };
     std::unique_ptr<juce::ComboBox> wave1, wave2;   // (unused holders)
     juce::ComboBox* lfoShape = nullptr;               // (a child that ownedComponents owns: never delete it here)
     juce::OwnedArray<juce::Component> ownedComponents;
