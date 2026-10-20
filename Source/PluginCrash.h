@@ -34,7 +34,7 @@ namespace PluginCrash
 
     inline juce::String pendingNotice;   // shown once by the application after the window is up
     inline bool crashedLastTime = false;      // the program was closed by a crash last time (the notice then offers a report)
-    inline juce::String pendingModule, pendingPlugin;
+    inline juce::String pendingModule, pendingPlugin, pendingDetails;
 
     // The plugin whose file contains the module (or is the module) is added to the blocked list. Returns its name, or empty if it is no plugin.
     inline juce::String blockModule (const juce::String& modulePath)
@@ -149,6 +149,19 @@ namespace PluginCrash
             {
                 DWORD written = 0;
                 WriteFile (h, module, (DWORD) (wcslen (module) * sizeof (wchar_t)), &written, nullptr);   // (UTF-16, read back below)
+                if (ep != nullptr && ep->ExceptionRecord != nullptr)   // the error code and the place in the module: enough to find the line later
+                {
+                    wchar_t extra[96] = L"\ncode=0x";
+                    auto hex = [] (wchar_t* out, unsigned long long v) { int n = 0; unsigned long long x = v; do { ++n; x >>= 4; } while (x != 0); out[n] = 0; for (int i = n - 1; i >= 0; --i, v >>= 4) out[i] = L"0123456789ABCDEF"[v & 15]; return n; };
+                    size_t len = wcslen (extra);
+                    len += (size_t) hex (extra + len, (unsigned long long) ep->ExceptionRecord->ExceptionCode);
+                    wcscpy_s (extra + len, 96 - len, L" offset=0x");
+                    len = wcslen (extra);
+                    HMODULE m = nullptr;
+                    GetModuleHandleExW (GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCWSTR) ep->ExceptionRecord->ExceptionAddress, &m);
+                    hex (extra + len, (unsigned long long) ((const char*) ep->ExceptionRecord->ExceptionAddress - (const char*) m));
+                    WriteFile (h, extra, (DWORD) (wcslen (extra) * sizeof (wchar_t)), &written, nullptr);
+                }
                 CloseHandle (h);
             }
         }

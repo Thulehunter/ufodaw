@@ -140,7 +140,8 @@ public:
 
         if (PluginCrash::crashedLastTime)
         {
-            const auto module = PluginCrash::pendingModule == "unknown" ? juce::String() : PluginCrash::pendingModule;
+            const auto module = (PluginCrash::pendingModule == "unknown" ? juce::String() : PluginCrash::pendingModule)
+                                  + (PluginCrash::pendingDetails.isNotEmpty() ? "\n" + PluginCrash::pendingDetails : juce::String());
             const auto plugin = PluginCrash::pendingPlugin;
             const auto notice = PluginCrash::pendingNotice;
             juce::MessageManager::callAsync ([module, plugin, notice]

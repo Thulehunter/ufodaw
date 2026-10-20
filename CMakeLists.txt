@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.22)
 # Link the C++ runtime statically so UFODAW.exe runs on a PC without the Visual C++ Redistributable.
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
-project(UFODAW VERSION 0.9.3.5 LANGUAGES C CXX)
+project(UFODAW VERSION 0.9.3.6 LANGUAGES C CXX)
 
 # /EHa: catch(...) also catches access violations, so a crash in a plugin's window (or another callback from the message loop) is caught by JUCE's
 # loop and handled by UFODAWApplication::unhandledException instead of ending the program.
@@ -30,7 +30,8 @@ include(FetchContent)
 FetchContent_Declare(JUCE
     GIT_REPOSITORY https://github.com/juce-framework/JUCE.git
     GIT_TAG 8.0.4
-    GIT_SHALLOW ON)
+    GIT_SHALLOW ON
+    PATCH_COMMAND ${CMAKE_COMMAND} -DJUCE_DIR=<SOURCE_DIR> -P ${CMAKE_CURRENT_SOURCE_DIR}/scripts/patch-juce.cmake)
 FetchContent_MakeAvailable(JUCE)
 
 # Rubber Band: time-stretching and pitch-shifting of audio clips. Its single-file build (no separate library, built-in FFT)
