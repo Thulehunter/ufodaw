@@ -6395,7 +6395,30 @@ void MainComponent::timerCallback()
         updateButton.setTooltip ("UFODAW " + updateVersion + " is available. Click to see what is new and to download it.");
         resized();
     }
-    if (juce::String crashed; engine.takeCrashedPlugin (crashed))   // a plugin crashed while playing: it was caught and switched off
+    juce::String crashed;
+    std::shared_ptr<PluginSlot> failedSlot;
+    const bool pluginStopped = engine.takeCrashedPlugin (crashed, &failedSlot);
+    if (pluginStopped && failedSlot != nullptr && failedSlot->remote != nullptr)
+    {
+        // a plugin in its own process stopped: UFODAW went on, the track is silent (an effect lets the sound through). It can be started again.
+        const auto reason = failedSlot->remote->failureReason();
+        juce::MessageBoxOptions options = juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::WarningIcon).withTitle ("A plugin stopped")
+            .withMessage ((reason.isNotEmpty() ? reason : crashed + " stopped.") + "\n\nUFODAW keeps running and your project is safe. The plugin is switched off: "
+                          "an effect lets the sound through, an instrument is silent. Restart it to carry on with the settings it had.")
+            .withButton ("Restart plugin").withButton ("Leave it off");
+        juce::Component::SafePointer<MainComponent> safe (this);
+        juce::AlertWindow::showAsync (options, [safe, failedSlot] (int result)
+        {
+            if (result != 1 || safe == nullptr)
+                return;
+            juce::String error;
+            if (safe->pluginHost.restartSlot (*failedSlot, error))
+                ++safe->editCounter;
+            else
+                juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "The plugin could not be restarted", error);
+        });
+    }
+    else if (crashed.isNotEmpty())   // a plugin crashed while playing: it was caught and switched off
         juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "A plugin crashed",
                                                 crashed + " crashed while it was playing. UFODAW caught it and switched the plugin off, so the program could go on: "
                                                           "an effect now lets the sound through, an instrument is silent.\n\nSave your project and open it again to load the plugin again. "
@@ -8819,6 +8842,52 @@ juce::String MainComponent::selfTestReport (bool& ok, bool expectWarning)
     const bool warningOk = (expectWarning != selfTestProblems.isEmpty());
     const auto problemText = selfTestProblems.isEmpty() ? juce::String() : " problems: " + selfTestProblems.joinIntoString ("; ");
 
+    // A plugin in a helper process is ended from outside, as the task manager would: the program has to go on (silence from that plugin), say which plugin
+    // stopped, keep the plugin's last state for saving, and be able to start it again so that it sounds exactly as before.
+    juce::String sandboxText;
+    bool sandboxOk = true;
+    for (int i = 0; i < engine.getNumTracks(); ++i)
+        if (auto* t = engine.getTrack (i); t->instrument != nullptr && t->instrument->remote != nullptr)
+        {
+            auto slot = t->instrument;
+            auto peakOf = [&]
+            {
+                const auto file = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("ufodaw-selftest-sandbox.wav");
+                file.deleteFile();
+                float result = -1.0f;
+                if (engine.renderToFile (file, 1.5, false))
+                {
+                    juce::AudioFormatManager formats;
+                    formats.registerBasicFormats();
+                    if (std::unique_ptr<juce::AudioFormatReader> reader (formats.createReaderFor (file)); reader != nullptr)
+                    {
+                        juce::AudioBuffer<float> buffer ((int) reader->numChannels, (int) reader->lengthInSamples);
+                        reader->read (&buffer, 0, buffer.getNumSamples(), 0, true, true);
+                        result = 0.0f;
+                        for (int c = 0; c < buffer.getNumChannels(); ++c)
+                            result = juce::jmax (result, buffer.getMagnitude (c, 0, buffer.getNumSamples()));
+                    }
+                }
+                file.deleteFile();
+                return result;
+            };
+            const float before = peakOf();
+            const auto stateBefore = pluginHost.slotToVar (*slot)["state"].toString();
+            slot->remote->killHelper();
+            const float during = peakOf();
+            juce::String name;
+            std::shared_ptr<PluginSlot> reported;
+            const bool told = engine.takeCrashedPlugin (name, &reported) && reported == slot;
+            const bool stateKept = pluginHost.slotToVar (*slot)["state"].toString() == stateBefore;
+            juce::String error;
+            const bool restarted = pluginHost.restartSlot (*slot, error);
+            const float after = peakOf();
+            const bool fine = before > 0.001f && during < before && told && stateKept && restarted && std::abs (after - before) < 1.0e-6f;
+            sandboxOk = sandboxOk && fine;
+            sandboxText << " helper-killed=" << (fine ? "ok" : "FAILED(" + juce::String (before, 3) + "/" + juce::String (during, 3) + "/" + juce::String (after, 3)
+                                                              + (told ? "" : " not-told") + (stateKept ? "" : " state-lost") + (restarted ? "" : " " + error) + ")");
+        }
+
     // Save as: the project is written to a new file and read back; the number of tracks must be the same (and nothing may crash)
     const int tracksBefore = engine.getNumTracks();
     const auto saved = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("ufodaw-selftest-saved").getChildFile ("saved.mdaw");
@@ -8831,11 +8900,11 @@ juce::String MainComponent::selfTestReport (bool& ok, bool expectWarning)
     const bool reloaded = engine.getNumTracks() == tracksBefore;
     saved.getParentDirectory().deleteRecursively();
 
-    ok = warningOk && engine.getNumTracks() > 0 && rendered && peak > 0.001f && wrote && reloaded;
+    ok = warningOk && engine.getNumTracks() > 0 && rendered && peak > 0.001f && wrote && reloaded && sandboxOk;
     if (slots > 0)
         engine.stop();
     return "tracks=" + juce::String (engine.getNumTracks()) + " clips=" + juce::String (clips) + " slots=" + juce::String (slots) + " drumLayers=" + juce::String (layers) + " render=" + (rendered ? "ok" : "FAILED")
-           + " peak=" + juce::String (peak, 3) + " saveAs=" + (wrote && reloaded ? "ok" : "FAILED") + problemText;
+           + " peak=" + juce::String (peak, 3) + " saveAs=" + (wrote && reloaded ? "ok" : "FAILED") + sandboxText + problemText;
 }
 
 // One dialog for everything that did not come through when a project opened. Missing audio files can be looked for in a folder: the project is

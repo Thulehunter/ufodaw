@@ -208,6 +208,8 @@
   <section id="new" class="alt">
     <h2>What's new</h2>
     <div class="log">
+      <div><h3>Next release <small>in development</small></h3><ul>
+        <li><b>Plugins in a separate process:</b> a VST3 plugin can now run in a helper process of its own. If it crashes, hangs or eats memory or graphics resources, UFODAW keeps running: the track goes silent (an effect lets the sound through), a message names the plugin and offers <i>Restart plugin</i>, which brings it back with the settings it had. Your project and autosave are untouched. Audio and MIDI are bit for bit the same as in the program and cost about 6 microseconds extra per block. Choose in <i>Plugins</i>: Automatic (plugins that gave trouble, and Waves), Always, or Never.</li></ul></div>
       <div><h3>0.9.3.8 <small>latest</small></h3><ul>
         <li><b>Clips: drag either end</b> to make an audio, MIDI or drum clip shorter or longer; the middle still moves it. A MIDI clip cut at the start loses the notes before it; an audio clip can be trimmed back out again.</li>
         <li><b>Drum pattern:</b> every hit can be stretched (drag its end, or drag right after adding it), moved (the middle) and is drawn in its real length. Shift+drag still paints one hit per step.</li>
@@ -258,6 +260,7 @@
         <li><b>Update check:</b> <i>Check for updates</i> in the menu, an <b>Update available</b> button in the top bar, and an optional daily check at start-up.</li></ul></div>
       <div><h3>0.8.8.2</h3><ul>
         <li><b>Freeze</b> a track to audio and switch its plugins off, and <b>track groups</b> (folders) that collapse and mute or solo together.</li>
+        <li><b>Plugins in a separate process:</b> a crashing or hanging plugin cannot take UFODAW down; restart it from the message.</li>
         <li><b>Safer plugins:</b> scanning runs in a helper process, a plugin that crashes while playing is caught and switched off, and one that crashed while loading is skipped next time.</li>
         <li><b>Six new effects</b> in a redesigned FX window with an effects chain along the top: gate, de-esser, multiband compressor, saturation (4x oversampling), chorus/flanger and a lookahead limiter, all with presets. The EQ shows a <b>live spectrum</b>.</li>
         <li>The <b>waveform grows while you record</b>, and the window has its own title bar with built-in minimise, maximise and close buttons.</li>

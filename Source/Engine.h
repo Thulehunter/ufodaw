@@ -732,7 +732,9 @@ public:
     std::atomic<bool> forceParallel { false };   // (tests) always use the workers when there are some
 
     // Message thread: true once when a plugin crashed while it was playing (it is switched off), with its name
-    bool takeCrashedPlugin (juce::String& name);
+    // (`slotOut` gets the plugin when it is still in a track: a plugin in a helper process can be restarted)
+    bool takeCrashedPlugin (juce::String& name, std::shared_ptr<PluginSlot>* slotOut = nullptr);
+    void reportCrashedPlugin (PluginSlot&);   // any thread: tells the message thread (takeCrashedPlugin) that this plugin has been switched off
     bool trackHasOutput (const Track&) const;       // whether the track would give a non-empty stem
 
     // Records the audio input (while the transport plays) straight to a 24-bit WAV on a background thread.
