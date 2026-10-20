@@ -32,6 +32,17 @@ public:
         setResizable (editor->isResizable(), false);
         centreWithSize (getWidth(), getHeight());
         setVisible (true);
+
+        // Plugin editors are native child windows (often with their own GPU drawing). JUCE's default Direct2D renderer of the parent can paint
+        // over them or leave the window white on some PCs, so these windows use the software (GDI) renderer.
+        if (auto* peer = getPeer())
+        {
+            const auto engines = peer->getAvailableRenderingEngines();
+            const int software = engines.indexOf ("Software Renderer");
+            const int gdi = software >= 0 ? software : engines.indexOf ("GDI");
+            if (gdi >= 0)
+                peer->setCurrentRenderingEngine (gdi);
+        }
         if (host.onEditorOpened)
             host.onEditorOpened (s);
     }

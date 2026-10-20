@@ -15,7 +15,7 @@
 <meta property="og:image" content="https://ufodaw.eu/icon.png">
 <meta name="twitter:card" content="summary">
 <script type="application/ld+json">
-{"@context":"https://schema.org","@type":"SoftwareApplication","name":"UFODAW","applicationCategory":"MultimediaApplication","applicationSubCategory":"Digital audio workstation","operatingSystem":"Windows","softwareVersion":"0.9.3.4","license":"https://www.gnu.org/licenses/agpl-3.0.html","url":"https://ufodaw.eu/","image":"https://ufodaw.eu/icon.png","downloadUrl":"https://github.com/Thulehunter/ufodaw/releases/latest","offers":{"@type":"Offer","price":"0","priceCurrency":"EUR"}}
+{"@context":"https://schema.org","@type":"SoftwareApplication","name":"UFODAW","applicationCategory":"MultimediaApplication","applicationSubCategory":"Digital audio workstation","operatingSystem":"Windows","softwareVersion":"0.9.3.5","license":"https://www.gnu.org/licenses/agpl-3.0.html","url":"https://ufodaw.eu/","image":"https://ufodaw.eu/icon.png","downloadUrl":"https://github.com/Thulehunter/ufodaw/releases/latest","offers":{"@type":"Offer","price":"0","priceCurrency":"EUR"}}
 </script>
 <script type="application/ld+json">
 {"@context":"https://schema.org","@type":"VideoObject","name":"UFODAW demo: record, arrange and mix","description":"A two-minute tour of UFODAW, a free digital audio workstation for Windows: piano roll, EQ and effects chain, track groups, freeze and the loudness meter.","thumbnailUrl":"https://ufodaw.eu/ufodaw-demo-poster.jpg","contentUrl":"https://ufodaw.eu/ufodaw-demo.mp4","uploadDate":"2026-10-19","duration":"PT2M19S"}
@@ -48,7 +48,7 @@
       <a class="btn primary" href="#download">Download for Windows</a>
       <a class="btn" href="#features">See what it does</a>
     </div>
-    <p class="meta">Version 0.9.3.4 · Free &amp; open source · AGPLv3 · Windows 64-bit · installer, no admin rights needed</p>
+    <p class="meta">Version 0.9.3.5 · Free &amp; open source · AGPLv3 · Windows 64-bit · installer, no admin rights needed</p>
   </section>
 
   <section class="strip" aria-label="Highlights">
@@ -208,7 +208,9 @@
   <section id="new" class="alt">
     <h2>What's new</h2>
     <div class="log">
-      <div><h3>0.9.3.4 <small>latest</small></h3><ul>
+      <div><h3>0.9.3.5 <small>latest</small></h3><ul>
+        <li><b>Fixed:</b> plugin (VST) windows and menus could stay white on some PCs. All windows now use the software renderer instead of Direct2D.</li></ul></div>
+      <div><h3>0.9.3.4</h3><ul>
         <li><b>Fixed a crash:</b> closing the synth window could close the whole program (one of its lists was released twice). It now closes normally.</li></ul></div>
       <div><h3>0.9.3.3</h3><ul>
         <li><b>Fixed:</b> the <i>Edit</i> button next to <i>Built-in synth</i> in the VST panel of a track did nothing; it now opens the synth window with all its settings.</li></ul></div>
@@ -268,10 +270,10 @@
 
   <section id="download">
     <h2>Download</h2>
-    <p class="center">Grab <code>UFODAW-0.9.3.4-setup.exe</code> (the installer) from the Releases page and run it, or take <code>UFODAW-0.9.3.4-win64.zip</code>, unzip it anywhere and run <code>UFODAW.exe</code>. Double-click any <code>.mdaw</code> file to open a project directly.</p>
+    <p class="center">Grab <code>UFODAW-0.9.3.5-setup.exe</code> (the installer) from the Releases page and run it, or take <code>UFODAW-0.9.3.5-win64.zip</code>, unzip it anywhere and run <code>UFODAW.exe</code>. Double-click any <code>.mdaw</code> file to open a project directly.</p>
     <div class="cta center">
       <!-- TODO: replace # with your GitHub Releases URL -->
-      <a class="btn primary" href="#" id="dl">Download 0.9.3.4 (Windows 64-bit)</a>
+      <a class="btn primary" href="#" id="dl">Download 0.9.3.5 (Windows 64-bit)</a>
       <a class="btn" href="#" id="src">Source code</a>
     </div>
     <p class="meta center">Releases are not code-signed yet, so Windows SmartScreen may show a warning. Choose “More info” → “Run anyway”.</p>
@@ -317,7 +319,7 @@
     document.getElementById("fr-nav").href = fr;
     document.getElementById("fr-nav").target = "_blank";
     document.getElementById("fr-list").href = REPO + "/issues?q=label%3Aenhancement";
-    var VERSION = "0.9.3.4";   // (update with every release)
+    var VERSION = "0.9.3.5";   // (update with every release)
     var body = "**What happened?**\n\n\n**What did you expect?**\n\n\n**How can it be repeated?**\n1. \n2. \n3. \n\n**Version:** UFODAW " + VERSION + "\n**Windows version:**\n**Audio device and driver (ASIO / WASAPI):**\n**Plugins involved (name, maker):**\n";
     var bug = REPO + "/issues/new?labels=bug&title=" + encodeURIComponent("Bug: ") + "&body=" + encodeURIComponent(body);
     document.getElementById("bug").href = bug;

@@ -8620,11 +8620,26 @@ juce::String MainComponent::selfTestReport (bool& ok, bool expectWarning)
     }
     wav.deleteFile();
 
-    ok = (expectWarning != selfTestProblems.isEmpty()) && engine.getNumTracks() > 0 && rendered && peak > 0.001f;
+    const bool warningOk = (expectWarning != selfTestProblems.isEmpty());
+    const auto problemText = selfTestProblems.isEmpty() ? juce::String() : " problems: " + selfTestProblems.joinIntoString ("; ");
+
+    // Save as: the project is written to a new file and read back; the number of tracks must be the same (and nothing may crash)
+    const int tracksBefore = engine.getNumTracks();
+    const auto saved = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("ufodaw-selftest-saved").getChildFile ("saved.mdaw");
+    saved.getParentDirectory().createDirectory();
+    saved.deleteFile();
+    saveProject (saved);
+    const bool wrote = saved.existsAsFile() && saved.getSize() > 50;
+    selfTestProblems.clear();
+    loadProject (saved);
+    const bool reloaded = engine.getNumTracks() == tracksBefore;
+    saved.getParentDirectory().deleteRecursively();
+
+    ok = warningOk && engine.getNumTracks() > 0 && rendered && peak > 0.001f && wrote && reloaded;
     if (slots > 0)
         engine.stop();
     return "tracks=" + juce::String (engine.getNumTracks()) + " clips=" + juce::String (clips) + " slots=" + juce::String (slots) + " drumLayers=" + juce::String (layers) + " render=" + (rendered ? "ok" : "FAILED")
-           + " peak=" + juce::String (peak, 3) + (selfTestProblems.isEmpty() ? juce::String() : " problems: " + selfTestProblems.joinIntoString ("; "));
+           + " peak=" + juce::String (peak, 3) + " saveAs=" + (wrote && reloaded ? "ok" : "FAILED") + problemText;
 }
 
 // One dialog for everything that did not come through when a project opened. Missing audio files can be looked for in a folder: the project is

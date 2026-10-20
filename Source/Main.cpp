@@ -12,6 +12,27 @@
  #include <shlobj.h>
 #endif
 
+// JUCE's default Direct2D renderer leaves windows white on some PCs (seen with plugin windows and a second menu/window). Every top-level window
+// and menu is moved to the software renderer soon after it appears.
+struct SoftwareRendererGuard : private juce::Timer
+{
+    SoftwareRendererGuard() { startTimer (100); }
+
+    void timerCallback() override
+    {
+        auto& desktop = juce::Desktop::getInstance();
+        for (int i = 0; i < desktop.getNumComponents(); ++i)
+            if (auto* c = desktop.getComponent (i))
+                if (auto* peer = c->getPeer())
+                {
+                    const auto engines = peer->getAvailableRenderingEngines();
+                    const int software = engines.indexOf ("Software Renderer");
+                    if (software >= 0 && peer->getCurrentRenderingEngine() != software)
+                        peer->setCurrentRenderingEngine (software);
+                }
+    }
+};
+
 class UFODAWApplication : public juce::JUCEApplication
 {
 public:
@@ -35,6 +56,7 @@ public:
         ProjectTemplates::ensureWritten();
         juce::LookAndFeel::setDefaultLookAndFeel (&lookAndFeel);   // the warm red/orange/yellow theme
         window = std::make_unique<MainWindow> (getApplicationName());
+        rendererGuard = std::make_unique<SoftwareRendererGuard>();
 
         // "UFODAW.exe --selftest result.txt a.mdaw b.mdaw": opens each project without dialogs, renders a few seconds and writes one line per
         // project to result.txt (and exit code 1 if any failed). The automatic tests use it to see that old and new project files keep opening.
@@ -255,6 +277,7 @@ public:
     void shutdown() override
     {
         scanWorker = nullptr;
+        rendererGuard = nullptr;
         window = nullptr;
         juce::LookAndFeel::setDefaultLookAndFeel (nullptr);
     }
@@ -341,6 +364,7 @@ private:
     };
 
     std::unique_ptr<MainWindow> window;
+    std::unique_ptr<SoftwareRendererGuard> rendererGuard;
 };
 
 START_JUCE_APPLICATION (UFODAWApplication)
