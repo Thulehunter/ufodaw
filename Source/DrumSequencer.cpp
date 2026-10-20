@@ -98,7 +98,7 @@ private:
                                   auto f = fc.getResult();
                                   if (f == juce::File() || owner.getTrack() == nullptr)
                                       return;
-                                  if (owner.main.getEngine().loadDrumSample (*owner.getTrack(), pad, f))
+                                  if (owner.main.getEngine().replaceDrumSample (*owner.getTrack(), pad, f))
                                       repaint();
                                   else
                                       juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon,

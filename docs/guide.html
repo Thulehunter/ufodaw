@@ -361,7 +361,7 @@ ufodaw.set_notes(track, clip, notes)</code></pre>
       <h3>The piano engine</h3>
       <p>Choose <b>Piano</b> as the sound engine for a piano built from decaying partials: the notes beat softly like two or three strings, the hammer adds a burst of noise and harder notes are brighter. <i>Ring time</i>, <i>brightness</i>, <i>string detune</i> and <i>hammer noise</i> change the character; the piano sounds in the list are a good start.</p>
       <h3>Drums</h3>
-      <p>The drum rack has seven kits (<i>Punch</i>, <i>808</i>, <i>Lo-fi</i>, <i>House</i>, <i>Tight</i>, <i>909</i> and <i>Acoustic</i>). Every pad gets a soft version for light hits and round-robin versions that take turns, so a repeated hit does not sound the same. Hit a pad softly or hard (with a MIDI keyboard, or by the velocity of the notes in a drum clip) to hear the layers.</p>
+      <p>The drum rack has eleven kits (<i>Punch</i>, <i>808</i>, <i>Lo-fi</i>, <i>House</i>, <i>Tight</i>, <i>909</i>, <i>Acoustic</i>, <i>Trap Hard</i>, <i>Boom Bap</i>, <i>Techno</i> and <i>Rock</i>). Drag a sound from the sample browser (the folder button on the left) onto a pad to use your own sound there. Every pad gets a soft version for light hits and round-robin versions that take turns, so a repeated hit does not sound the same. Hit a pad softly or hard (with a MIDI keyboard, or by the velocity of the notes in a drum clip) to hear the layers.</p>
       <h3>Render from the command line</h3>
       <p><code>UFODAW.exe --render project.mdaw out.wav</code> renders a whole project to an audio file without a dialog; the format follows the extension (wav, flac, aiff, mp3 or ogg).</p>
     </section>
@@ -528,7 +528,7 @@ ufodaw.set_notes(track, clip, notes)</code></pre>
   ["fr-nav", "fr-link"].forEach(function (id) {
     var a = document.getElementById(id); a.href = fr; a.target = "_blank"; a.rel = "noopener";
   });
-  var VERSION = "0.9.3.10";   // (update with every release)
+  var VERSION = "0.9.4";   // (update with every release)
   var body = "**What happened?**\n\n\n**What did you expect?**\n\n\n**How can it be repeated?**\n1. \n2. \n3. \n\n**Version:** UFODAW " + VERSION + "\n**Windows version:**\n**Audio device and driver (ASIO / WASAPI):**\n**Plugins involved (name, maker):**\n";
   var bug = REPO + "/issues/new?labels=bug&title=" + encodeURIComponent("Bug: ") + "&body=" + encodeURIComponent(body);
   ["bug-nav", "bug-link"].forEach(function (id) {

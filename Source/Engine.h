@@ -547,6 +547,7 @@ public:
     bool loadSamplerSample (Track&, const juce::File&);                      // reads an audio file into the track's sampler
     bool setSamplerSample (Track&, std::shared_ptr<const juce::AudioBuffer<float>>, double rate, const juce::String& name, const juce::File& file);   // e.g. from a clip
     bool loadDrumSample (Track&, int pad, const juce::File&);
+    bool replaceDrumSample (Track&, int pad, const juce::File&);   // the pad gets this sample and loses its extra layers (a sound of your own instead of the kit's)
     bool setSamplerStretch (Sampler&, double timeRatio);                    // time-stretch the sampler's sample (pitch kept); 1 = as loaded
     // The result of a stretch made in the background (Stretch::process on `original`); false if another sample was loaded meanwhile
     bool applySamplerStretch (Sampler&, std::shared_ptr<const juce::AudioBuffer<float>> original, std::shared_ptr<const juce::AudioBuffer<float>> result, double timeRatio);

@@ -1,4 +1,5 @@
 #include "StarterPack.h"
+#include <algorithm>
 #include <cmath>
 #include <functional>
 #include <map>
@@ -8,7 +9,7 @@ namespace
     using Sig = std::vector<float>;
     constexpr double rate = 44100.0;
     constexpr double twoPi = 6.283185307179586;
-    constexpr int packVersion = 3;
+    constexpr int packVersion = 4;
 
     Sig make (double seconds) { return Sig ((size_t) (seconds * rate), 0.0f); }
     size_t n (const Sig& s) { return s.size(); }
@@ -651,6 +652,174 @@ namespace
     }
 
     //==========================================================================
+    // more sounds (pack version 4): a few more building blocks
+
+    Sig reversed (Sig s)
+    {
+        std::reverse (s.begin(), s.end());
+        finish (s);
+        return s;
+    }
+
+    Sig squareLead (double freq, double len, double cutoff, double attack = 0.01)
+    {
+        auto s = make (len);
+        double phase = 0.0, lp = 0.0;
+        for (size_t i = 0; i < n (s); ++i)
+        {
+            const double t = (double) i / rate;
+            phase += freq / rate;
+            if (phase >= 1.0) phase -= 1.0;
+            lp += (1.0 - std::exp (-twoPi * cutoff / rate)) * ((phase < 0.5 ? 1.0 : -1.0) - lp);
+            const double env = juce::jmin (1.0, t / attack) * juce::jmin (1.0, (len - t) / 0.15);
+            s[i] = (float) (lp * env * 0.7);
+        }
+        finish (s, 0.4f);   // (a square wave is loud: it is kept in line with the other sounds)
+        return s;
+    }
+
+    Sig bell (double freq, double len)   // inharmonic partials that ring and fade at different speeds
+    {
+        auto s = make (len);
+        const double ratio[] = { 1.0, 2.76, 5.4, 8.93 }, amp[] = { 1.0, 0.55, 0.3, 0.15 }, fade[] = { 1.4, 2.6, 4.2, 6.5 };
+        for (size_t i = 0; i < n (s); ++i)
+        {
+            const double t = (double) i / rate;
+            double v = 0.0;
+            for (int k = 0; k < 4; ++k)
+                v += std::sin (twoPi * freq * ratio[k] * t) * amp[k] * std::exp (-t * fade[k] * 2.0 / len * 2.5);
+            s[i] = (float) (v * juce::jmin (1.0, t / 0.002));
+        }
+        finish (s);
+        return s;
+    }
+
+    Sig epiano (double freq, double len)   // a soft electric piano: two-operator FM, the bite fades quickly
+    {
+        auto s = make (len);
+        for (size_t i = 0; i < n (s); ++i)
+        {
+            const double t = (double) i / rate;
+            const double mod = std::sin (twoPi * freq * 14.0 * t) * std::exp (-t * 9.0) * 1.3 + std::sin (twoPi * freq * t) * 0.25;
+            const double v = std::sin (twoPi * freq * t + mod) * std::exp (-t * 2.4) + 0.2 * std::sin (twoPi * freq * 2.0 * t) * std::exp (-t * 5.0);
+            s[i] = (float) (v * juce::jmin (1.0, t / 0.003) * juce::jmin (1.0, (len - t) / 0.1));
+        }
+        finish (s);
+        return s;
+    }
+
+    Sig marimba (double freq, double len)
+    {
+        auto s = make (len);
+        for (size_t i = 0; i < n (s); ++i)
+        {
+            const double t = (double) i / rate;
+            const double v = std::sin (twoPi * freq * t) * std::exp (-t * 5.5) + 0.45 * std::sin (twoPi * freq * 3.93 * t) * std::exp (-t * 26.0)
+                             + 0.05 * std::sin (twoPi * freq * 9.9 * t) * std::exp (-t * 60.0);
+            s[i] = (float) (v * juce::jmin (1.0, t / 0.001));
+        }
+        finish (s);
+        return s;
+    }
+
+    Sig subBass (double freq, double len, double decay)   // a pure sine with a short pitch drop, no distortion
+    {
+        auto s = make (len);
+        double phase = 0.0;
+        for (size_t i = 0; i < n (s); ++i)
+        {
+            const double t = (double) i / rate;
+            phase += twoPi * freq * (1.0 + 0.25 * std::exp (-t * 40.0)) / rate;
+            s[i] = (float) (std::sin (phase) * std::exp (-t * decay) * juce::jmin (1.0, t / 0.004));
+        }
+        finish (s);
+        return s;
+    }
+
+    Sig bass808Drive (double freq, double len, double decay, double drive)
+    {
+        auto s = make (len);
+        double phase = 0.0;
+        for (size_t i = 0; i < n (s); ++i)
+        {
+            const double t = (double) i / rate;
+            phase += twoPi * (freq * (1.0 + 0.6 * std::exp (-t * 30.0))) / rate;
+            s[i] = (float) (std::tanh (drive * std::sin (phase)) * std::exp (-t * decay));
+        }
+        finish (s);
+        return s;
+    }
+
+    Sig reese (double freq, double len)   // detuned saws that beat against each other
+    {
+        auto s = make (len);
+        saw (s, 0, freq, len, 700.0, 350.0, 0.01, 0.15, 0.8f, 0.045, 3);
+        finish (s);
+        return s;
+    }
+
+    Sig laser (double len, bool down)
+    {
+        auto s = make (len);
+        double phase = 0.0;
+        for (size_t i = 0; i < n (s); ++i)
+        {
+            const double t = (double) i / rate, x = t / len;
+            const double f = down ? 3500.0 * std::exp (-x * 4.0) + 80.0 : 120.0 + 3400.0 * x * x;
+            phase += twoPi * f / rate;
+            s[i] = (float) (std::sin (phase) * (down ? std::exp (-x * 3.0) : std::sin (x * 3.14159)) * 0.8);
+        }
+        finish (s, 0.5f);
+        return s;
+    }
+
+    Sig whoosh (double len)   // noise through a band that rises and falls
+    {
+        auto nz = noise (len, 71);
+        auto s = make (len);
+        Biq f = Biq::make (2, 1000.0, 1.2);
+        for (size_t i = 0; i < n (s); ++i)
+        {
+            const double x = (double) i / rate / len;
+            const double centre = 400.0 + 4200.0 * std::sin (x * 3.14159);
+            if ((i & 31) == 0)
+            {
+                const auto z1 = f.z1, z2 = f.z2;
+                f = Biq::make (2, centre, 1.2);
+                f.z1 = z1;
+                f.z2 = z2;
+            }
+            s[i] = (float) (f.process (nz[i]) * std::sin (x * 3.14159) * 3.0);
+        }
+        finish (s);
+        return s;
+    }
+
+    Sig noiseBurst (double len, double decay, double hp)
+    {
+        auto s = filtered (noise (len, 81), 1, hp);
+        for (size_t i = 0; i < n (s); ++i)
+            s[i] *= (float) std::exp (-(double) i / rate * decay);
+        finish (s);
+        return s;
+    }
+
+    Sig chordLoop (int bpm, std::initializer_list<std::initializer_list<int>> chords, int stepsPerChord, double cutoff, double attack, double gate = 0.95)
+    {
+        const double step = 60.0 / bpm / 4.0, each = step * stepsPerChord;
+        auto out = make (each * (double) chords.size());
+        size_t index = 0;
+        for (auto& chord : chords)
+        {
+            for (int note : chord)
+                saw (out, (size_t) (each * (double) index * rate), midiHz (note), each * gate, cutoff * 1.6, cutoff * 0.7, attack, 0.12, 0.4f, 0.012, 3);
+            ++index;
+        }
+        finish (out, 0.9f);
+        return out;
+    }
+
+    //==========================================================================
     struct Entry { const char* category; juce::String name; std::function<Sig()> make; double room = 0.0, roomDecay = 0.3, wide = 0.0; };   // (room / wide: a stereo sound)
 
     const std::vector<Entry>& catalog()
@@ -789,6 +958,135 @@ namespace
             add ("Loops", "Lo-fi 80 BPM",      [] { return drumLoop (80, "X.......x.X.....", "....X.......X...", "x...x...x...x...", "................", kick (120, 55, 22, 9, 0.4, 0.9, 0.02), snare (180, 18, 13, 0.4, 900, 0.9, 5), metallic (0.14, 40, 5500, 8000, 73), metallic (0.5, 8, 6500, 9000, 74), 0.18); });
             add ("Loops", "Bass Loop Am 90 BPM", [] { return bassLoop (90, { { 45, 3 }, { 0, 1 }, { 45, 2 }, { 48, 2 }, { 50, 3 }, { 0, 1 }, { 52, 2 }, { 47, 2 } }, 900); });
             add ("Loops", "Bass Loop Em 124 BPM", [] { return bassLoop (124, { { 40, 2 }, { 40, 2 }, { 0, 2 }, { 47, 2 }, { 40, 2 }, { 43, 2 }, { 0, 2 }, { 38, 2 } }, 1400); });
+
+            // ---- pack version 4: a bigger library
+            // kicks
+            add ("Kicks", "Kick Trap",    [] { return kick (85, 40, 10, 1.6, 1.4, 1.5, 0.05); });
+            add ("Kicks", "Kick Sub",     [] { return kick (70, 35, 8, 1.3, 1.5, 1.0, 0.0); });
+            add ("Kicks", "Kick House",   [] { return kick (125, 45, 28, 5.5, 0.5, 1.2, 0.12); });
+            add ("Kicks", "Kick Techno",  [] { return kick (140, 48, 40, 6.5, 0.45, 1.8, 0.2); });
+            add ("Kicks", "Kick Thump",   [] { return kick (100, 52, 16, 3.0, 0.55, 1.1, 0.05); });
+            add ("Kicks", "Kick Lofi",    [] { return kick (115, 50, 18, 8.0, 0.45, 0.9, 0.02, 0.0, 5, 1.0); });
+            add ("Kicks", "Kick Hard",    [] { return kick (190, 55, 55, 8.0, 0.4, 2.4, 0.35); });
+            add ("Kicks", "Kick Long 808", [] { return kick (80, 40, 8, 1.2, 2.2, 1.3, 0.02); });
+            // snares
+            add ("Snares", "Snare Trap",    [] { return snare (250, 32, 22, 0.28, 2800, 1.15); });
+            add ("Snares", "Snare Crack",   [] { return snare (280, 35, 24, 0.25, 3200, 1.2); });
+            add ("Snares", "Snare Rock",    [] { return snare (170, 18, 14, 0.38, 1400, 1.05); });
+            add ("Snares", "Snare Piccolo", [] { return snare (320, 45, 30, 0.2, 3500, 1.0); });
+            add ("Snares", "Snare Dust",    [] { return snare (190, 20, 15, 0.35, 1000, 0.95, 4); });
+            add ("Snares", "Snare Crunch",  [] { return snare (210, 26, 18, 0.3, 1600, 1.0, 6); });
+            // claps
+            add ("Claps", "Clap Snappy", [] { return clap (3, 0.01, 26, 0.25, 1600); });
+            add ("Claps", "Clap Big",    [] { return clap (6, 0.018, 7, 0.7, 1000); }, 0.4, 0.45);
+            add ("Claps", "Clap Lofi",   [] { return clap (4, 0.014, 14, 0.35, 900); });
+            add ("Claps", "Clap Stack",  [] { return clap (5, 0.012, 12, 0.45, 1400); });
+            // hats and cymbals
+            add ("Hats", "Hat Closed 4",   [] { return metallic (0.07, 95, 9000, 12000, 79); });
+            add ("Hats", "Hat Closed Tick", [] { return metallic (0.05, 130, 9500, 12500, 80); });
+            add ("Hats", "Hat Open 3",     [] { return metallic (0.4, 10, 7500, 10500, 83); });
+            add ("Hats", "Hat Open Long",  [] { return metallic (1.2, 4, 6000, 9000, 84); });
+            add ("Cymbals", "Crash 2",    [] { return cymbal (3.2, 1.2, 1800, 11000, 85); }, 0.0, 0.3, 0.7);
+            add ("Cymbals", "Ride Bell",  [] { return cymbal (1.8, 2.2, 3200, 9000, 86, 0.9); }, 0.0, 0.3, 0.5);
+            add ("Cymbals", "Splash",     [] { return cymbal (1.0, 3.5, 3000, 12000, 87); }, 0.0, 0.3, 0.6);
+            add ("Cymbals", "China",      [] { return cymbal (2.0, 2.0, 1500, 10000, 88); }, 0.0, 0.3, 0.6);
+            // toms and percussion
+            add ("Toms", "Tom Deep",   [] { return tom (100, 55, 7, 0.8); });
+            add ("Toms", "Tom Electro", [] { return tom (200, 90, 16, 0.5); });
+            add ("Percussion", "Bongo High",  [] { return tone (480, 380, 18, 0.3, 0.0); });
+            add ("Percussion", "Bongo Low",   [] { return tone (320, 250, 15, 0.35, 0.0); });
+            add ("Percussion", "Conga Low",   [] { return tone (240, 170, 12, 0.45, 0.0); });
+            add ("Percussion", "Woodblock",   [] { return tone (1300, 1200, 50, 0.15, 0.2); });
+            add ("Percussion", "Maracas",     [] { return shaker (0.1, 0.006, 35); });
+            add ("Percussion", "Rim Soft",    [] { return tone (1600, 1400, 100, 0.1, 0.3); });
+            add ("Percussion", "Tick",        [] { return tone (3000, 2800, 150, 0.05, 0.0); });
+            add ("Percussion", "Perc Metal",  [] { return tone (1100, 1050, 18, 0.5, 1.2); });
+            add ("Percussion", "Shaker Long", [] { return shaker (0.3, 0.03, 12); });
+            // bass
+            add ("Bass", "808 Sub G1",     [] { return bass808 (49.0, 2.2, 1.4); });
+            add ("Bass", "808 Sub D1",     [] { return bass808 (36.7, 2.4, 1.3); });
+            add ("Bass", "808 Sub C1",     [] { return bass808 (32.7, 2.6, 1.2); });
+            add ("Bass", "808 Sub F1",     [] { return bass808 (43.65, 2.2, 1.4); });
+            add ("Bass", "808 Short A1",   [] { return bass808 (55.0, 0.6, 5.0); });
+            add ("Bass", "808 Dirty A1",   [] { return bass808Drive (55.0, 1.8, 1.6, 4.5); });
+            add ("Bass", "Sub Sine A1",    [] { return subBass (55.0, 1.6, 1.8); });
+            add ("Bass", "Sub Sine E1",    [] { return subBass (41.2, 1.8, 1.6); });
+            add ("Bass", "Reese A1",       [] { return reese (55.0, 2.0); });
+            add ("Bass", "Reese D1",       [] { return reese (36.7, 2.0); });
+            add ("Bass", "Pluck Bass E1",  [] { auto s = make (0.8); saw (s, 0, 41.2, 0.8, 2500, 250, 0.002, 0.2, 0.9f, 0.01, 2); finish (s); return s; });
+            add ("Bass", "Pluck Bass D2",  [] { auto s = make (0.7); saw (s, 0, 73.4, 0.7, 3000, 300, 0.002, 0.2, 0.9f, 0.01, 2); finish (s); return s; });
+            add ("Bass", "Fat Bass E1",    [] { auto s = make (1.2); saw (s, 0, 41.2, 1.2, 1800, 400, 0.004, 0.3, 0.9f, 0.02, 3); finish (s); return s; });
+            // synth: stabs, plucks, pads, leads, keys, bells
+            add ("Synth", "Stab Dm7",     [] { return chordStab ({ 50, 53, 57, 60 }, 0.9); });
+            add ("Synth", "Stab Gm7",     [] { return chordStab ({ 55, 58, 62, 65 }, 0.9); });
+            add ("Synth", "Stab Cmaj9",   [] { return chordStab ({ 48, 52, 55, 59, 62 }, 1.0); });
+            add ("Synth", "Stab Em7",     [] { return chordStab ({ 52, 55, 59, 62 }, 0.9); });
+            add ("Synth", "Pluck E4",     [] { auto s = make (0.7); saw (s, 0, midiHz (64), 0.7, 6000, 500, 0.001, 0.2, 0.9f, 0.006, 2); finish (s); return s; });
+            add ("Synth", "Pluck G3",     [] { auto s = make (0.7); saw (s, 0, midiHz (55), 0.7, 5000, 450, 0.001, 0.2, 0.9f, 0.006, 2); finish (s); return s; });
+            add ("Synth", "Pad Swell Cmaj7", [] { auto s = make (4.0); for (int note : { 48, 52, 55, 59 }) saw (s, 0, midiHz (note), 4.0, 1200, 1200, 1.2, 1.2, 0.5f, 0.015, 4); finish (s); return s; });
+            add ("Synth", "Pad Swell Fm9",   [] { auto s = make (4.0); for (int note : { 53, 56, 60, 63, 67 }) saw (s, 0, midiHz (note), 4.0, 1100, 1100, 1.3, 1.2, 0.45f, 0.015, 4); finish (s); return s; });
+            add ("Synth", "Pad Swell Em7",   [] { auto s = make (4.0); for (int note : { 52, 55, 59, 62 }) saw (s, 0, midiHz (note), 4.0, 1200, 1200, 1.2, 1.2, 0.5f, 0.015, 4); finish (s); return s; });
+            add ("Synth", "Pad Warm Dm",     [] { auto s = make (5.0); for (int note : { 50, 57, 62, 65 }) saw (s, 0, midiHz (note), 5.0, 800, 800, 1.6, 1.5, 0.5f, 0.02, 4); finish (s); return s; });
+            add ("Synth", "Lead Saw A4",     [] { auto s = make (1.2); saw (s, 0, midiHz (69), 1.2, 4500, 2500, 0.01, 0.25, 0.8f, 0.012, 3); finish (s); return s; });
+            add ("Synth", "Lead Saw E4",     [] { auto s = make (1.2); saw (s, 0, midiHz (64), 1.2, 4500, 2500, 0.01, 0.25, 0.8f, 0.012, 3); finish (s); return s; });
+            add ("Synth", "Lead Square C4",  [] { return squareLead (midiHz (60), 1.2, 2800); });
+            add ("Synth", "Lead Square G4",  [] { return squareLead (midiHz (67), 1.2, 2800); });
+            add ("Synth", "Bell C5",         [] { return bell (midiHz (72), 3.0); }, 0.0, 0.3, 0.5);
+            add ("Synth", "Bell G5",         [] { return bell (midiHz (79), 3.0); }, 0.0, 0.3, 0.5);
+            add ("Synth", "E-Piano C3",      [] { return epiano (midiHz (48), 2.5); }, 0.0, 0.3, 0.4);
+            add ("Synth", "E-Piano E3",      [] { return epiano (midiHz (52), 2.5); }, 0.0, 0.3, 0.4);
+            add ("Synth", "E-Piano G3",      [] { return epiano (midiHz (55), 2.5); }, 0.0, 0.3, 0.4);
+            add ("Synth", "E-Piano C4",      [] { return epiano (midiHz (60), 2.5); }, 0.0, 0.3, 0.4);
+            add ("Synth", "Marimba C4",      [] { return marimba (midiHz (60), 1.5); });
+            add ("Synth", "Marimba G4",      [] { return marimba (midiHz (67), 1.5); });
+            // effects
+            add ("FX", "Riser 8s",       [] { return riser (8.0, true); });
+            add ("FX", "Riser 2s",       [] { return riser (2.0, true); });
+            add ("FX", "Downlifter 6s",  [] { return riser (6.0, false); });
+            add ("FX", "Impact Big",     [] { auto s = impact(); for (size_t i = 0; i < n (s); ++i) s[i] *= (float) (1.0 + 0.6 * std::exp (-(double) i / rate * 3.0)); finish (s); return s; });
+            add ("FX", "Impact Short",   [] { return kick (110, 38, 14, 5.0, 0.5, 1.6, 0.1); });
+            add ("FX", "Whoosh",         [] { return whoosh (1.6); });
+            add ("FX", "Whoosh Long",    [] { return whoosh (3.5); });
+            add ("FX", "Laser Up",       [] { return laser (0.8, false); });
+            add ("FX", "Laser Down",     [] { return laser (0.8, true); });
+            add ("FX", "Reverse Crash",  [] { return reversed (cymbal (3.0, 1.2, 1800, 11000, 85)); }, 0.0, 0.3, 0.7);
+            add ("FX", "Reverse Snare",  [] { return reversed (snare (200, 18, 12, 0.5, 1400, 1.0)); });
+            add ("FX", "Noise Burst",    [] { return noiseBurst (0.6, 6.0, 800.0); });
+            add ("FX", "Noise Hit",      [] { return noiseBurst (0.25, 14.0, 2500.0); });
+
+            // loops at more tempos: drums, bass and chords
+            add ("Loops", "Boom Bap 85 BPM",    [] { return drumLoop (85, "X.....x.X..x....", "....X.......X...", "x.x.x.x.x.x.x.x.", "..............x.", kick (100, 52, 16, 3, 0.55, 1.1, 0.05), snare (190, 20, 15, 0.35, 1000, 0.95, 4), metallic (0.1, 60, 7000, 10000, 71), metallic (0.5, 8, 6500, 9000, 74), 0.1); });
+            add ("Loops", "Hip-hop 95 BPM",     [] { return drumLoop (95, "X.......X.X..X..", "....X.......X..X", "x.xxx.xxx.xxx.xx", "................", kick (130, 50, 25, 6, 0.5, 1.4, 0.1), snare (250, 32, 22, 0.28, 2800, 1.15), metallic (0.08, 80, 8000, 11000, 79), metallic (0.5, 8, 6500, 9000, 74), 0.08); });
+            add ("Loops", "House 128 BPM",      [] { return drumLoop (128, "X...X...X...X...", "....X.......X...", ".x.x.x.x.x.x.x.x", "..x...x...x...x.", kick (125, 45, 28, 5.5, 0.5, 1.2, 0.12), clap (4, 0.012, 16, 0.4, 1300), metallic (0.05, 130, 9500, 12500, 80), metallic (0.4, 10, 7500, 10500, 83), 0.0); });
+            add ("Loops", "Techno 130 BPM",     [] { return drumLoop (130, "X...X...X...X...", "............X...", "..x...x...x...x.", ".x.x.x.x.x.x.x.x", kick (140, 48, 40, 6.5, 0.45, 1.8, 0.2), clap (3, 0.01, 26, 0.25, 1600), metallic (0.05, 130, 9500, 12500, 80), metallic (0.4, 10, 7500, 10500, 83), 0.0); });
+            add ("Loops", "Trap 150 BPM",       [] { return drumLoop (150, "X.....x...X.....", "........X.......", "x.x.xxxxx.x.x.xx", "..............x.", kick (85, 40, 10, 1.6, 1.4, 1.5, 0.05), snare (250, 32, 22, 0.28, 2800, 1.15), metallic (0.07, 95, 9000, 12000, 79), metallic (0.4, 10, 7500, 10500, 83), 0.0); });
+            add ("Loops", "Drum and Bass 174 BPM", [] { return drumLoop (174, "X.........x.....", "....X.......X...", "x.x.x.x.x.x.x.x.", "..............x.", kick (120, 48, 30, 5, 0.5, 1.4, 0.2), snare (280, 35, 24, 0.25, 3200, 1.2), metallic (0.06, 110, 9000, 12000, 80), metallic (0.35, 12, 7500, 10500, 83), 0.0); });
+            add ("Loops", "Lo-fi 70 BPM",       [] { return drumLoop (70, "X.......x.X.....", "....X.......X...", "x...x...x...x...", "................", kick (115, 50, 18, 8, 0.45, 0.9, 0.02), snare (180, 18, 13, 0.4, 900, 0.9, 5), metallic (0.14, 40, 5500, 8000, 73), metallic (0.5, 8, 6500, 9000, 74), 0.2); });
+            add ("Loops", "Breakbeat 135 BPM",  [] { return drumLoop (135, "X.....x...x.X...", "....X..x....X.x.", "x.x.x.x.x.x.x.x.", "................", kick (130, 50, 25, 6, 0.5, 1.4, 0.1), snare (190, 16, 12, 0.35, 1400, 1.0), metallic (0.1, 60, 7000, 10000, 71), metallic (0.5, 8, 6500, 9000, 74), 0.05); });
+            add ("Loops", "Bass Loop Gm 130 BPM", [] { return bassLoop (130, { { 43, 3 }, { 0, 1 }, { 43, 2 }, { 46, 2 }, { 48, 3 }, { 0, 1 }, { 46, 2 }, { 41, 2 } }, 1200); });
+            add ("Loops", "Bass Loop Cm 140 BPM", [] { return bassLoop (140, { { 36, 2 }, { 36, 2 }, { 0, 2 }, { 39, 2 }, { 36, 2 }, { 43, 2 }, { 0, 2 }, { 34, 2 } }, 1000); });
+            add ("Loops", "Bass Loop Dm 174 BPM", [] { return bassLoop (174, { { 38, 4 }, { 0, 2 }, { 38, 2 }, { 41, 4 }, { 0, 2 }, { 36, 2 } }, 1400); });
+            add ("Loops", "Bass Loop Am 110 BPM", [] { return bassLoop (110, { { 45, 2 }, { 0, 2 }, { 45, 2 }, { 48, 2 }, { 50, 2 }, { 0, 2 }, { 52, 2 }, { 45, 2 } }, 800); });
+            add ("Loops", "Chords Am F C G 90 BPM",  [] { return chordLoop (90, { { 57, 60, 64 }, { 53, 57, 60 }, { 48, 52, 55 }, { 55, 59, 62 } }, 16, 1800, 0.01); });
+            add ("Loops", "Chords Cm Ab Eb Bb 80 BPM", [] { return chordLoop (80, { { 48, 51, 55, 58 }, { 44, 48, 51, 55 }, { 51, 55, 58, 62 }, { 46, 50, 53, 57 } }, 16, 1400, 0.03); });
+            add ("Loops", "Chords Dm7 G7 Cmaj7 100 BPM", [] { return chordLoop (100, { { 50, 53, 57, 60 }, { 55, 59, 62, 65 }, { 48, 52, 55, 59 }, { 48, 52, 55, 59 } }, 16, 1600, 0.02); });
+            add ("Loops", "Chords Em C G D 120 BPM",  [] { return chordLoop (120, { { 52, 55, 59 }, { 48, 52, 55 }, { 55, 59, 62 }, { 50, 54, 57 } }, 16, 2200, 0.005, 0.8); });
+
+            // soft and round-robin versions of the new drums that the new kits use
+            add ("Variations", "Kick Trap soft",   [] { return kick (85, 40, 10, 1.6, 1.4, 1.5, 0.05, 0.85, 6); });
+            add ("Variations", "Kick Techno soft", [] { return kick (140, 48, 40, 6.5, 0.45, 1.8, 0.2, 0.85, 6); });
+            add ("Variations", "Kick Thump soft",  [] { return kick (100, 52, 16, 3.0, 0.55, 1.1, 0.05, 0.85, 6); });
+            add ("Variations", "Snare Trap soft",  [] { return snare (250, 32, 22, 0.28, 2800, 1.15, 0, 0.8, 14); });
+            add ("Variations", "Snare Trap b",     [] { return snare (250, 32, 22, 0.28, 2800, 1.15, 0, 0.0, 12, 1.02); });
+            add ("Variations", "Snare Crack soft", [] { return snare (280, 35, 24, 0.25, 3200, 1.2, 0, 0.8, 14); });
+            add ("Variations", "Snare Crack b",    [] { return snare (280, 35, 24, 0.25, 3200, 1.2, 0, 0.0, 12, 1.02); });
+            add ("Variations", "Snare Rock soft",  [] { return snare (170, 18, 14, 0.38, 1400, 1.05, 0, 0.8, 14); });
+            add ("Variations", "Snare Rock b",     [] { return snare (170, 18, 14, 0.38, 1400, 1.05, 0, 0.0, 12, 1.02); });
+            add ("Variations", "Snare Dust soft",  [] { return snare (190, 20, 15, 0.35, 1000, 0.95, 4, 0.8, 14); });
+            add ("Variations", "Snare Dust b",     [] { return snare (190, 20, 15, 0.35, 1000, 0.95, 4, 0.0, 12, 1.02); });
+            add ("Variations", "Hat Closed 4 b",   [] { return metallic (0.07, 95, 9000, 12000, 179, 0.0, 0.0, 1.03); });
+            add ("Variations", "Hat Closed 4 soft", [] { return metallic (0.06, 100, 9000, 12000, 379, 0.0, 0.8); });
+            add ("Variations", "Hat Closed Tick b", [] { return metallic (0.05, 130, 9500, 12500, 180, 0.0, 0.0, 1.03); });
             return e;
         }();
         return list;
@@ -910,6 +1208,22 @@ namespace StarterPack
                            { P ("Kicks", "Kick Acoustic"), P ("Snares", "Snare Room"), P ("Claps", "Clap Room"), P ("Hats", "Hat Closed 2"), P ("Hats", "Hat Open 1"),
                              P ("Toms", "Tom Floor"), P ("Toms", "Tom Rack"), P ("Cymbals", "Crash"), P ("Snares", "Rim Shot"), P ("Percussion", "Shaker"),
                              P ("Percussion", "Triangle"), P ("Percussion", "Tambourine"), P ("Toms", "Tom Mid"), P ("Cymbals", "Ride"), P ("Percussion", "Snap"), P ("Snares", "Snare Brush") } });
+            k.push_back ({ "Trap Hard", "Hard 808s: a long sub kick, a cracking snare, big claps and fast tick hats",
+                           { P ("Kicks", "Kick Trap"), P ("Snares", "Snare Trap"), P ("Claps", "Clap Big"), P ("Hats", "Hat Closed 4"), P ("Hats", "Hat Open 3"),
+                             P ("Toms", "Tom Deep"), P ("Toms", "Tom Electro"), P ("Cymbals", "Crash 2"), P ("Snares", "Rim Soft"), P ("Percussion", "Maracas"),
+                             P ("Percussion", "Cowbell"), P ("Percussion", "Tambourine"), P ("Toms", "Tom Mid"), P ("Cymbals", "Ride Bell"), P ("Percussion", "Woodblock"), P ("Percussion", "Bongo Low") } });
+            k.push_back ({ "Boom Bap", "Dusty 90s hip-hop: a round kick, a gritty snare and a loose hat",
+                           { P ("Kicks", "Kick Thump"), P ("Snares", "Snare Dust"), P ("Claps", "Clap Lofi"), P ("Hats", "Hat Closed 3"), P ("Hats", "Hat Open 1"),
+                             P ("Toms", "Tom Low"), P ("Toms", "Tom Mid"), P ("Cymbals", "Crash"), P ("Snares", "Rim Click"), P ("Percussion", "Shaker"),
+                             P ("Percussion", "Cowbell"), P ("Percussion", "Tambourine"), P ("Toms", "Tom High"), P ("Cymbals", "Ride"), P ("Percussion", "Woodblock"), P ("Percussion", "Conga Low") } });
+            k.push_back ({ "Techno", "Hard, dry and fast: a driving kick, a cracking snare and tick hats",
+                           { P ("Kicks", "Kick Techno"), P ("Snares", "Snare Crack"), P ("Claps", "Clap Snappy"), P ("Hats", "Hat Closed Tick"), P ("Hats", "Hat Open Long"),
+                             P ("Toms", "Tom Electro"), P ("Toms", "Tom Deep"), P ("Cymbals", "Crash 2"), P ("Snares", "Rim Click"), P ("Percussion", "Maracas"),
+                             P ("Percussion", "Perc Metal"), P ("Percussion", "Tambourine"), P ("Toms", "Tom Mid"), P ("Cymbals", "Ride Bell"), P ("Percussion", "Clave"), P ("Percussion", "Bongo High") } });
+            k.push_back ({ "Rock", "A band in a room: a solid kick, a loud snare, open hats and a splash",
+                           { P ("Kicks", "Kick Thump"), P ("Snares", "Snare Rock"), P ("Claps", "Clap Room"), P ("Hats", "Hat Closed 2"), P ("Hats", "Hat Open 2"),
+                             P ("Toms", "Tom Floor"), P ("Toms", "Tom Rack"), P ("Cymbals", "Crash 2"), P ("Snares", "Rim Shot"), P ("Percussion", "Shaker"),
+                             P ("Percussion", "Cowbell"), P ("Percussion", "Tambourine"), P ("Toms", "Tom Mid"), P ("Cymbals", "China"), P ("Cymbals", "Splash"), P ("Snares", "Snare Piccolo") } });
             return k;
         }();
         return list;

@@ -16,6 +16,7 @@
 #include "MasterMeter.h"
 #include "ProjectTemplates.h"
 #include "SampleBrowser.h"
+#include "WindowOwner.h"
 #include "ClipLauncher.h"
 #include "SynthPanel.h"
 #include "Scripting.h"
@@ -4114,6 +4115,7 @@ void MainComponent::openSampler (Track& t)
                 done (false);
         });
     samplerWindow->rememberPosition (0);
+    WindowOwner::keepAbove (*samplerWindow, *this);
     samplerWindow->getPanel().onBeginEdit = [safe] { if (safe != nullptr) safe->beginEdit(); };
     samplerWindow->getPanel().onAbortEdit = [safe] { if (safe != nullptr) safe->cancelEdit(); };
     samplerWindow->getPanel().onSlicesToMidi = [safe, tr] { if (safe != nullptr && safe->engine.indexOfTrack (tr) >= 0) safe->slicesToMidi (*tr); };
@@ -4149,6 +4151,7 @@ void MainComponent::openPadSampler (Track& t, int pad)
                 done (false);
         });
     padSamplerWindow->rememberPosition (1);
+    WindowOwner::keepAbove (*padSamplerWindow, *this);
     padSamplerWindow->getPanel().onBeginEdit = [safe] { if (safe != nullptr) safe->beginEdit(); };
     padSamplerWindow->getPanel().onAbortEdit = [safe] { if (safe != nullptr) safe->cancelEdit(); };
     padSamplerWindow->getPanel().projectBpm = [safe] { return safe != nullptr ? safe->tempoMap.getSections().front().bpm : 120.0; };
@@ -4190,7 +4193,7 @@ void MainComponent::openDrumRack (Track& t, int selectPad)
         if (safe != nullptr && safe->engine.indexOfTrack (tr) >= 0)
             safe->engine.previewNote (*tr, note, down, 0.9f);
     };
-    hooks.load = [safe, tr] (int pad, const juce::File& f) { return safe != nullptr && safe->engine.loadDrumSample (*tr, pad, f); };
+    hooks.load = [safe, tr] (int pad, const juce::File& f) { return safe != nullptr && safe->engine.replaceDrumSample (*tr, pad, f); };
     hooks.loadLayer = [safe, tr] (int pad, int layer, const juce::File& f) { return safe != nullptr && safe->engine.loadDrumLayer (*tr, pad, layer, f); };
     hooks.clearLayer = [safe, tr] (int pad, int layer) { if (safe != nullptr) safe->engine.clearDrumLayer (*tr, pad, layer); };
     hooks.reset = [safe, tr] (int pad) { if (safe != nullptr) safe->engine.resetDrumPad (*tr, pad); };
@@ -4201,6 +4204,7 @@ void MainComponent::openDrumRack (Track& t, int selectPad)
     drumRackWindow = std::make_unique<DrumRackWindow> (t.name + " - drum rack", *t.kit, std::move (hooks),
         [safe] { juce::MessageManager::callAsync ([safe] { if (safe != nullptr) { safe->padSamplerWindow.reset(); safe->drumRackWindow.reset(); } }); });
     drumRackWindow->onKey = [safe] (const juce::KeyPress& k) { return safe != nullptr && safe->handleUndoKey (k); };
+    WindowOwner::keepAbove (*drumRackWindow, *this);
     if (selectPad >= 0)
         drumRackWindow->getPanel().select (selectPad);
 }
@@ -5221,6 +5225,7 @@ void MainComponent::openFxWindow (Track& t, bool master, juce::Component& anchor
     const int step = 28 * (int) fxWindows.size();
     window->setTopLeftPosition (juce::jlimit (area.getX(), juce::jmax (area.getX(), area.getRight() - window->getWidth()), button.getRight() + 12 + step),
                                 juce::jlimit (area.getY(), juce::jmax (area.getY(), area.getBottom() - window->getHeight()), button.getY() + step));
+    WindowOwner::keepAbove (*window, *this);
     window->toFront (true);
     fxWindows.push_back ({ std::move (window), tp, master });
 }
@@ -5607,7 +5612,7 @@ void MainComponent::paintOverChildren (juce::Graphics& g)
                     block.removeFromTop (26), juce::Justification::centred);
         g.setColour (Theme::textDim);
         g.setFont (juce::FontOptions (13.0f));
-        g.drawText ("Sounds to play with: menu > Sample browser (a starter pack of drums, bass and loops, free to use)",
+        g.drawText ("Sounds to play with: the folder button on the left (a starter pack of drums, bass, synths and loops, free to use, and your own folders)",
                     block.removeFromTop (22), juce::Justification::centred);
         block.removeFromTop (8);
         g.setColour (Theme::textFaint);
@@ -6516,6 +6521,7 @@ void MainComponent::openSynthPanel (Track& t)
     auto closeIt = [safe] { juce::MessageManager::callAsync ([safe] { if (safe != nullptr) safe->synthWindow.reset(); }); };
     synthWindow = std::make_unique<SynthWindow> (new SynthPanel (t, [safe] { if (safe != nullptr) safe->beginEdit(); }, [safe] { if (safe != nullptr) ++safe->editCounter; }),
                                                  t.name, closeIt);
+    WindowOwner::keepAbove (*synthWindow, *this);
 }
 
 void MainComponent::openClipLauncher()

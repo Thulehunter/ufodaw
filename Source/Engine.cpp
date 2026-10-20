@@ -503,6 +503,15 @@ bool Engine::loadDrumSample (Track& t, int pad, const juce::File& file)
     return true;
 }
 
+bool Engine::replaceDrumSample (Track& t, int pad, const juce::File& file)
+{
+    if (! loadDrumSample (t, pad, file))
+        return false;
+    for (int layer = 0; layer < DrumKit::maxLayers; ++layer)
+        clearDrumLayer (t, pad, layer);
+    return true;
+}
+
 bool Engine::loadDrumLayer (Track& t, int pad, int layer, const juce::File& file)
 {
     if (t.kit == nullptr || ! juce::isPositiveAndBelow (pad, DrumKit::numPads) || ! juce::isPositiveAndBelow (layer, DrumKit::maxLayers))
