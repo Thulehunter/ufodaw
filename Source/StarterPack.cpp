@@ -9,7 +9,7 @@ namespace
     using Sig = std::vector<float>;
     constexpr double rate = 44100.0;
     constexpr double twoPi = 6.283185307179586;
-    constexpr int packVersion = 4;
+    constexpr int packVersion = 6;
 
     Sig make (double seconds) { return Sig ((size_t) (seconds * rate), 0.0f); }
     size_t n (const Sig& s) { return s.size(); }
@@ -820,6 +820,468 @@ namespace
     }
 
     //==========================================================================
+    // even more sounds (pack version 5): plucked strings, organs, voices, vintage drum machines, world percussion, textures
+
+    Sig pluckString (double freq, double len, double damp, double bright, int seed)   // Karplus-Strong: a burst of noise ringing in a short delay line
+    {
+        auto s = make (len);
+        const int N = juce::jmax (2, (int) (rate / freq + 0.5));
+        std::vector<float> line ((size_t) N);
+        juce::Random rng (seed);
+        float smooth = 0.0f;
+        for (auto& v : line)
+        {
+            smooth += (float) bright * ((rng.nextFloat() * 2.0f - 1.0f) - smooth);
+            v = smooth;
+        }
+        size_t idx = 0;
+        for (size_t i = 0; i < n (s); ++i)
+        {
+            const float cur = line[idx], next = line[(idx + 1) % (size_t) N];
+            line[idx] = (float) damp * 0.5f * (cur + next);
+            s[i] = cur;
+            idx = (idx + 1) % (size_t) N;
+        }
+        finish (s);
+        return s;
+    }
+
+    Sig organ (double freq, double len, std::initializer_list<double> drawbars)   // harmonics 1, 2, 3, 4, 6, 8 with these levels
+    {
+        auto s = make (len);
+        const double harmonic[] = { 1.0, 2.0, 3.0, 4.0, 6.0, 8.0 };
+        for (size_t i = 0; i < n (s); ++i)
+        {
+            const double t = (double) i / rate;
+            double v = 0.0;
+            int k = 0;
+            for (double level : drawbars)
+                v += level * std::sin (twoPi * freq * harmonic[k++] * t);
+            s[i] = (float) (v * juce::jmin (1.0, t / 0.006) * juce::jmin (1.0, (len - t) / 0.08));
+        }
+        finish (s, 0.5f);
+        return s;
+    }
+
+    Sig vox (double freq, double len, double f1, double f2, double f3, double attack = 0.12)   // a voice: a saw wave through three formant bands
+    {
+        auto src = make (len);
+        saw (src, 0, freq, len, 6000.0, 6000.0, attack, 0.2, 0.9f, 0.01, 3);
+        auto s = make (len);
+        Biq b1 = Biq::make (2, f1, 8.0), b2 = Biq::make (2, f2, 10.0), b3 = Biq::make (2, f3, 12.0);
+        for (size_t i = 0; i < n (s); ++i)
+            s[i] = b1.process (src[i]) * 1.0f + b2.process (src[i]) * 0.6f + b3.process (src[i]) * 0.3f;
+        finish (s);
+        return s;
+    }
+
+    Sig clav (double freq, double len)
+    {
+        auto s = make (len);
+        double phase = 0.0, lp = 0.0;
+        for (size_t i = 0; i < n (s); ++i)
+        {
+            const double t = (double) i / rate;
+            phase += freq / rate;
+            if (phase >= 1.0) phase -= 1.0;
+            const double cutoff = 600.0 + 7000.0 * std::exp (-t * 14.0);
+            lp += (1.0 - std::exp (-twoPi * cutoff / rate)) * ((phase < 0.22 ? 1.0 : -1.0) - lp);
+            s[i] = (float) (lp * std::exp (-t * 6.0) * juce::jmin (1.0, t / 0.001));
+        }
+        finish (s);
+        return s;
+    }
+
+    Sig kalimba (double freq, double len)
+    {
+        auto s = make (len);
+        for (size_t i = 0; i < n (s); ++i)
+        {
+            const double t = (double) i / rate;
+            const double v = std::sin (twoPi * freq * t) * std::exp (-t * 3.2) + 0.35 * std::sin (twoPi * freq * 5.4 * t) * std::exp (-t * 22.0);
+            s[i] = (float) (v * juce::jmin (1.0, t / 0.001));
+        }
+        finish (s);
+        return s;
+    }
+
+    Sig fmBass (double freq, double len, double index)
+    {
+        auto s = make (len);
+        for (size_t i = 0; i < n (s); ++i)
+        {
+            const double t = (double) i / rate;
+            const double mod = std::sin (twoPi * freq * 2.0 * t) * index * std::exp (-t * 5.0);
+            s[i] = (float) (std::sin (twoPi * freq * t + mod) * std::exp (-t * 1.6) * juce::jmin (1.0, t / 0.002));
+        }
+        finish (s);
+        return s;
+    }
+
+    Sig wobble (double freq, double len, double lfoHz, double depth)
+    {
+        auto s = make (len);
+        double phase = 0.0, lp = 0.0;
+        for (size_t i = 0; i < n (s); ++i)
+        {
+            const double t = (double) i / rate;
+            phase += freq / rate;
+            if (phase >= 1.0) phase -= 1.0;
+            const double cutoff = 250.0 + depth * (0.5 + 0.5 * std::sin (twoPi * lfoHz * t));
+            lp += (1.0 - std::exp (-twoPi * cutoff / rate)) * ((phase * 2.0 - 1.0) - lp);
+            s[i] = (float) (lp * juce::jmin (1.0, t / 0.01) * juce::jmin (1.0, (len - t) / 0.1));
+        }
+        finish (s, 0.6f);
+        return s;
+    }
+
+    Sig brassStab (std::initializer_list<int> notes, double len)
+    {
+        auto s = make (len);
+        for (int note : notes)
+        {
+            saw (s, 0, midiHz (note), len, 4200.0, 900.0, 0.02, 0.15, 0.4f, 0.006, 3);
+            saw (s, 0, midiHz (note) * 2.0, len, 2500.0, 700.0, 0.03, 0.15, 0.15f, 0.004, 2);
+        }
+        finish (s);
+        return s;
+    }
+
+    Sig stringsPad (std::initializer_list<int> notes, double len)
+    {
+        auto s = make (len);
+        for (int note : notes)
+            saw (s, 0, midiHz (note), len, 3200.0, 2400.0, 0.5, 0.8, 0.35f, 0.02, 6);
+        finish (s);
+        return s;
+    }
+
+    Sig hat808 (double len, double decay, double hp)   // six square waves, as in the old drum machines
+    {
+        auto s = make (len);
+        const double f[] = { 205.3, 304.4, 369.6, 522.7, 540.0, 800.0 };
+        for (size_t i = 0; i < n (s); ++i)
+        {
+            const double t = (double) i / rate;
+            double v = 0.0;
+            for (double fk : f)
+                v += std::fmod (t * fk, 1.0) < 0.5 ? 1.0 : -1.0;
+            s[i] = (float) (v * std::exp (-t * decay) * juce::jmin (1.0, t / 0.0005));
+        }
+        s = filtered (s, 1, hp, 0.9, 2);
+        finish (s);
+        return s;
+    }
+
+    Sig cowbell808()
+    {
+        auto s = make (0.6);
+        for (size_t i = 0; i < n (s); ++i)
+        {
+            const double t = (double) i / rate;
+            const double v = (std::fmod (t * 540.0, 1.0) < 0.5 ? 1.0 : -1.0) + (std::fmod (t * 800.0, 1.0) < 0.5 ? 1.0 : -1.0);
+            s[i] = (float) (v * (0.6 * std::exp (-t * 60.0) + 0.4 * std::exp (-t * 9.0)));
+        }
+        s = filtered (s, 2, 700.0, 1.0, 1);
+        finish (s);
+        return s;
+    }
+
+    Sig castanet()
+    {
+        auto s = filtered (noise (0.12, 91), 2, 2600.0, 3.0);
+        for (size_t i = 0; i < n (s); ++i)
+            s[i] *= (float) (std::exp (-(double) i / rate * 70.0) * (1.0 + 0.7 * std::sin ((double) i / rate * 3000.0)));
+        finish (s);
+        return s;
+    }
+
+    Sig guiro()
+    {
+        auto s = make (0.35);
+        auto nz = filtered (noise (0.35, 92), 2, 3800.0, 2.0);
+        for (size_t i = 0; i < n (s); ++i)
+        {
+            const double t = (double) i / rate;
+            const double scrape = 0.5 + 0.5 * std::sin (twoPi * 55.0 * t);   // the ridges
+            s[i] = (float) (nz[i] * scrape * std::exp (-t * 7.0) * juce::jmin (1.0, t / 0.01));
+        }
+        finish (s);
+        return s;
+    }
+
+    Sig glitch (double len)   // short bursts of noise and tone, cut up
+    {
+        auto s = make (len);
+        juce::Random rng (93);
+        size_t at = 0;
+        while (at < n (s))
+        {
+            const size_t piece = (size_t) (rate * (0.01 + 0.05 * rng.nextDouble()));
+            const bool tonal = rng.nextBool();
+            const double f = 200.0 + rng.nextDouble() * 3000.0;
+            for (size_t i = 0; i < piece && at + i < n (s); ++i)
+            {
+                const double t = (double) i / rate;
+                s[at + i] = tonal ? (float) std::sin (twoPi * f * t) : (rng.nextFloat() * 2.0f - 1.0f);
+                s[at + i] *= (float) (1.0 - (double) i / (double) piece);
+            }
+            at += piece + (size_t) (rate * 0.02 * rng.nextDouble());
+        }
+        finish (s);
+        return s;
+    }
+
+    Sig tapeStop (double len)   // a chord slowing down until it stops
+    {
+        auto s = make (len);
+        double p1 = 0.0, p2 = 0.0, p3 = 0.0;
+        for (size_t i = 0; i < n (s); ++i)
+        {
+            const double t = (double) i / rate, speed = std::pow (juce::jmax (0.0, 1.0 - t / len), 2.0);
+            p1 += twoPi * 220.0 * speed / rate;
+            p2 += twoPi * 277.2 * speed / rate;
+            p3 += twoPi * 329.6 * speed / rate;
+            s[i] = (float) ((std::sin (p1) + std::sin (p2) + std::sin (p3)) * 0.3 * speed);
+        }
+        finish (s);
+        return s;
+    }
+
+    Sig windNoise (double len)
+    {
+        auto nz = noise (len, 94);
+        auto s = make (len);
+        double lp = 0.0;
+        for (size_t i = 0; i < n (s); ++i)
+        {
+            const double t = (double) i / rate;
+            const double cutoff = 300.0 + 700.0 * (0.5 + 0.5 * std::sin (twoPi * 0.31 * t)) + 400.0 * (0.5 + 0.5 * std::sin (twoPi * 0.77 * t + 1.0));
+            lp += (1.0 - std::exp (-twoPi * cutoff / rate)) * (nz[i] - lp);
+            s[i] = (float) (lp * (0.6 + 0.4 * std::sin (twoPi * 0.19 * t)));
+        }
+        finish (s, 0.5f);
+        return s;
+    }
+
+    Sig rainNoise (double len)
+    {
+        auto s = filtered (noise (len, 95), 1, 3500.0);
+        juce::Random rng (96);
+        for (size_t i = 0; i < n (s); ++i)
+            if (rng.nextInt (900) == 0)
+                for (size_t k = 0; k < 90 && i + k < n (s); ++k)
+                    s[i + k] += (rng.nextFloat() * 2.0f - 1.0f) * 0.5f * (float) std::exp (-(double) k / 22.0);
+        finish (s, 0.5f);
+        return s;
+    }
+
+    Sig tapeHiss (double len)
+    {
+        auto s = filtered (noise (len, 97), 1, 2500.0);
+        finish (s, 0.25f);
+        return s;
+    }
+
+    Sig drone (double freq, double len)
+    {
+        auto s = make (len);
+        saw (s, 0, freq, len, 700.0, 700.0, 2.0, 2.0, 0.4f, 0.03, 5);
+        saw (s, 0, freq * 1.5, len, 600.0, 600.0, 2.5, 2.0, 0.25f, 0.03, 4);
+        saw (s, 0, freq * 0.5, len, 400.0, 400.0, 1.5, 2.0, 0.3f, 0.02, 3);
+        finish (s, 0.6f);
+        return s;
+    }
+
+    Sig sweepNoise (double len, bool up)
+    {
+        auto nz = noise (len, 98);
+        auto s = make (len);
+        Biq f = Biq::make (2, 500.0, 2.0);
+        for (size_t i = 0; i < n (s); ++i)
+        {
+            const double x = (double) i / rate / len;
+            const double centre = up ? 300.0 * std::pow (30.0, x) : 9000.0 * std::pow (0.04, x);
+            if ((i & 31) == 0)
+            {
+                const auto z1 = f.z1, z2 = f.z2;
+                f = Biq::make (2, centre, 2.0);
+                f.z1 = z1;
+                f.z2 = z2;
+            }
+            s[i] = (float) (f.process (nz[i]) * 4.0 * juce::jmin (1.0, x * 20.0) * juce::jmin (1.0, (1.0 - x) * 10.0));
+        }
+        finish (s);
+        return s;
+    }
+
+    // an arpeggio: the notes one after the other on sixteenths, each a short pluck
+    Sig arpLoop (int bpm, std::vector<int> notes, double cutoff, int bars = 2, double gate = 1.6)
+    {
+        const double step = 60.0 / bpm / 4.0;
+        const size_t total = (size_t) (step * 16.0 * bars * rate);
+        auto out = make (step * 16.0 * bars + 1.0);
+        for (int i = 0; i < 16 * bars; ++i)
+            saw (out, (size_t) ((double) i * step * rate), midiHz (notes[(size_t) i % notes.size()]), step * gate, cutoff, cutoff * 0.25, 0.002, 0.08, 0.6f, 0.008, 2);
+        out.resize (total);
+        finish (out, 0.9f);
+        return out;
+    }
+
+    // a melody: (pitch, length in sixteenths) one after the other, pitch 0 is a rest
+    Sig melodyLoop (int bpm, std::initializer_list<std::pair<int, int>> notesAndSteps, double cutoff)
+    {
+        const double step = 60.0 / bpm / 4.0;
+        double steps = 0;
+        for (auto& p : notesAndSteps) steps += p.second;
+        auto out = make (steps * step + 0.5);
+        double t = 0;
+        for (auto& p : notesAndSteps)
+        {
+            if (p.first > 0)
+                saw (out, (size_t) (t * rate), midiHz (p.first), p.second * step * 0.9, cutoff, cutoff * 0.3, 0.004, 0.08, 0.6f, 0.01, 3);
+            t += p.second * step;
+        }
+        out.resize ((size_t) (steps * step * rate));
+        finish (out, 0.9f);
+        return out;
+    }
+
+    //==========================================================================
+    // pack version 6: families of sounds made in loops (every key, several tempos)
+
+    const char* const noteNames[12] = { "C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B" };
+
+    Sig bassLoopV (int bpm, const std::vector<std::pair<int, int>>& notesAndSteps, double cutoff)
+    {
+        const double step = 60.0 / bpm / 4.0;
+        double steps = 0;
+        for (auto& p : notesAndSteps) steps += p.second;
+        auto out = make (steps * step);
+        double t = 0;
+        for (auto& p : notesAndSteps)
+        {
+            if (p.first > 0)
+                saw (out, (size_t) (t * rate), midiHz (p.first), p.second * step * 0.95, cutoff * 2.0, cutoff * 0.5, 0.003, 0.05, 0.8f, 0.01, 2);
+            t += p.second * step;
+        }
+        finish (out, 0.9f);
+        return out;
+    }
+
+    Sig chordLoopV (int bpm, const std::vector<std::vector<int>>& chords, int stepsPerChord, double cutoff, double attack)
+    {
+        const double step = 60.0 / bpm / 4.0, each = step * stepsPerChord;
+        auto out = make (each * (double) chords.size());
+        for (size_t index = 0; index < chords.size(); ++index)
+            for (int note : chords[index])
+                saw (out, (size_t) (each * (double) index * rate), midiHz (note), each * 0.95, cutoff * 1.6, cutoff * 0.7, attack, 0.12, 0.4f, 0.012, 3);
+        finish (out, 0.9f);
+        return out;
+    }
+
+    Sig chordShot (int root, int kind, double len)   // 0 minor 7, 1 major 7, 2 dominant 7
+    {
+        static const int shapes[3][4] = { { 0, 3, 7, 10 }, { 0, 4, 7, 11 }, { 0, 4, 7, 10 } };
+        auto s = make (len);
+        for (int k = 0; k < 4; ++k)
+            saw (s, 0, midiHz (root + shapes[kind][k]), len, 5000.0, 700.0, 0.002, 0.3, 0.5f, 0.012, 3);
+        finish (s);
+        return s;
+    }
+
+    Sig superSaw (double freq, double len)
+    {
+        auto s = make (len);
+        saw (s, 0, freq, len, 7000.0, 4000.0, 0.01, 0.3, 0.8f, 0.045, 7);
+        finish (s);
+        return s;
+    }
+
+    Sig sineLead (double freq, double len)
+    {
+        auto s = make (len);
+        double phase = 0.0;
+        for (size_t i = 0; i < n (s); ++i)
+        {
+            const double t = (double) i / rate;
+            phase += twoPi * freq * (1.0 + 0.004 * std::sin (twoPi * 5.5 * t) * juce::jmin (1.0, t / 0.4)) / rate;
+            s[i] = (float) ((std::sin (phase) + 0.15 * std::sin (2.0 * phase)) * juce::jmin (1.0, t / 0.01) * juce::jmin (1.0, (len - t) / 0.2));
+        }
+        finish (s, 0.45f);
+        return s;
+    }
+
+    Sig subDrop (double len)
+    {
+        auto s = make (len);
+        double phase = 0.0;
+        for (size_t i = 0; i < n (s); ++i)
+        {
+            const double t = (double) i / rate;
+            phase += twoPi * (28.0 + 110.0 * std::exp (-t * 3.0)) / rate;
+            s[i] = (float) (std::sin (phase) * std::exp (-t * 1.1) * juce::jmin (1.0, t / 0.003));
+        }
+        finish (s);
+        return s;
+    }
+
+    Sig snareRoll (double len)   // snares that speed up and get louder
+    {
+        auto sn = snare (200, 20, 15, 0.2, 1500, 1.0);
+        auto s = make (len);
+        double t = 0.0, gap = 0.22;
+        while (t < len - 0.1)
+        {
+            mix (s, sn, (size_t) (t * rate), (float) (0.25 + 0.75 * t / len));
+            t += gap;
+            gap = juce::jmax (0.03, gap * 0.9);
+        }
+        finish (s);
+        return s;
+    }
+
+    Sig siren (double len, double lo, double hi, double rateHz)
+    {
+        auto s = make (len);
+        double phase = 0.0;
+        for (size_t i = 0; i < n (s); ++i)
+        {
+            const double t = (double) i / rate;
+            const double f = lo + (hi - lo) * (0.5 + 0.5 * std::sin (twoPi * rateHz * t));
+            phase += twoPi * f / rate;
+            const double sq = std::sin (phase) > 0 ? 1.0 : -1.0;
+            s[i] = (float) (0.6 * std::sin (phase) + 0.2 * sq) * (float) (juce::jmin (1.0, t / 0.02) * juce::jmin (1.0, (len - t) / 0.1));
+        }
+        finish (s, 0.5f);
+        return s;
+    }
+
+    Sig colouredNoise (double len, double lowpassHz, int seed)   // pink-ish (a low cutoff) or white-ish (a high one) noise bed
+    {
+        auto s = filtered (noise (len, seed), 0, lowpassHz);
+        finish (s, 0.5f);
+        return s;
+    }
+
+    Sig fillBar (int bpm, const char* snareP, const char* tomP, const Sig& sn, const Sig& tm)
+    {
+        const double step = 60.0 / bpm / 4.0;
+        auto out = make (step * 16 + 0.5);
+        for (int i = 0; i < 16; ++i)
+        {
+            const size_t at = (size_t) ((double) i * step * rate);
+            if (snareP[i] != '.')  mix (out, sn, at, snareP[i] == 'X' ? 0.9f : 0.5f);
+            if (tomP[i] != '.')    mix (out, tm, at, tomP[i] == 'X' ? 0.9f : 0.6f);
+        }
+        out.resize ((size_t) (step * 16 * rate));
+        finish (out, 0.9f);
+        return out;
+    }
+
+    struct Groove { const char* kick; const char* snare; const char* hat; const char* open; double swing; };
+
+    //==========================================================================
     struct Entry { const char* category; juce::String name; std::function<Sig()> make; double room = 0.0, roomDecay = 0.3, wide = 0.0; };   // (room / wide: a stereo sound)
 
     const std::vector<Entry>& catalog()
@@ -827,7 +1289,7 @@ namespace
         static const std::vector<Entry> list = []
         {
             std::vector<Entry> e;
-            auto add = [&] (const char* c, const char* name, std::function<Sig()> f, double room = 0.0, double roomDecay = 0.3, double wide = 0.0) { e.push_back ({ c, name, std::move (f), room, roomDecay, wide }); };
+            auto add = [&] (const char* c, const juce::String& name, std::function<Sig()> f, double room = 0.0, double roomDecay = 0.3, double wide = 0.0) { e.push_back ({ c, name, std::move (f), room, roomDecay, wide }); };
 
             add ("Kicks", "Kick Punch",  [] { return kick (150, 48, 28, 7, 0.5, 1.5, 0.15); });
             add ("Kicks", "Kick Deep",   [] { return kick (110, 38, 18, 4.5, 0.9, 1.2, 0.05); });
@@ -1087,6 +1549,279 @@ namespace
             add ("Variations", "Hat Closed 4 b",   [] { return metallic (0.07, 95, 9000, 12000, 179, 0.0, 0.0, 1.03); });
             add ("Variations", "Hat Closed 4 soft", [] { return metallic (0.06, 100, 9000, 12000, 379, 0.0, 0.8); });
             add ("Variations", "Hat Closed Tick b", [] { return metallic (0.05, 130, 9500, 12500, 180, 0.0, 0.0, 1.03); });
+
+            // ---- pack version 5: even more
+            // vintage drum machines
+            add ("Kicks", "Kick 707",     [] { return kick (160, 50, 35, 6.0, 0.45, 1.3, 0.2); });
+            add ("Kicks", "Kick 606",     [] { return kick (130, 55, 30, 7.0, 0.4, 1.0, 0.1); });
+            add ("Kicks", "Kick Disco",   [] { return kick (120, 48, 26, 5.0, 0.5, 1.2, 0.15); });
+            add ("Kicks", "Kick Funk",    [] { return kickAcoustic (0.0, 12); }, 0.2, 0.25);
+            add ("Snares", "Snare 707",   [] { return snare (230, 35, 25, 0.25, 2400, 1.0); });
+            add ("Snares", "Snare 606",   [] { return snare (260, 40, 28, 0.22, 2800, 0.9, 6); });
+            add ("Snares", "Snare Disco", [] { return snare (200, 22, 16, 0.32, 1500, 1.0); }, 0.25, 0.3);
+            add ("Snares", "Snare Funk",  [] { return snareAcoustic (0.0, 36, 1.05); }, 0.25, 0.3);
+            add ("Claps", "Clap 808",     [] { return clap (3, 0.01, 20, 0.3, 1100); });
+            add ("Claps", "Clap Disco",   [] { return clap (5, 0.013, 11, 0.5, 1300); }, 0.3, 0.35);
+            add ("Hats", "Hat 808 Closed", [] { return hat808 (0.1, 40, 6000); });
+            add ("Hats", "Hat 808 Open",   [] { return hat808 (0.7, 6, 5500); });
+            add ("Hats", "Hat 808 Pedal",  [] { return hat808 (0.05, 80, 7000); });
+            add ("Toms", "Tom 808 Low",   [] { return tom (110, 70, 6, 0.8); });
+            add ("Toms", "Tom 808 Mid",   [] { return tom (160, 100, 7, 0.7); });
+            add ("Toms", "Tom 808 High",  [] { return tom (230, 150, 8, 0.6); });
+            add ("Percussion", "Cowbell 808", [] { return cowbell808(); });
+            add ("Percussion", "Conga 808",   [] { return tone (300, 220, 10, 0.4, 0.0); });
+            // world percussion
+            add ("Percussion", "Timbale High", [] { return tone (700, 600, 22, 0.4, 0.6); });
+            add ("Percussion", "Timbale Low",  [] { return tone (450, 380, 18, 0.45, 0.6); });
+            add ("Percussion", "Agogo High",   [] { return tone (1100, 1090, 14, 0.5, 0.8); });
+            add ("Percussion", "Agogo Low",    [] { return tone (800, 790, 14, 0.5, 0.8); });
+            add ("Percussion", "Guiro",        [] { return guiro(); });
+            add ("Percussion", "Castanet",     [] { return castanet(); });
+            add ("Percussion", "Tabla High",   [] { return membrane (330.0, 0.5, 9.0, 0.4, { { 1.0, 1.0, 1.0 }, { 1.5, 0.4, 1.2 }, { 2.0, 0.2, 1.6 } }); }, 0.12, 0.2);
+            add ("Percussion", "Tabla Low",    [] { return membrane (170.0, 0.7, 6.0, 0.3, { { 1.0, 1.0, 1.0 }, { 1.5, 0.4, 1.2 }, { 2.0, 0.2, 1.6 } }); }, 0.12, 0.2);
+            add ("Percussion", "Djembe Bass",  [] { return membrane (120.0, 0.8, 6.0, 0.5, { { 1.0, 1.0, 1.0 }, { 1.59, 0.3, 1.5 }, { 2.14, 0.15, 2.0 } }); }, 0.12, 0.2);
+            add ("Percussion", "Djembe Slap",  [] { return tone (520, 330, 22, 0.25, 0.9); });
+            add ("Percussion", "Frame Drum",   [] { return membrane (110.0, 0.9, 4.5, 0.2, { { 1.0, 1.0, 1.0 }, { 1.59, 0.35, 1.4 }, { 2.14, 0.2, 1.8 } }); }, 0.2, 0.3);
+            add ("Percussion", "Whistle",      [] { return tone (2200, 2300, 5, 0.5, 0.0); });
+            add ("Percussion", "Shaker Tight", [] { return shaker (0.08, 0.004, 40); });
+            // 808 and sub bass on every note, wobbles and FM
+            add ("Bass", "808 Sub Db1", [] { return bass808 (34.65, 2.4, 1.3); });
+            add ("Bass", "808 Sub Eb1", [] { return bass808 (38.89, 2.4, 1.3); });
+            add ("Bass", "808 Sub Gb1", [] { return bass808 (46.25, 2.2, 1.4); });
+            add ("Bass", "808 Sub Ab1", [] { return bass808 (51.91, 2.2, 1.4); });
+            add ("Bass", "808 Sub Bb1", [] { return bass808 (58.27, 2.0, 1.5); });
+            add ("Bass", "808 Sub B1",  [] { return bass808 (61.74, 2.0, 1.5); });
+            add ("Bass", "FM Bass A1",  [] { return fmBass (55.0, 1.2, 3.0); });
+            add ("Bass", "FM Bass E1",  [] { return fmBass (41.2, 1.4, 3.0); });
+            add ("Bass", "Wobble Bass A1", [] { return wobble (55.0, 2.0, 3.0, 900.0); });
+            add ("Bass", "Wobble Bass E1", [] { return wobble (41.2, 2.0, 2.0, 1200.0); });
+            add ("Bass", "Bass String E1", [] { return pluckString (41.2, 2.0, 0.998, 0.25, 21); });
+            add ("Bass", "Bass String A1", [] { return pluckString (55.0, 2.0, 0.998, 0.25, 22); });
+            // keys
+            add ("Keys", "Organ C3",      [] { return organ (midiHz (48), 2.0, { 1.0, 0.8, 0.6, 0.4, 0.3, 0.2 }); });
+            add ("Keys", "Organ E3",      [] { return organ (midiHz (52), 2.0, { 1.0, 0.8, 0.6, 0.4, 0.3, 0.2 }); });
+            add ("Keys", "Organ G3",      [] { return organ (midiHz (55), 2.0, { 1.0, 0.8, 0.6, 0.4, 0.3, 0.2 }); });
+            add ("Keys", "Organ Soft C3", [] { return organ (midiHz (48), 2.0, { 1.0, 0.5, 0.1, 0.0, 0.1, 0.0 }); });
+            add ("Keys", "Organ Soft E3", [] { return organ (midiHz (52), 2.0, { 1.0, 0.5, 0.1, 0.0, 0.1, 0.0 }); });
+            add ("Keys", "Organ Soft G3", [] { return organ (midiHz (55), 2.0, { 1.0, 0.5, 0.1, 0.0, 0.1, 0.0 }); });
+            add ("Keys", "Clav C3",       [] { return clav (midiHz (48), 1.0); });
+            add ("Keys", "Clav E3",       [] { return clav (midiHz (52), 1.0); });
+            add ("Keys", "Clav G3",       [] { return clav (midiHz (55), 1.0); });
+            add ("Keys", "Kalimba C5",    [] { return kalimba (midiHz (72), 2.0); });
+            add ("Keys", "Kalimba E5",    [] { return kalimba (midiHz (76), 2.0); });
+            add ("Keys", "Kalimba G5",    [] { return kalimba (midiHz (79), 2.0); });
+            add ("Keys", "Marimba E4",    [] { return marimba (midiHz (64), 1.5); });
+            add ("Keys", "Bell E5",       [] { return bell (midiHz (76), 3.0); }, 0.0, 0.3, 0.5);
+            add ("Keys", "E-Piano A3",    [] { return epiano (midiHz (57), 2.5); }, 0.0, 0.3, 0.4);
+            // plucked strings
+            add ("Plucks", "Guitar A2",       [] { return pluckString (110.0, 2.5, 0.996, 0.5, 7); });
+            add ("Plucks", "Guitar D3",       [] { return pluckString (146.8, 2.5, 0.996, 0.5, 8); });
+            add ("Plucks", "Guitar E3",       [] { return pluckString (164.8, 2.5, 0.996, 0.5, 9); });
+            add ("Plucks", "Guitar G3",       [] { return pluckString (196.0, 2.5, 0.996, 0.5, 10); });
+            add ("Plucks", "Guitar Muted E3", [] { return pluckString (164.8, 0.5, 0.97, 0.4, 11); });
+            add ("Plucks", "Nylon C4",        [] { return pluckString (261.6, 2.5, 0.997, 0.35, 12); });
+            add ("Plucks", "Nylon E4",        [] { return pluckString (329.6, 2.5, 0.997, 0.35, 13); });
+            add ("Plucks", "Harp C4",         [] { return pluckString (261.6, 3.5, 0.9985, 0.6, 14); }, 0.0, 0.3, 0.5);
+            add ("Plucks", "Harp G4",         [] { return pluckString (392.0, 3.5, 0.9985, 0.6, 15); }, 0.0, 0.3, 0.5);
+            add ("Plucks", "Banjo D4",        [] { return pluckString (293.7, 1.2, 0.99, 0.9, 16); });
+            add ("Plucks", "Pizzicato C4",    [] { return pluckString (261.6, 0.6, 0.97, 0.7, 17); });
+            add ("Plucks", "Pizzicato G3",    [] { return pluckString (196.0, 0.7, 0.97, 0.7, 18); });
+            // voices
+            add ("Vocal", "Vox Ah A3", [] { return vox (220.0, 2.5, 800, 1150, 2900); });
+            add ("Vocal", "Vox Oh A3", [] { return vox (220.0, 2.5, 450, 800, 2830); });
+            add ("Vocal", "Vox Ee A3", [] { return vox (220.0, 2.5, 400, 1700, 2600); });
+            add ("Vocal", "Vox Oo A3", [] { return vox (220.0, 2.5, 325, 700, 2530); });
+            add ("Vocal", "Vox Ah E4", [] { return vox (329.6, 2.5, 800, 1150, 2900); });
+            add ("Vocal", "Vox Oh E4", [] { return vox (329.6, 2.5, 450, 800, 2830); });
+            add ("Vocal", "Choir Ah Am", [] { Sig s = make (4.0); for (int note : { 57, 60, 64, 69 }) { auto v = vox (midiHz (note), 4.0, 800, 1150, 2900, 0.5); mix (s, v, 0, 0.5f); } finish (s); return s; }, 0.0, 0.3, 0.6);
+            add ("Vocal", "Choir Oh Fmaj7", [] { Sig s = make (4.0); for (int note : { 53, 57, 60, 64 }) { auto v = vox (midiHz (note), 4.0, 450, 800, 2830, 0.5); mix (s, v, 0, 0.5f); } finish (s); return s; }, 0.0, 0.3, 0.6);
+            add ("Vocal", "Choir Oo Cmaj", [] { Sig s = make (4.0); for (int note : { 48, 55, 60, 64 }) { auto v = vox (midiHz (note), 4.0, 325, 700, 2530, 0.5); mix (s, v, 0, 0.5f); } finish (s); return s; }, 0.0, 0.3, 0.6);
+            // brass and strings
+            add ("Synth", "Brass Stab Cm",   [] { return brassStab ({ 48, 51, 55, 60 }, 0.7); });
+            add ("Synth", "Brass Stab F",    [] { return brassStab ({ 53, 57, 60, 65 }, 0.7); });
+            add ("Synth", "Brass Stab G",    [] { return brassStab ({ 55, 59, 62, 67 }, 0.7); });
+            add ("Synth", "Strings Pad Am",  [] { return stringsPad ({ 57, 60, 64, 69 }, 4.0); }, 0.0, 0.3, 0.6);
+            add ("Synth", "Strings Pad C",   [] { return stringsPad ({ 48, 55, 60, 64 }, 4.0); }, 0.0, 0.3, 0.6);
+            add ("Synth", "Strings Pad Dm",  [] { return stringsPad ({ 50, 57, 62, 65 }, 4.0); }, 0.0, 0.3, 0.6);
+            // effects and textures
+            add ("FX", "Glitch",        [] { return glitch (1.0); });
+            add ("FX", "Tape Stop",     [] { return tapeStop (1.5); });
+            add ("FX", "Sweep Up 4s",   [] { return sweepNoise (4.0, true); });
+            add ("FX", "Sweep Down 4s", [] { return sweepNoise (4.0, false); });
+            add ("Textures", "Wind 8s",       [] { return windNoise (8.0); });
+            add ("Textures", "Rain 8s",       [] { return rainNoise (8.0); });
+            add ("Textures", "Tape Hiss 4s",  [] { return tapeHiss (4.0); });
+            add ("Textures", "Drone A1",      [] { return drone (55.0, 8.0); }, 0.0, 0.3, 0.6);
+            add ("Textures", "Drone E2",      [] { return drone (82.4, 8.0); }, 0.0, 0.3, 0.6);
+            add ("Textures", "Drone C2",      [] { return drone (65.4, 8.0); }, 0.0, 0.3, 0.6);
+
+            // more loops: grooves from other styles, arpeggios and melodies
+            add ("Loops", "Reggaeton 95 BPM",    [] { return drumLoop (95, "X..X..X...X..X..", "...X..X....X..X.", "x.x.x.x.x.x.x.x.", "................", kick (110, 45, 20, 4.5, 0.6, 1.3, 0.05), snare (250, 32, 22, 0.28, 2800, 1.15), metallic (0.07, 95, 9000, 12000, 79), metallic (0.4, 10, 7500, 10500, 83), 0.0); });
+            add ("Loops", "UK Garage 130 BPM",   [] { return drumLoop (130, "X.......X.......", "....X.......X..x", "x.x.x.x.x.x.x.x.", "..x.......x.....", kick (125, 45, 28, 5.5, 0.5, 1.2, 0.12), clap (4, 0.012, 16, 0.4, 1300), metallic (0.05, 130, 9500, 12500, 80), metallic (0.4, 10, 7500, 10500, 83), 0.2); });
+            add ("Loops", "Dubstep 140 BPM",     [] { return drumLoop (140, "X.........X.....", "........X.......", "x.x.x.x.x.x.x.x.", "..............x.", kick (85, 40, 10, 1.6, 1.0, 1.5, 0.05), snare (210, 26, 18, 0.3, 1600, 1.0, 6), metallic (0.07, 95, 9000, 12000, 79), metallic (0.4, 10, 7500, 10500, 83), 0.0); });
+            add ("Loops", "Jersey Club 140 BPM", [] { return drumLoop (140, "X..X..X...X.X...", "....X.......X...", "x.x.x.x.x.x.x.x.", "................", kick (110, 45, 20, 4.5, 0.5, 1.3, 0.1), clap (4, 0.012, 20, 0.3, 1400), metallic (0.06, 110, 9000, 12000, 80), metallic (0.4, 10, 7500, 10500, 83), 0.0); });
+            add ("Loops", "Afrobeat 105 BPM",    [] { return drumLoop (105, "X..X..X.X..X....", "....X.......X...", "x.xxx.xxx.xxx.xx", "................", kick (110, 48, 20, 4.5, 0.5, 1.2, 0.08), snare (190, 20, 15, 0.35, 1000, 0.95, 4), metallic (0.08, 85, 8500, 11500, 79), metallic (0.4, 10, 7500, 10500, 83), 0.05); });
+            add ("Loops", "Disco 118 BPM",       [] { return drumLoop (118, "X...X...X...X...", "....X.......X...", "x.x.x.x.x.x.x.x.", "..x...x...x...x.", kick (120, 48, 26, 5.0, 0.5, 1.2, 0.15), clap (5, 0.013, 11, 0.5, 1300), metallic (0.06, 120, 9000, 12000, 80), metallic (0.5, 8, 7000, 10000, 83), 0.0); });
+            add ("Loops", "Funk 100 BPM",        [] { return drumLoop (100, "X..x..X...x.X...", "....X..x....X.x.", "x.xxx.xxx.xxx.xx", "................", kickAcoustic (0.0, 12), snareAcoustic (0.0, 36), metallic (0.08, 85, 8500, 11500, 79), metallic (0.4, 10, 7500, 10500, 83), 0.08); });
+            add ("Loops", "Rock 120 BPM",        [] { return drumLoop (120, "X.....X.X.......", "....X.......X...", "x.x.x.x.x.x.x.x.", "..............x.", kickAcoustic(), snareAcoustic(), metallic (0.1, 60, 7000, 10000, 71), metallic (0.6, 7, 6500, 9000, 74), 0.0); });
+            add ("Loops", "Half-time 70 BPM",    [] { return drumLoop (70, "X.......X.......", "........X.......", "x.x.x.x.x.x.x.x.", "..............x.", kick (100, 52, 16, 3, 0.55, 1.1, 0.05), snare (190, 20, 15, 0.35, 1000, 0.95, 4), metallic (0.1, 60, 7000, 10000, 71), metallic (0.5, 8, 6500, 9000, 74), 0.12); });
+            add ("Loops", "Arp Am 120 BPM",      [] { return arpLoop (120, { 57, 60, 64, 69, 64, 60 }, 3000); });
+            add ("Loops", "Arp Cm 130 BPM",      [] { return arpLoop (130, { 48, 51, 55, 60, 55, 51 }, 2800); });
+            add ("Loops", "Arp Dm 100 BPM",      [] { return arpLoop (100, { 50, 53, 57, 62, 57, 53 }, 3200); });
+            add ("Loops", "Arp Gm 140 BPM",      [] { return arpLoop (140, { 55, 58, 62, 67, 62, 58 }, 2600); });
+            add ("Loops", "Arp Em 110 BPM",      [] { return arpLoop (110, { 52, 55, 59, 64, 59, 55, 52, 59 }, 3400); });
+            add ("Loops", "Melody Am 100 BPM",   [] { return melodyLoop (100, { { 69, 4 }, { 72, 2 }, { 71, 2 }, { 69, 4 }, { 67, 2 }, { 64, 2 }, { 67, 4 }, { 0, 2 }, { 69, 2 }, { 71, 4 }, { 69, 4 } }, 3000); });
+            add ("Loops", "Melody C 120 BPM",    [] { return melodyLoop (120, { { 72, 2 }, { 76, 2 }, { 79, 4 }, { 76, 2 }, { 74, 2 }, { 72, 4 }, { 67, 2 }, { 69, 2 }, { 72, 4 }, { 0, 4 } }, 3400); });
+            add ("Loops", "Melody Em 90 BPM",    [] { return melodyLoop (90, { { 71, 4 }, { 74, 2 }, { 76, 2 }, { 74, 4 }, { 71, 4 }, { 67, 4 }, { 69, 2 }, { 71, 2 }, { 69, 4 }, { 0, 4 } }, 2600); });
+            add ("Loops", "Chords Fm Db Ab Eb 85 BPM", [] { return chordLoop (85, { { 53, 56, 60 }, { 49, 53, 56 }, { 56, 60, 63 }, { 51, 55, 58 } }, 16, 1500, 0.03); });
+            add ("Loops", "Chords C Am F G 110 BPM",   [] { return chordLoop (110, { { 48, 52, 55 }, { 57, 60, 64 }, { 53, 57, 60 }, { 55, 59, 62 } }, 16, 2000, 0.01); });
+
+            // ---- pack version 6: much more
+            // more drums, each a little different
+            add ("Kicks", "Kick Tight",   [] { return kick (150, 50, 40, 8.0, 0.35, 1.2, 0.15); });
+            add ("Kicks", "Kick Round",   [] { return kick (100, 46, 14, 4.0, 0.6, 1.0, 0.0); });
+            add ("Kicks", "Kick Boomy",   [] { return kick (75, 38, 9, 2.0, 1.2, 1.2, 0.0); });
+            add ("Kicks", "Kick Snap",    [] { return kick (200, 58, 60, 9.0, 0.3, 1.5, 0.4); });
+            add ("Kicks", "Kick Dub",     [] { return kick (85, 42, 11, 2.5, 1.0, 1.1, 0.0); });
+            add ("Kicks", "Kick Rubber",  [] { return kick (135, 44, 22, 5.0, 0.55, 1.8, 0.1); });
+            add ("Kicks", "Kick Pillow",  [] { return kick (95, 52, 15, 6.0, 0.4, 0.7, 0.0); });
+            add ("Kicks", "Kick Chunk",   [] { return kick (170, 55, 35, 6.5, 0.45, 2.0, 0.25); });
+            add ("Kicks", "Kick Gabber",  [] { return kick (180, 50, 30, 3.5, 0.7, 3.5, 0.3); });
+            add ("Kicks", "Kick Sine",    [] { return kick (80, 48, 14, 3.0, 0.7, 0.4, 0.0); });
+            add ("Snares", "Snare Wide",   [] { return snare (190, 18, 11, 0.42, 1300, 1.05); }, 0.3, 0.35);
+            add ("Snares", "Snare Thin",   [] { return snare (300, 50, 30, 0.2, 3000, 1.0); });
+            add ("Snares", "Snare Boxy",   [] { return snare (170, 24, 22, 0.28, 800, 0.8); });
+            add ("Snares", "Snare Slap",   [] { return snare (260, 45, 28, 0.22, 2600, 1.2); });
+            add ("Snares", "Snare Smack",  [] { return snare (230, 40, 26, 0.25, 2000, 1.3, 7); });
+            add ("Snares", "Snare Sizzle", [] { return snare (200, 22, 9, 0.5, 2200, 1.4); });
+            add ("Snares", "Snare Pop",    [] { return snare (330, 60, 36, 0.18, 3200, 0.9); });
+            add ("Snares", "Snare Whip",   [] { return snare (210, 30, 14, 0.36, 3600, 1.5); });
+            add ("Claps", "Clap Dry",     [] { return clap (3, 0.009, 30, 0.2, 1500); });
+            add ("Claps", "Clap Fat",     [] { return clap (6, 0.015, 10, 0.5, 900); });
+            add ("Claps", "Clap Crisp",   [] { return clap (4, 0.011, 24, 0.28, 2000); });
+            add ("Claps", "Clap Hall",    [] { return clap (5, 0.014, 9, 0.6, 1200); }, 0.5, 0.6);
+            add ("Claps", "Clap Layered", [] { return clap (7, 0.012, 14, 0.45, 1100); });
+            add ("Hats", "Hat Closed 5",    [] { return metallic (0.08, 85, 8500, 11500, 301); });
+            add ("Hats", "Hat Closed 6",    [] { return metallic (0.1, 70, 7500, 10500, 302); });
+            add ("Hats", "Hat Closed Dark", [] { return metallic (0.12, 50, 5000, 7500, 303); });
+            add ("Hats", "Hat Closed Bright", [] { return metallic (0.06, 110, 10000, 13000, 304); });
+            add ("Hats", "Hat Open 4",      [] { return metallic (0.5, 9, 7000, 10000, 305); });
+            add ("Hats", "Hat Open Dark",   [] { return metallic (0.8, 5, 5000, 7500, 306); });
+            add ("Toms", "Tom Sub",     [] { return tom (80, 45, 6, 1.0); });
+            add ("Toms", "Tom Tight",   [] { return tom (170, 110, 14, 0.4); });
+            add ("Toms", "Tom Rumble",  [] { return tom (120, 60, 5, 1.0); });
+            add ("Toms", "Tom Syn",     [] { return tom (260, 90, 18, 0.5); });
+            add ("Cymbals", "Ride Tight", [] { return cymbal (1.2, 3.0, 3000, 9000, 311, 0.3); }, 0.0, 0.3, 0.5);
+            add ("Cymbals", "Crash Dark", [] { return cymbal (3.5, 1.1, 1400, 8000, 312); }, 0.0, 0.3, 0.7);
+            add ("Cymbals", "Crash Bright", [] { return cymbal (2.4, 1.6, 2800, 13000, 313); }, 0.0, 0.3, 0.7);
+            add ("Percussion", "Conga High",   [] { return tone (400, 300, 14, 0.4, 0.0); });
+            add ("Percussion", "Shaker Soft",  [] { return shaker (0.2, 0.02, 18); });
+            add ("Percussion", "Click",        [] { return tone (4000, 3800, 200, 0.03, 0.0); });
+            add ("Percussion", "Wood Hit",     [] { return tone (700, 650, 40, 0.18, 0.4); });
+
+            // chords as one-shots, in every key: minor 7, major 7 and dominant 7
+            for (int r = 0; r < 12; ++r)
+            {
+                add ("Chords", juce::String ("Min7 ") + noteNames[r], [r] { return chordShot (48 + r, 0, 1.2); });
+                add ("Chords", juce::String ("Maj7 ") + noteNames[r], [r] { return chordShot (48 + r, 1, 1.2); });
+                add ("Chords", juce::String ("Dom7 ") + noteNames[r], [r] { return chordShot (48 + r, 2, 1.2); });
+            }
+
+            // more synth, voices and effects
+            add ("Synth", "Supersaw A3",   [] { return superSaw (midiHz (57), 1.5); }, 0.0, 0.3, 0.7);
+            add ("Synth", "Supersaw C4",   [] { return superSaw (midiHz (60), 1.5); }, 0.0, 0.3, 0.7);
+            add ("Synth", "Supersaw E4",   [] { return superSaw (midiHz (64), 1.5); }, 0.0, 0.3, 0.7);
+            add ("Synth", "Sine Lead A4",  [] { return sineLead (midiHz (69), 1.5); });
+            add ("Synth", "Sine Lead E4",  [] { return sineLead (midiHz (64), 1.5); });
+            add ("Synth", "Pad Detuned Am", [] { auto s = make (5.0); for (int note : { 45, 57, 60, 64 }) saw (s, 0, midiHz (note), 5.0, 2000, 1500, 1.0, 1.5, 0.35f, 0.04, 6); finish (s); return s; }, 0.0, 0.3, 0.7);
+            add ("Synth", "Pad Detuned C",  [] { auto s = make (5.0); for (int note : { 48, 55, 60, 64 }) saw (s, 0, midiHz (note), 5.0, 2000, 1500, 1.0, 1.5, 0.35f, 0.04, 6); finish (s); return s; }, 0.0, 0.3, 0.7);
+            add ("Synth", "Pluck Poly C",   [] { auto s = make (1.2); for (int note : { 60, 64, 67 }) saw (s, 0, midiHz (note), 1.2, 6000, 500, 0.001, 0.2, 0.6f, 0.006, 2); finish (s); return s; });
+            add ("Synth", "Pluck Poly Am",  [] { auto s = make (1.2); for (int note : { 57, 60, 64 }) saw (s, 0, midiHz (note), 1.2, 6000, 500, 0.001, 0.2, 0.6f, 0.006, 2); finish (s); return s; });
+            for (int note : { 57, 60, 64, 67 })
+            {
+                const juce::String nm = juce::String (noteNames[note % 12]) + juce::String (note / 12 - 1);
+                add ("Vocal", "Chop Ah " + nm, [note] { return vox (midiHz (note), 0.4, 800, 1150, 2900, 0.01); });
+                add ("Vocal", "Chop Oh " + nm, [note] { return vox (midiHz (note), 0.4, 450, 800, 2830, 0.01); });
+                add ("Vocal", "Chop Ee " + nm, [note] { return vox (midiHz (note), 0.4, 400, 1700, 2600, 0.01); });
+            }
+            add ("FX", "Riser 16s",     [] { return riser (16.0, true); });
+            add ("FX", "Riser 1s",      [] { return riser (1.0, true); });
+            add ("FX", "Sub Drop",      [] { return subDrop (2.0); });
+            add ("FX", "Snare Roll 2s", [] { return snareRoll (2.0); });
+            add ("FX", "Snare Roll 4s", [] { return snareRoll (4.0); });
+            add ("FX", "Siren",         [] { return siren (3.0, 600, 1400, 0.7); });
+            add ("FX", "Alarm",         [] { return siren (2.0, 800, 1000, 3.5); });
+            add ("FX", "Zap",           [] { return laser (0.3, true); });
+            add ("Textures", "Pink Noise 4s",  [] { return colouredNoise (4.0, 900.0, 401); });
+            add ("Textures", "White Noise 4s", [] { return colouredNoise (4.0, 15000.0, 402); });
+            add ("Textures", "Brown Noise 4s", [] { return colouredNoise (4.0, 200.0, 403); });
+
+            // drum loops: every genre at several tempos, in two grooves
+            {
+                struct Genre { const char* name; std::vector<int> tempos; std::vector<Groove> grooves; };
+                const std::vector<Genre> genres = {
+                    { "Hip-hop", { 80, 85, 90, 95, 100 }, { { "X.......X.X.....", "....X.......X..X", "x.x.x.x.x.x.x.x.", "................", 0.12 }, { "X..x....X.X..x..", "....X.......X...", "x.xxx.xxx.xxx.xx", "..............x.", 0.08 } } },
+                    { "House",   { 120, 124, 128 },        { { "X...X...X...X...", "....X.......X...", "..x...x...x...x.", "..............x.", 0.0 }, { "X...X...X...X...", "....X.......X...", "x.x.x.x.x.x.x.x.", "..x...x...x...x.", 0.0 } } },
+                    { "Techno",  { 125, 130, 135, 140 },   { { "X...X...X...X...", "............X...", "..x...x...x...x.", ".x.x.x.x.x.x.x.x", 0.0 }, { "X...X...X...X.x.", "....X.......X...", "x.x.x.x.x.x.x.x.", "................", 0.0 } } },
+                    { "Trap",    { 130, 140, 150, 160 },   { { "X.....x...X.....", "........X.......", "x.x.xxxxx.x.x.xx", "..............x.", 0.0 }, { "X.x...x.X.....x.", "........X.......", "x.x.x.x.xxx.xxxx", "................", 0.0 } } },
+                    { "Drum and Bass", { 170, 174, 178 },   { { "X.........x.....", "....X.......X...", "x.x.x.x.x.x.x.x.", "..............x.", 0.0 }, { "X.....x...X.....", "....X.......X..x", "x.xxx.x.x.xxx.x.", "................", 0.0 } } },
+                    { "Lo-fi",    { 70, 75, 80, 85 },       { { "X.......x.X.....", "....X.......X...", "x...x...x...x...", "................", 0.18 }, { "X.....x.x.......", "....X.......X..x", "x.x.x.x.x.x.x.x.", "..............x.", 0.15 } } },
+                    { "Drill",   { 140, 144 },             { { "X.......X..x....", "........X.......", "x.x.x.x.x.xxx.xx", "................", 0.0 }, { "X.....x...x.....", "........X......x", "x.xxx.x.xxx.x.xx", "................", 0.0 } } },
+                    { "Garage",  { 130, 132 },             { { "X.......X.......", "....X.......X..x", "x.x.x.x.x.x.x.x.", "..x.......x.....", 0.2 }, { "X.....x.X.......", "....X.......X...", ".x.x.x.x.x.x.x.x", "x...............", 0.2 } } } };
+                for (auto& g : genres)
+                    for (size_t gi = 0; gi < g.grooves.size(); ++gi)
+                        for (int bpm : g.tempos)
+                        {
+                            const Groove groove = g.grooves[gi];
+                            const juce::String genre = g.name;
+                            add ("Loops", genre + (gi == 0 ? " A " : " B ") + juce::String (bpm) + " BPM", [genre, groove, bpm]
+                            {
+                                Sig k, sn, h, o;
+                                if (genre == "Hip-hop")       { k = kick (130, 50, 25, 6, 0.5, 1.4, 0.1);  sn = snare (190, 16, 12, 0.35, 1400, 1.0); h = metallic (0.1, 60, 7000, 10000, 71); o = metallic (0.5, 8, 6500, 9000, 74); }
+                                else if (genre == "House")    { k = kick (125, 45, 28, 5.5, 0.5, 1.2, 0.12); sn = clap (4, 0.012, 16, 0.4, 1300);       h = metallic (0.05, 130, 9500, 12500, 80); o = metallic (0.4, 10, 7500, 10500, 83); }
+                                else if (genre == "Techno")   { k = kick (140, 48, 40, 6.5, 0.45, 1.8, 0.2); sn = clap (3, 0.01, 26, 0.25, 1600);        h = metallic (0.05, 130, 9500, 12500, 80); o = metallic (0.4, 10, 7500, 10500, 83); }
+                                else if (genre == "Trap")     { k = kick (85, 40, 10, 1.6, 1.0, 1.5, 0.05); sn = snare (250, 32, 22, 0.28, 2800, 1.15);  h = metallic (0.07, 95, 9000, 12000, 79);  o = metallic (0.4, 10, 7500, 10500, 83); }
+                                else if (genre == "Drum and Bass") { k = kick (120, 48, 30, 5, 0.5, 1.4, 0.2); sn = snare (280, 35, 24, 0.25, 3200, 1.2); h = metallic (0.06, 110, 9000, 12000, 80); o = metallic (0.35, 12, 7500, 10500, 83); }
+                                else if (genre == "Lo-fi")    { k = kick (115, 50, 18, 8, 0.45, 0.9, 0.02); sn = snare (180, 18, 13, 0.4, 900, 0.9, 5);  h = metallic (0.14, 40, 5500, 8000, 73);   o = metallic (0.5, 8, 6500, 9000, 74); }
+                                else if (genre == "Drill")    { k = kick (90, 42, 12, 2, 1.2, 1.4, 0.05);   sn = snare (240, 30, 20, 0.3, 2600, 1.1);   h = metallic (0.06, 100, 9000, 12000, 79); o = metallic (0.4, 10, 7500, 10500, 83); }
+                                else                          { k = kick (125, 45, 28, 5.5, 0.5, 1.2, 0.12); sn = clap (4, 0.012, 16, 0.4, 1300);       h = metallic (0.05, 130, 9500, 12500, 80); o = metallic (0.4, 10, 7500, 10500, 83); }
+                                return drumLoop (bpm, groove.kick, groove.snare, groove.hat, groove.open, k, sn, h, o, groove.swing);
+                            });
+                        }
+            }
+            // top loops and fills
+            add ("Loops", "Hat Loop 8th 100 BPM",   [] { return drumLoop (100, "................", "................", "x.x.x.x.x.x.x.x.", "................", kick (130, 50, 25, 6, 0.5, 1.4, 0.1), snare (190, 16, 12, 0.35, 1400, 1.0), metallic (0.08, 85, 8500, 11500, 301), metallic (0.5, 8, 6500, 9000, 74), 0.1); });
+            add ("Loops", "Hat Loop 16th 130 BPM",  [] { return drumLoop (130, "................", "................", "xxxxxxxxxxxxxxxx", "................", kick (130, 50, 25, 6, 0.5, 1.4, 0.1), snare (190, 16, 12, 0.35, 1400, 1.0), metallic (0.06, 110, 10000, 13000, 304), metallic (0.5, 8, 6500, 9000, 74), 0.0); });
+            add ("Loops", "Hat Roll 140 BPM",       [] { return drumLoop (140, "................", "................", "x.x.x.x.xxxxxxxx", "................", kick (130, 50, 25, 6, 0.5, 1.4, 0.1), snare (190, 16, 12, 0.35, 1400, 1.0), metallic (0.06, 110, 10000, 13000, 304), metallic (0.5, 8, 6500, 9000, 74), 0.0); });
+            add ("Loops", "Offbeat Hat 124 BPM",    [] { return drumLoop (124, "................", "................", "................", "..x...x...x...x.", kick (130, 50, 25, 6, 0.5, 1.4, 0.1), snare (190, 16, 12, 0.35, 1400, 1.0), metallic (0.06, 110, 10000, 13000, 304), metallic (0.4, 10, 7500, 10500, 83), 0.0); });
+            add ("Loops", "Shaker Loop 100 BPM",    [] { return drumLoop (100, "................", "................", "x.x.x.x.x.x.x.x.", "................", kick (130, 50, 25, 6, 0.5, 1.4, 0.1), snare (190, 16, 12, 0.35, 1400, 1.0), shaker (0.08, 0.004, 40), metallic (0.5, 8, 6500, 9000, 74), 0.1); });
+            add ("Loops", "Shaker Loop 120 BPM",    [] { return drumLoop (120, "................", "................", "xxxxxxxxxxxxxxxx", "................", kick (130, 50, 25, 6, 0.5, 1.4, 0.1), snare (190, 16, 12, 0.35, 1400, 1.0), shaker (0.07, 0.004, 45), metallic (0.5, 8, 6500, 9000, 74), 0.0); });
+            add ("Loops", "Tambourine Loop 110 BPM", [] { return drumLoop (110, "................", "................", "..x...x...x...x.", "................", kick (130, 50, 25, 6, 0.5, 1.4, 0.1), snare (190, 16, 12, 0.35, 1400, 1.0), metallic (0.35, 14, 6000, 9000, 91, 0.004), metallic (0.5, 8, 6500, 9000, 74), 0.05); });
+            add ("Loops", "Conga Loop 95 BPM",      [] { return drumLoop (95, "x..x..x...x.x...", "..x...x..x......", "................", "................", tone (340, 220, 14, 0.4, 0.0), tone (400, 300, 14, 0.4, 0.0), shaker (0.08, 0.004, 40), shaker (0.08, 0.004, 40), 0.05); });
+            add ("Loops", "Bongo Loop 100 BPM",     [] { return drumLoop (100, "x.x..x.x.x..x...", "..x.x...x...x.x.", "................", "................", tone (320, 250, 15, 0.35, 0.0), tone (480, 380, 18, 0.3, 0.0), shaker (0.08, 0.004, 40), shaker (0.08, 0.004, 40), 0.05); });
+            add ("Loops", "Clap Loop 125 BPM",      [] { return drumLoop (125, "................", "..x...x...x...x.", "................", "................", kick (130, 50, 25, 6, 0.5, 1.4, 0.1), clap (4, 0.012, 16, 0.4, 1300), shaker (0.08, 0.004, 40), shaker (0.08, 0.004, 40), 0.0); });
+            add ("Loops", "Snare Fill 90 BPM",      [] { return fillBar (90, "........x.x.xxXX", "................", snare (190, 16, 12, 0.35, 1400, 1.0), tom (130, 70, 8, 0.7)); });
+            add ("Loops", "Snare Fill 120 BPM",     [] { return fillBar (120, "........x.x.xxXX", "................", snare (200, 20, 15, 0.3, 1500, 1.0), tom (130, 70, 8, 0.7)); });
+            add ("Loops", "Tom Fill 100 BPM",        [] { return fillBar (100, "............X...", "X.x.x.X.X.x.xxX.", snare (190, 16, 12, 0.35, 1400, 1.0), tom (150, 80, 8, 0.7)); });
+            add ("Loops", "Tom Fill 130 BPM",        [] { return fillBar (130, "............X...", "X.x.x.X.X.x.xxX.", snare (200, 20, 15, 0.3, 1500, 1.0), tom (170, 100, 9, 0.6)); });
+
+            // bass loops in six keys, chords in six keys, arpeggios in six keys
+            {
+                const int roots[6] = { 33, 36, 38, 40, 41, 43 };   // A1, C2, D2, E2, F2, G2
+                const char* rootNames[6] = { "Am", "Cm", "Dm", "Em", "Fm", "Gm" };
+                for (int i = 0; i < 6; ++i)
+                {
+                    const int r = roots[i];
+                    const juce::String name = rootNames[i];
+                    add ("Loops", "Bass Loop " + name + " A 100 BPM", [r] { return bassLoopV (100, { { r, 3 }, { 0, 1 }, { r, 2 }, { r + 3, 2 }, { r + 5, 3 }, { 0, 1 }, { r + 3, 2 }, { r - 2, 2 } }, 900); });
+                    add ("Loops", "Bass Loop " + name + " B 130 BPM", [r] { return bassLoopV (130, { { r, 2 }, { r, 2 }, { 0, 2 }, { r + 7, 2 }, { r, 2 }, { r + 3, 2 }, { 0, 2 }, { r - 2, 2 } }, 1200); });
+                    const int c = r + 24;   // chords an octave and a half higher
+                    add ("Loops", "Chords " + name + " VI III VII 90 BPM", [c] { return chordLoopV (90, { { c, c + 3, c + 7 }, { c + 8, c + 12, c + 15 }, { c + 3, c + 7, c + 10 }, { c + 10, c + 14, c + 17 } }, 16, 1800, 0.01); });
+                    add ("Loops", "Chords " + name + " iv VII III 100 BPM", [c] { return chordLoopV (100, { { c, c + 3, c + 7 }, { c + 5, c + 8, c + 12 }, { c + 10, c + 14, c + 17 }, { c + 3, c + 7, c + 10 } }, 16, 1600, 0.02); });
+                    add ("Loops", "Arp " + name + " B 124 BPM", [c] { return arpLoop (124, { c, c + 3, c + 7, c + 12, c + 7, c + 3 }, 3000); });
+                    add ("Loops", "Arp " + name + " C 132 BPM", [c] { return arpLoop (132, { c + 12, c + 7, c + 3, c, c + 3, c + 7, c + 10, c + 7 }, 2800); });
+                }
+            }
             return e;
         }();
         return list;
@@ -1224,6 +1959,18 @@ namespace StarterPack
                            { P ("Kicks", "Kick Thump"), P ("Snares", "Snare Rock"), P ("Claps", "Clap Room"), P ("Hats", "Hat Closed 2"), P ("Hats", "Hat Open 2"),
                              P ("Toms", "Tom Floor"), P ("Toms", "Tom Rack"), P ("Cymbals", "Crash 2"), P ("Snares", "Rim Shot"), P ("Percussion", "Shaker"),
                              P ("Percussion", "Cowbell"), P ("Percussion", "Tambourine"), P ("Toms", "Tom Mid"), P ("Cymbals", "China"), P ("Cymbals", "Splash"), P ("Snares", "Snare Piccolo") } });
+            k.push_back ({ "Vintage 707", "An old drum machine: a short kick, a snappy snare, square-wave hats and a cowbell",
+                           { P ("Kicks", "Kick 707"), P ("Snares", "Snare 707"), P ("Claps", "Clap 808"), P ("Hats", "Hat 808 Closed"), P ("Hats", "Hat 808 Open"),
+                             P ("Toms", "Tom 808 Low"), P ("Toms", "Tom 808 High"), P ("Cymbals", "Crash"), P ("Snares", "Rim Click"), P ("Percussion", "Maracas"),
+                             P ("Percussion", "Cowbell 808"), P ("Percussion", "Tambourine"), P ("Toms", "Tom 808 Mid"), P ("Cymbals", "Ride"), P ("Percussion", "Clave"), P ("Percussion", "Conga 808") } });
+            k.push_back ({ "Disco Funk", "Four on the floor with a handclap, open hats and a bit of percussion",
+                           { P ("Kicks", "Kick Disco"), P ("Snares", "Snare Disco"), P ("Claps", "Clap Disco"), P ("Hats", "Hat Closed 909"), P ("Hats", "Hat Open 909"),
+                             P ("Toms", "Tom Rack"), P ("Toms", "Tom Floor"), P ("Cymbals", "Crash 2"), P ("Snares", "Rim Shot"), P ("Percussion", "Shaker Tight"),
+                             P ("Percussion", "Cowbell 808"), P ("Percussion", "Tambourine"), P ("Toms", "Tom 808 Mid"), P ("Cymbals", "Ride"), P ("Percussion", "Clave"), P ("Percussion", "Agogo High") } });
+            k.push_back ({ "World Percussion", "Hand drums and small percussion: djembe, tabla, timbales, guiro and more",
+                           { P ("Percussion", "Djembe Bass"), P ("Percussion", "Djembe Slap"), P ("Percussion", "Tabla High"), P ("Percussion", "Timbale High"), P ("Percussion", "Timbale Low"),
+                             P ("Percussion", "Tabla Low"), P ("Percussion", "Conga Low"), P ("Percussion", "Bongo High"), P ("Percussion", "Guiro"), P ("Percussion", "Shaker Long"),
+                             P ("Percussion", "Cabasa"), P ("Percussion", "Castanet"), P ("Percussion", "Agogo Low"), P ("Percussion", "Triangle"), P ("Percussion", "Whistle"), P ("Percussion", "Frame Drum") } });
             return k;
         }();
         return list;
