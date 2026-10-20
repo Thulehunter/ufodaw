@@ -89,10 +89,42 @@ public:
 
     ~SampleBrowserPanel() override { engine.stopPreview(); }
 
-    void paint (juce::Graphics& g) override { g.fillAll (Theme::panel); }
+    void paint (juce::Graphics& g) override
+    {
+        g.fillAll (Theme::panel);
+        if (getWidth() < 520)   // (docked at the side of the main window: a line on its right edge)
+        {
+            g.setColour (Theme::border);
+            g.fillRect (getWidth() - 1, 0, 1, getHeight());
+        }
+    }
 
     void resized() override
     {
+        if (getWidth() < 520)   // narrow (docked beside the tracks): everything under each other
+        {
+            auto r = getLocalBounds().reduced (10, 10);
+            search.setBounds (r.removeFromTop (28));
+            r.removeFromTop (6);
+            auto folderButtons = r.removeFromTop (26);
+            addFolderButton.setBounds (folderButtons.removeFromLeft (folderButtons.getWidth() / 2 - 3));
+            folderButtons.removeFromLeft (6);
+            removeFolderButton.setBounds (folderButtons);
+            r.removeFromTop (6);
+            auto bottom1 = r.removeFromBottom (28);
+            info.setBounds (r.removeFromBottom (22));
+            r.removeFromBottom (4);
+            autoPreview.setBounds (r.removeFromBottom (24));
+            r.removeFromBottom (4);
+            stopButton.setBounds (bottom1.removeFromLeft (70));
+            bottom1.removeFromLeft (6);
+            addButton.setBounds (bottom1);
+            const int folderHeight = juce::jlimit (90, 220, r.getHeight() / 3);
+            categories.setBounds (r.removeFromTop (folderHeight));
+            r.removeFromTop (8);
+            files.setBounds (r);
+            return;
+        }
         auto r = getLocalBounds().reduced (12);
         auto top = r.removeFromTop (28);
         search.setBounds (top.removeFromLeft (260));

@@ -3203,8 +3203,9 @@ MainComponent::MainComponent (int slot, std::shared_ptr<juce::AudioDeviceManager
     railPlugins.onClick = [this] { pluginHost.showManager(); };
     railTuner.onClick = [this] { openTuner(); };
     railMixer.onClick = [this] { openMixer(); };
+    railBrowser.onClick = [this] { toggleBrowserDock(); };
     railAudio.onClick = [this] { openAudioSettings(); };
-    for (auto* rb : { &railFile, &railAdd, &railPlugins, &railTuner, &railMixer, &railAudio })
+    for (auto* rb : { &railFile, &railAdd, &railPlugins, &railTuner, &railMixer, &railBrowser, &railAudio })
         addAndMakeVisible (rb);
     for (auto* pill : { &tempoButton, &countInButton, &undoButton, &redoButton, &stopAllButton })
         pill->getProperties().set ("pill", true);
@@ -3365,6 +3366,7 @@ MainComponent::~MainComponent()
     pluginHost.onEditorClosed = nullptr;
     mixerWindow.reset();
     meterWindow.reset();
+    dockBrowser.reset();   // (it uses the engine)
     browserWindow.reset();
     launcherWindow.reset();
     shortcutsWindow.reset();
@@ -5289,7 +5291,7 @@ void MainComponent::layoutContent()
         return;
 
     const int y0 = topBarHeight + rulerHeight;
-    constexpr int R = railWidth;
+    const int R = contentLeft();
     const int laneW = getWidth() - R - controlsWidth;
     const int rollH = rollVisible ? juce::jmin (rollHeight, getHeight() / 2) : 0;
     const int lanesH = juce::jmax (0, getHeight() - y0 - bottomBarHeight - rollH - masterHeight - 2);   // 2 px for the line above the master strip
@@ -5387,16 +5389,20 @@ void MainComponent::layoutMasterLane()
 
 void MainComponent::resized()
 {
-    constexpr int R = railWidth;
+    constexpr int Rail = railWidth;
+    const int R = contentLeft();   // (the tracks, the top bar and the transport start after the rail and the docked sample browser)
 
     // icon rail: file, add, plugins, tuner at the top; audio settings at the bottom
     constexpr int rb = 46;
-    railFile.setBounds (0, 8, R, rb);
-    railAdd.setBounds (0, 8 + rb + 4, R, rb);
-    railPlugins.setBounds (0, 8 + 2 * (rb + 4), R, rb);
-    railTuner.setBounds (0, 8 + 3 * (rb + 4), R, rb);
-    railMixer.setBounds (0, 8 + 4 * (rb + 4), R, rb);
-    railAudio.setBounds (0, getHeight() - rb - 10, R, rb);
+    railFile.setBounds (0, 8, Rail, rb);
+    railAdd.setBounds (0, 8 + rb + 4, Rail, rb);
+    railPlugins.setBounds (0, 8 + 2 * (rb + 4), Rail, rb);
+    railTuner.setBounds (0, 8 + 3 * (rb + 4), Rail, rb);
+    railMixer.setBounds (0, 8 + 4 * (rb + 4), Rail, rb);
+    railBrowser.setBounds (0, 8 + 5 * (rb + 4), Rail, rb);
+    railAudio.setBounds (0, getHeight() - rb - 10, Rail, rb);
+    if (dockBrowser != nullptr)
+        dockBrowser->setBounds (Rail, 0, dockWidth, getHeight());
     fileButton.setBounds (railFile.getBounds());          // (the hidden buttons sit over their icons)
     addButton.setBounds (railAdd.getBounds());
     pluginsButton.setBounds (railPlugins.getBounds());
@@ -5478,14 +5484,15 @@ void MainComponent::resized()
 
 void MainComponent::paint (juce::Graphics& g)
 {
-    constexpr int R = railWidth;
+    constexpr int Rail = railWidth;
+    const int R = contentLeft();
     g.fillAll (Theme::background);
 
     // the icon rail, and the top bar with a thin red - orange - yellow strip along its lower edge
     g.setColour (Theme::rowDark);
-    g.fillRect (0, 0, R, getHeight());
+    g.fillRect (0, 0, Rail, getHeight());
     g.setColour (Theme::border);
-    g.fillRect (R - 1, 0, 1, getHeight());
+    g.fillRect (Rail - 1, 0, 1, getHeight());
 
     g.setColour (Theme::panel);
     g.fillRect (R, 0, getWidth() - R, topBarHeight);
@@ -5564,7 +5571,7 @@ void MainComponent::paintOverChildren (juce::Graphics& g)
 
     if (engine.getNumTracks() == 0)   // empty project: say what to do
     {
-        auto area = juce::Rectangle<int> (railWidth, topBarHeight + rulerHeight, getWidth() - railWidth, getHeight() - topBarHeight - rulerHeight - bottomBarHeight);
+        auto area = juce::Rectangle<int> (contentLeft(), topBarHeight + rulerHeight, getWidth() - contentLeft(), getHeight() - topBarHeight - rulerHeight - bottomBarHeight);
         auto block = area.withSizeKeepingCentre (800, 292);
         g.setColour (Theme::background.withAlpha (0.85f));
         g.fillRoundedRectangle (block.toFloat().expanded (24.0f, 16.0f), 14.0f);
@@ -6371,18 +6378,33 @@ void MainComponent::showUpdateInfo()
     });
 }
 
+// The sample browser sits beside the rail (a folder button on the rail shows and hides it); the menu item opens it too.
+void MainComponent::toggleBrowserDock()
+{
+    if (dockBrowser != nullptr)
+    {
+        removeChildComponent (dockBrowser.get());
+        dockBrowser.reset();
+        dockWidth = 0;
+    }
+    else
+    {
+        juce::Component::SafePointer<MainComponent> safe (this);
+        SampleBrowserPanel::Hooks hooks;
+        hooks.addToProject = [safe] (const juce::File& f) { if (safe != nullptr) safe->importFiles (juce::StringArray (f.getFullPathName()), nullptr, 0.0); };
+        dockBrowser = std::make_unique<SampleBrowserPanel> (engine, std::move (hooks));
+        dockWidth = dockPanelWidth;
+        addAndMakeVisible (*dockBrowser);
+    }
+    railBrowser.setOn (dockBrowser != nullptr);
+    resized();
+    repaint();
+}
+
 void MainComponent::openSampleBrowser()
 {
-    if (browserWindow != nullptr)
-    {
-        browserWindow->toFront (true);
-        return;
-    }
-    juce::Component::SafePointer<MainComponent> safe (this);
-    SampleBrowserPanel::Hooks hooks;
-    hooks.addToProject = [safe] (const juce::File& f) { if (safe != nullptr) safe->importFiles (juce::StringArray (f.getFullPathName()), nullptr, 0.0); };
-    auto closeIt = [safe] { juce::MessageManager::callAsync ([safe] { if (safe != nullptr) safe->browserWindow.reset(); }); };
-    browserWindow = std::make_unique<SampleBrowserWindow> (new SampleBrowserPanel (engine, std::move (hooks)), closeIt);
+    if (dockBrowser == nullptr)
+        toggleBrowserDock();
 }
 
 //==============================================================================

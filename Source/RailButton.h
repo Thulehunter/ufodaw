@@ -7,7 +7,7 @@
 class RailButton : public juce::Button
 {
 public:
-    enum class Icon { Menu, Add, Plugins, Tuner, Audio, Mixer };
+    enum class Icon { Menu, Add, Plugins, Tuner, Audio, Mixer, Folder };
 
     RailButton (Icon i, const juce::String& tip, bool accentFill = false) : juce::Button (tip), icon (i), accent (accentFill)
     {
@@ -17,7 +17,7 @@ public:
     void paintButton (juce::Graphics& g, bool highlighted, bool down) override
     {
         auto r = getLocalBounds().toFloat().reduced (3.0f);
-        juce::Colour fill = accent ? Theme::orange : Theme::panel;
+        juce::Colour fill = accent ? Theme::orange : on ? Theme::orange.withAlpha (0.4f) : Theme::panel;   // (on: the panel it opens is showing)
         if (down)             fill = fill.darker (0.25f);
         else if (highlighted) fill = fill.brighter (0.15f);
         g.setColour (fill);
@@ -58,6 +58,10 @@ public:
                     p.lineTo (x, c.y + 8.0f - h);
                 }
                 break;
+            case Icon::Folder:    // a folder
+                p.startNewSubPath (c.x - s, c.y - 6.0f);  p.lineTo (c.x - 2.0f, c.y - 6.0f);  p.lineTo (c.x, c.y - 3.0f);  p.lineTo (c.x + s, c.y - 3.0f);
+                p.lineTo (c.x + s, c.y + 7.0f);  p.lineTo (c.x - s, c.y + 7.0f);  p.closeSubPath();
+                break;
             case Icon::Audio:     // sliders
                 for (int i = -1; i <= 1; ++i)
                 {
@@ -70,7 +74,11 @@ public:
         g.strokePath (p, juce::PathStrokeType (1.9f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
     }
 
+public:
+    void setOn (bool shouldBeOn) { if (on != shouldBeOn) { on = shouldBeOn; repaint(); } }
+
 private:
     Icon icon;
     bool accent;
+    bool on = false;
 };

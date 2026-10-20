@@ -15,7 +15,7 @@
 <meta property="og:image" content="https://ufodaw.eu/icon.png">
 <meta name="twitter:card" content="summary">
 <script type="application/ld+json">
-{"@context":"https://schema.org","@type":"SoftwareApplication","name":"UFODAW","applicationCategory":"MultimediaApplication","applicationSubCategory":"Digital audio workstation","operatingSystem":"Windows","softwareVersion":"0.9.3.9","license":"https://www.gnu.org/licenses/agpl-3.0.html","url":"https://ufodaw.eu/","image":"https://ufodaw.eu/icon.png","downloadUrl":"https://github.com/Thulehunter/ufodaw/releases/latest","offers":{"@type":"Offer","price":"0","priceCurrency":"EUR"}}
+{"@context":"https://schema.org","@type":"SoftwareApplication","name":"UFODAW","applicationCategory":"MultimediaApplication","applicationSubCategory":"Digital audio workstation","operatingSystem":"Windows","softwareVersion":"0.9.3.10","license":"https://www.gnu.org/licenses/agpl-3.0.html","url":"https://ufodaw.eu/","image":"https://ufodaw.eu/icon.png","downloadUrl":"https://github.com/Thulehunter/ufodaw/releases/latest","offers":{"@type":"Offer","price":"0","priceCurrency":"EUR"}}
 </script>
 <script type="application/ld+json">
 {"@context":"https://schema.org","@type":"VideoObject","name":"UFODAW demo: record, arrange and mix","description":"A two-minute tour of UFODAW, a free digital audio workstation for Windows: piano roll, EQ and effects chain, track groups, freeze and the loudness meter.","thumbnailUrl":"https://ufodaw.eu/ufodaw-demo-poster.jpg","contentUrl":"https://ufodaw.eu/ufodaw-demo.mp4","uploadDate":"2026-10-19","duration":"PT2M19S"}
@@ -48,7 +48,7 @@
       <a class="btn primary" href="#download">Download for Windows</a>
       <a class="btn" href="#features">See what it does</a>
     </div>
-    <p class="meta">Version 0.9.3.9 · Free &amp; open source · AGPLv3 · Windows 64-bit · installer, no admin rights needed</p>
+    <p class="meta">Version 0.9.3.10 · Free &amp; open source · AGPLv3 · Windows 64-bit · installer, no admin rights needed</p>
   </section>
 
   <section class="strip" aria-label="Highlights">
@@ -208,7 +208,9 @@
   <section id="new" class="alt">
     <h2>What's new</h2>
     <div class="log">
-      <div><h3>0.9.3.9 <small>latest</small></h3><ul>
+      <div><h3>0.9.3.10 <small>latest</small></h3><ul>
+        <li><b>Sample browser on the left:</b> a folder button on the rail shows the browser beside the tracks. Browse the starter pack and folders of your own (add as many as you like), click a sound to hear it, drag it onto a track, a drum pad or the sampler, or press <i>Add to project</i>.</li></ul></div>
+      <div><h3>0.9.3.9</h3><ul>
         <li><b>Select several clips and notes with a rectangle:</b> drag a rectangle over the lanes (Shift adds) to select clips, Ctrl+A selects them all; move, copy, cut, paste and delete them together. In the piano roll and the drum pattern, drag a rectangle to select several notes or hits and copy, paste or duplicate them.</li>
         <li><b>Fixed:</b> the dialog of <i>My sounds</i> (save a synth sound under a name) could stay blocked or Cancel did not close it.</li>
         <li><b>Plugins in a separate process:</b> a VST3 plugin can now run in a helper process of its own. If it crashes, hangs or eats memory or graphics resources, UFODAW keeps running: the track goes silent (an effect lets the sound through), a message names the plugin and offers <i>Restart plugin</i>, which brings it back with the settings it had. Your project and autosave are untouched. Audio and MIDI are bit for bit the same as in the program and cost about 6 microseconds extra per block. Choose in <i>Plugins</i>: Automatic (plugins that gave trouble, and Waves), Always, or Never.</li></ul></div>
@@ -287,10 +289,10 @@
 
   <section id="download">
     <h2>Download</h2>
-    <p class="center">Grab <code>UFODAW-0.9.3.9-setup.exe</code> (the installer) from the Releases page and run it, or take <code>UFODAW-0.9.3.9-win64.zip</code>, unzip it anywhere and run <code>UFODAW.exe</code>. Double-click any <code>.mdaw</code> file to open a project directly.</p>
+    <p class="center">Grab <code>UFODAW-0.9.3.10-setup.exe</code> (the installer) from the Releases page and run it, or take <code>UFODAW-0.9.3.10-win64.zip</code>, unzip it anywhere and run <code>UFODAW.exe</code>. Double-click any <code>.mdaw</code> file to open a project directly.</p>
     <div class="cta center">
       <!-- TODO: replace # with your GitHub Releases URL -->
-      <a class="btn primary" href="#" id="dl">Download 0.9.3.9 (Windows 64-bit)</a>
+      <a class="btn primary" href="#" id="dl">Download 0.9.3.10 (Windows 64-bit)</a>
       <a class="btn" href="#" id="src">Source code</a>
     </div>
     <p class="meta center">Releases are not code-signed yet, so Windows SmartScreen may show a warning. Choose “More info” → “Run anyway”.</p>
@@ -336,7 +338,7 @@
     document.getElementById("fr-nav").href = fr;
     document.getElementById("fr-nav").target = "_blank";
     document.getElementById("fr-list").href = REPO + "/issues?q=label%3Aenhancement";
-    var VERSION = "0.9.3.9";   // (update with every release)
+    var VERSION = "0.9.3.10";   // (update with every release)
     var body = "**What happened?**\n\n\n**What did you expect?**\n\n\n**How can it be repeated?**\n1. \n2. \n3. \n\n**Version:** UFODAW " + VERSION + "\n**Windows version:**\n**Audio device and driver (ASIO / WASAPI):**\n**Plugins involved (name, maker):**\n";
     var bug = REPO + "/issues/new?labels=bug&title=" + encodeURIComponent("Bug: ") + "&body=" + encodeURIComponent(body);
     document.getElementById("bug").href = bug;

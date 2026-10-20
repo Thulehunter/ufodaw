@@ -106,6 +106,7 @@ class SampleBrowserWindow;
 class ClipLauncherWindow;
 class SynthWindow;
 class FxWindow;   // (FxPanel.h)
+class SampleBrowserPanel;   // (SampleBrowser.h)
 class SubLaneFooter;
 class TimeRuler;
 class PianoRoll;
@@ -206,6 +207,11 @@ public:
     void filesDropped (const juce::StringArray& files, int, int) override { importFiles (files, nullptr, 0.0); }
 
     static constexpr int railWidth = 52;        // the icon rail on the left
+    static constexpr int dockPanelWidth = 300;  // the sample browser docked beside the rail (when it is shown)
+    int dockWidth = 0;
+    int contentLeft() const { return railWidth + dockWidth; }   // where the tracks, the top bar and the transport start
+    std::unique_ptr<SampleBrowserPanel> dockBrowser;
+    void toggleBrowserDock();
     static constexpr int controlsWidth = 270;
     static constexpr int stripHeight = 110;
     static constexpr int topBarHeight = 56;
@@ -666,6 +672,7 @@ private:
                railPlugins { RailButton::Icon::Plugins, "Plugins: scan and manage VST3 plugins" },
                railTuner { RailButton::Icon::Tuner, "Tuner" },
                railMixer { RailButton::Icon::Mixer, "Mixer: faders, pan, mute, solo and meters of every track" },
+               railBrowser { RailButton::Icon::Folder, "Sample browser: your folders of sounds and the starter pack. Click a sound to hear it, drag it onto a track" },
                railAudio { RailButton::Icon::Audio, "Audio and MIDI settings" };
     juce::TextButton openButton { "Open" }, saveButton { "Save" }, saveAsButton { "Save As" }, exportButton { "Export WAV" },
                      exportStemsButton { "Export stems" };
