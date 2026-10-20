@@ -121,6 +121,7 @@ public:
     {
         track = t;
         clipId = id;
+        group.clear();
         repaint();
     }
 
@@ -131,6 +132,111 @@ public:
         main.beginEdit();
         main.getEngine().setMidiNotes (*track, clipId, {});
         repaint();
+    }
+
+    // ---- several hits selected at once (Ctrl+drag a rectangle, Shift+click adds one)
+    bool isNoteSelected (int i) const { return std::find (group.begin(), group.end(), i) != group.end(); }
+
+    bool deleteGroup()
+    {
+        if (! load() || group.size() < 2)
+            return false;
+        main.beginEdit();
+        std::vector<int> indices = group;
+        std::sort (indices.begin(), indices.end(), std::greater<int>());
+        for (int i : indices)
+            if (i >= 0 && i < (int) clip.notes.size())
+                clip.notes.erase (clip.notes.begin() + i);
+        group.clear();
+        main.getEngine().setMidiNotes (*track, clipId, clip.notes);
+        repaint();
+        return true;
+    }
+
+    bool copyGroup (bool cut)
+    {
+        if (! load() || group.size() < 2)
+            return false;
+        std::vector<Note> notes;
+        double first = 1.0e18;
+        for (int i : group)
+            if (i >= 0 && i < (int) clip.notes.size())
+            {
+                notes.push_back (clip.notes[(size_t) i]);
+                first = juce::jmin (first, clip.notes[(size_t) i].start);
+            }
+        if (notes.empty())
+            return false;
+        for (auto& n : notes)
+            n.start -= first;
+        RollPanel::noteClipboard = std::move (notes);
+        if (cut)
+            deleteGroup();
+        return true;
+    }
+
+    bool putNotes (const std::vector<Note>& notes, double at)
+    {
+        if (! load() || notes.empty())
+            return false;
+        main.beginEdit();
+        group.clear();
+        for (auto n : notes)
+        {
+            n.start += at;
+            if (n.start >= clip.length - 1.0e-6)
+                continue;
+            n.length = juce::jmin (n.length, clip.length - n.start);
+            clip.notes.push_back (n);
+            group.push_back ((int) clip.notes.size() - 1);
+        }
+        if (group.empty())
+        {
+            main.cancelEdit();
+            return false;
+        }
+        main.getEngine().setMidiNotes (*track, clipId, clip.notes);
+        repaint();
+        return true;
+    }
+
+    bool pasteGroup (double atSeconds)
+    {
+        if (! load() || RollPanel::noteClipboard.empty())
+            return false;
+        // (on a step of the grid)
+        const double s = stepSeconds();
+        const double at = std::round (juce::jlimit (0.0, clip.length, atSeconds - clip.start) / s) * s;
+        return putNotes (RollPanel::noteClipboard, at);
+    }
+
+    bool duplicateGroup()
+    {
+        if (! load() || group.size() < 2)
+            return false;
+        std::vector<Note> notes;
+        double first = 1.0e18, last = 0.0;
+        for (int i : group)
+            if (i >= 0 && i < (int) clip.notes.size())
+            {
+                notes.push_back (clip.notes[(size_t) i]);
+                first = juce::jmin (first, clip.notes[(size_t) i].start);
+                last = juce::jmax (last, clip.notes[(size_t) i].start + clip.notes[(size_t) i].length);
+            }
+        for (auto& n : notes)
+            n.start -= first;
+        return putNotes (notes, std::ceil (last / stepSeconds() - 1.0e-9) * stepSeconds());   // (right after the group, on a step)
+    }
+
+    bool selectEverything()
+    {
+        if (! load() || clip.notes.empty())
+            return false;
+        group.clear();
+        for (int i = 0; i < (int) clip.notes.size(); ++i)
+            group.push_back (i);
+        repaint();
+        return true;
     }
 
     void paint (juce::Graphics& g) override
@@ -184,6 +290,11 @@ public:
                 continue;
             g.setColour (padColour (pad).withMultipliedBrightness (0.7f + 0.4f * n.velocity));
             g.fillRoundedRectangle (r.toFloat(), 3.0f);
+            if (isNoteSelected (i))
+            {
+                g.setColour (juce::Colours::white.withAlpha (0.9f));
+                g.drawRoundedRectangle (r.toFloat(), 3.0f, 1.5f);
+            }
             if (r.getWidth() > 12)   // small grips at both ends
             {
                 g.setColour (juce::Colours::white.withAlpha (i == hoverNote ? 0.5f : 0.22f));
@@ -200,6 +311,14 @@ public:
 
         g.setColour (Theme::playhead);
         g.drawVerticalLine (timeToX (main.getEngine().getPositionSeconds()), 0.0f, (float) getHeight());
+
+        if (marqueeOn)   // the selection rectangle
+        {
+            g.setColour (Theme::yellow.withAlpha (0.14f));
+            g.fillRect (marqueeRect);
+            g.setColour (Theme::yellow.withAlpha (0.8f));
+            g.drawRect (marqueeRect, 1);
+        }
     }
 
     void mouseDown (const juce::MouseEvent& e) override
@@ -230,8 +349,34 @@ public:
             return;
         }
 
+        if (e.mods.isShiftDown() && hit >= 0)   // Shift+click: a hit joins the selection, or leaves it
+        {
+            if (const auto found = std::find (group.begin(), group.end(), hit); found != group.end())
+                group.erase (found);
+            else
+                group.push_back (hit);
+            mode = Mode::None;
+            repaint();
+            return;
+        }
+
+        if (hit < 0 && e.mods.isCtrlDown())   // Ctrl+drag on an empty spot: a rectangle that selects the hits inside it (Shift adds)
+        {
+            marqueeBase = e.mods.isShiftDown() ? group : std::vector<int>();
+            group = marqueeBase;
+            marqueeStart = e.getPosition();
+            marqueeRect = { marqueeStart.x, marqueeStart.y, 0, 0 };
+            marqueeOn = true;
+            mode = Mode::Marquee;
+            repaint();
+            return;
+        }
+
         if (hit >= 0)
         {
+            const bool inGroup = group.size() > 1 && isNoteSelected (hit);
+            if (! inGroup)
+                group.clear();
             if (e.mods.isCtrlDown())   // velocity: drag up for harder, down for softer
             {
                 mode = Mode::Velocity;
@@ -244,9 +389,14 @@ public:
             // the ends of a hit change its length, the middle moves it (a click without a drag erases it, as before)
             active = hit;
             original = clip.notes[(size_t) hit];
+            groupOrig.clear();
+            if (inGroup)
+                for (int i : group)
+                    if (i >= 0 && i < (int) clip.notes.size())
+                        groupOrig.push_back ({ i, clip.notes[(size_t) i] });
             const auto r = noteRect (original, track->kit->padForNote (original.pitch));
             const int edge = edgeAt (r, e.x);
-            mode = edge > 0 ? Mode::ResizeEnd : edge < 0 ? Mode::ResizeStart : Mode::Move;
+            mode = edge > 0 ? Mode::ResizeEnd : edge < 0 && ! inGroup ? Mode::ResizeStart : Mode::Move;
             grabTime = xToTime (e.x) - (clip.start + original.start);
             main.getEngine().previewNote (*track, original.pitch, true, original.velocity);
             return;
@@ -258,6 +408,7 @@ public:
             return;
         }
 
+        group.clear();
         // an empty spot: a new hit; drag right to make it longer (Shift+drag paints one hit per step instead)
         mode = e.mods.isShiftDown() ? Mode::Paint : Mode::Stretch;
         apply (cell);
@@ -290,6 +441,21 @@ public:
             }
             clip.notes[(size_t) velIndex].velocity = v;
             main.getEngine().setMidiNotes (*track, clipId, clip.notes);
+            repaint();
+            return;
+        }
+
+        if (mode == Mode::Marquee)
+        {
+            marqueeRect = juce::Rectangle<int>::leftTopRightBottom (juce::jmin (marqueeStart.x, e.x), juce::jmin (marqueeStart.y, e.y),
+                                                                     juce::jmax (marqueeStart.x, e.x), juce::jmax (marqueeStart.y, e.y));
+            group = marqueeBase;
+            for (int i = 0; i < (int) clip.notes.size(); ++i)
+            {
+                const int pad = track->kit->padForNote (clip.notes[(size_t) i].pitch);
+                if (pad >= 0 && noteRect (clip.notes[(size_t) i], pad).intersects (marqueeRect) && ! isNoteSelected (i))
+                    group.push_back (i);
+            }
             repaint();
             return;
         }
@@ -334,6 +500,50 @@ public:
         auto& n = clip.notes[(size_t) active];
         if (std::abs (newStart - n.start) < 1.0e-9 && std::abs (newLength - n.length) < 1.0e-9 && newPitch == n.pitch)
             return;
+        if (group.size() > 1 && ! groupOrig.empty() && (mode == Mode::Move || mode == Mode::ResizeEnd))   // the whole selection follows
+        {
+            double dStart = newStart - original.start, dLength = newLength - original.length;
+            const int dPad = track->kit->padForNote (newPitch) - track->kit->padForNote (original.pitch);
+            double minStart = 1.0e18, maxEnd = 0.0;
+            int minPad = DrumKit::numPads, maxPad = 0;
+            for (auto& g : groupOrig)
+            {
+                const int pad = track->kit->padForNote (g.second.pitch);
+                minStart = juce::jmin (minStart, g.second.start);
+                maxEnd = juce::jmax (maxEnd, g.second.start + g.second.length);
+                minPad = juce::jmin (minPad, pad);
+                maxPad = juce::jmax (maxPad, pad);
+            }
+            int padShift = juce::jlimit (-minPad, DrumKit::numPads - 1 - maxPad, dPad);
+            if (mode == Mode::Move)
+            {
+                dStart = juce::jlimit (-minStart, juce::jmax (-minStart, clip.length - maxEnd), dStart);
+                dLength = 0.0;
+            }
+            else
+            {
+                dStart = 0.0;
+                padShift = 0;
+            }
+            if (! gestureEdited)
+            {
+                main.beginEdit();
+                gestureEdited = true;
+            }
+            moved = true;
+            for (auto& g : groupOrig)
+            {
+                auto& m = clip.notes[(size_t) g.first];
+                m.start = g.second.start + dStart;
+                m.length = juce::jmax (0.01, g.second.length + dLength);
+                const int pad = track->kit->padForNote (g.second.pitch);
+                if (pad >= 0)
+                    m.pitch = track->kit->getPad (juce::jlimit (0, DrumKit::numPads - 1, pad + padShift)).note;
+            }
+            main.getEngine().setMidiNotes (*track, clipId, clip.notes);
+            repaint();
+            return;
+        }
         if (std::abs (newStart - original.start) > 1.0e-9 || std::abs (newLength - original.length) > 1.0e-9 || newPitch != original.pitch)
             moved = true;
         if (! gestureEdited)
@@ -352,6 +562,22 @@ public:
 
     void mouseUp (const juce::MouseEvent& e) override
     {
+        if (mode == Mode::Marquee)
+        {
+            marqueeOn = false;
+            if (group.size() == 1)
+                group.clear();
+            repaint();
+            mode = Mode::None;
+            return;
+        }
+        // a click (no drag) on a hit of a selected group does not erase it
+        if (mode == Mode::Move && ! moved && group.size() > 1 && isNoteSelected (active))
+        {
+            mode = Mode::None;
+            active = -1;
+            return;
+        }
         // a click on a hit (no drag) erases it, like before
         if (mode == Mode::Move && ! moved && load() && active >= 0 && active < (int) clip.notes.size())
         {
@@ -402,7 +628,13 @@ public:
     }
 
 private:
-    enum class Mode { None, Paint, Stretch, Erase, Velocity, Move, ResizeStart, ResizeEnd };
+    enum class Mode { None, Paint, Stretch, Erase, Velocity, Move, ResizeStart, ResizeEnd, Marquee };
+    std::vector<int> group;                         // (every selected hit when there are several)
+    std::vector<std::pair<int, Note>> groupOrig;    // (those hits as they were when a drag began)
+    std::vector<int> marqueeBase;
+    juce::Point<int> marqueeStart;
+    juce::Rectangle<int> marqueeRect;
+    bool marqueeOn = false;
 
     // the rectangle of a hit (its whole row high), its grab zone at each end, and the hit under a point
     juce::Rectangle<int> noteRect (const Note& n, int pad) const
@@ -530,7 +762,7 @@ void DrumSequencer::showClip (Track* t, int id)
     clipId = id;
     grid->setClip (t, id);
     if (t != nullptr)
-        title.setText (t->name + "  -  drum pattern  (16th-note steps)", juce::dontSendNotification);
+        title.setText (t->name + "  -  drum pattern  (16th-note steps).  Drag the ends of a hit to stretch it, Ctrl+drag selects several", juce::dontSendNotification);
     pads->repaint();
     repaint();
 }
@@ -541,6 +773,11 @@ bool DrumSequencer::stillValid() const
 }
 
 void DrumSequencer::repaintGrid() { grid->repaint(); }
+bool DrumSequencer::deleteSelectedNote() { return grid->deleteGroup(); }
+bool DrumSequencer::copyNotes (bool cut) { return grid->copyGroup (cut); }
+bool DrumSequencer::pasteNotes (double atSeconds) { return grid->pasteGroup (atSeconds); }
+bool DrumSequencer::duplicateNotes() { return grid->duplicateGroup(); }
+bool DrumSequencer::selectAllNotes() { return grid->selectEverything(); }
 
 void DrumSequencer::paint (juce::Graphics& g)
 {

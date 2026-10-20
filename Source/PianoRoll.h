@@ -21,6 +21,11 @@ public:
 
     bool stillValid() const override;
     bool deleteSelectedNote() override;
+    bool copyNotes (bool cut) override;
+    bool pasteNotes (double atSeconds) override;
+    bool duplicateNotes() override;
+    bool selectAllNotes() override;
+    void repaintVelocity();
     void repaintGrid() override;
 
     void paint (juce::Graphics&) override;

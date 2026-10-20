@@ -15,5 +15,12 @@ public:
     virtual bool deleteSelectedNote() = 0;     // true if something was deleted
     virtual void repaintGrid() = 0;
 
+    // Several notes selected at once (a rectangle dragged over the notes with Shift): copy / cut, paste and duplicate act on them.
+    virtual bool copyNotes (bool /*cut*/) { return false; }          // true if notes were copied
+    virtual bool pasteNotes (double /*atSeconds*/) { return false; } // true if notes were pasted
+    virtual bool duplicateNotes() { return false; }                   // true if notes were duplicated
+    virtual bool selectAllNotes() { return false; }
+    static inline std::vector<Note> noteClipboard;                    // (the copied notes, their starts counted from the first one)
+
     std::function<void()> onClose;
 };

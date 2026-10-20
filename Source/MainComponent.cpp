@@ -1027,6 +1027,7 @@ public:
         const double t = e.x / pps;
 
         dragId = -1;
+        marqueePending = marqueeActive = groupDrag = false;
         resizing = false;
         edgeMode = 0;
         resizeAudio = false;
@@ -1137,7 +1138,8 @@ public:
             // either end of a clip resizes it, the middle moves it
             edgeMode = 0;
             resizeAudio = false;
-            if (r.getWidth() > 16)
+            groupDrag = main.inMultiSelection (&track, h.id);   // a clip of the selected group: the whole group moves
+            if (r.getWidth() > 16 && ! groupDrag)
                 edgeMode = e.x >= r.getRight() - 6 ? 1 : e.x <= r.getX() + 6 ? -1 : 0;
             if (edgeMode != 0)
             {
@@ -1154,11 +1156,19 @@ public:
                 }
             }
             resizing = edgeMode != 0;
-            main.selectClip (&track, dragId);
+            if (groupDrag)
+                groupOrig = main.groupStarts();
+            else
+                main.selectClip (&track, dragId);
             return;
         }
 
-        main.selectClip (nullptr, -1);
+        // an empty spot: a click puts the playhead here, a drag selects the clips inside the rectangle (Shift adds to the selection)
+        marqueeStart = e.getEventRelativeTo (&main.getLaneHolder()).getPosition();
+        marqueePending = true;
+        main.beginMarquee (e.mods.isShiftDown());
+        if (! e.mods.isShiftDown())
+            main.selectClip (nullptr, -1);
         main.setPlayhead (t);
     }
 
@@ -1287,7 +1297,40 @@ public:
 
         if (dragId < 0)
         {
-            main.setPlayhead (t);   // scrub
+            if (marqueePending)
+            {
+                const auto position = e.getEventRelativeTo (&main.getLaneHolder()).getPosition();
+                if (marqueeActive || marqueeStart.getDistanceFrom (position) >= 4)
+                {
+                    marqueeActive = true;
+                    main.updateMarquee (marqueeStart, position);
+                }
+            }
+            else
+                main.setPlayhead (t);   // scrub
+            return;
+        }
+
+        if (groupDrag)   // the selected clips move together (their tracks stay as they are)
+        {
+            double newStart = t - grabOffset;
+            if (! e.mods.isAltDown())
+                newStart = main.snapTime (newStart);
+            double delta = newStart - dragStart;
+            double earliest = 1.0e18;
+            for (auto& g : groupOrig)
+                earliest = juce::jmin (earliest, g.start);
+            delta = juce::jmax (delta, -earliest);
+            if (! edited)
+            {
+                if (std::abs (delta) < 1.0e-6)
+                    return;
+                main.beginEdit();
+                edited = true;
+            }
+            for (auto& g : groupOrig)
+                main.getEngine().moveClip (*g.track, g.id, g.start + delta);
+            main.clipsChanged();
             return;
         }
 
@@ -1452,8 +1495,25 @@ public:
         main.clipsChanged();
     }
 
+    // the ids of the clips (audio and MIDI) that touch a rectangle (in the coordinates of this lane)
+    std::vector<int> clipIdsIn (juce::Rectangle<int> area) const
+    {
+        std::vector<int> ids;
+        const double pps = main.getPixelsPerSecond();
+        for (auto& h : hits())
+            if (rectFor (h.start, h.length, pps).intersects (area))
+                ids.push_back (h.id);
+        return ids;
+    }
+
     void mouseUp (const juce::MouseEvent&) override
     {
+        if (marqueePending)
+        {
+            main.endMarquee();
+            marqueePending = marqueeActive = false;
+        }
+        groupDrag = false;
         if (rightPending && ! rightDragging)
             main.showClipMenu (track, rightClipId, rightTime, *this);
         rightPending = rightDragging = false;
@@ -2289,6 +2349,9 @@ private:
     int dragId = -1;
     Track* dragTrack = nullptr;   // the track the dragged clip currently lives on
     bool resizing = false;
+    bool marqueePending = false, marqueeActive = false, groupDrag = false;   // (a rectangle selection is being dragged / a group of clips is being moved)
+    juce::Point<int> marqueeStart;
+    std::vector<MainComponent::GroupStart> groupOrig;
     int edgeMode = 0;            // which end of the clip is being dragged: 1 = the end, -1 = the start (the middle moves the clip)
     bool resizeAudio = false;    // (an audio clip is trimmed; a MIDI clip is cut or repeated)
     Clip resizeAudioOriginal;
@@ -3518,6 +3581,7 @@ void MainComponent::selectClip (Track* t, int id)
         envelopeClipId = -1;   // editing a volume curve ends when another clip is selected
         envelopeTrack = nullptr;
     }
+    multiSel.clear();
     selTrack = t;
     selClip = id;
 
@@ -4774,6 +4838,7 @@ void MainComponent::restoreSnapshot (const ProjectState& state)
     hideRoll();
     selTrack = nullptr;
     selClip = -1;
+    multiSel.clear();
     headers.clear();   // they reference the Track objects that restoreState() replaces
     lanes.clear();
     subRows.clear();
@@ -5165,6 +5230,7 @@ void MainComponent::closeFxWindow (Track* t)
 
 void MainComponent::removeTrackUI (Track* t)
 {
+    multiSel.clear();
     closeFxWindow (t);
     if (mixerWindow != nullptr)
         mixerWindow->getPanel().detach();   // (the strips would point at the removed track)
@@ -5196,6 +5262,7 @@ void MainComponent::removeTrackUI (Track* t)
 
 void MainComponent::clearTracksUI()
 {
+    multiSel.clear();
     fxWindows.clear();
     if (mixerWindow != nullptr)
         mixerWindow->getPanel().detach();
@@ -5445,6 +5512,16 @@ void MainComponent::paintOverChildren (juce::Graphics& g)
 {
     if (tour != nullptr)
         return;   // (the quick tour is on top: its dimming should cover everything)
+    if (marqueeOn)   // the rectangle that is being dragged over the lanes
+    {
+        juce::Graphics::ScopedSaveState state (g);
+        g.reduceClipRegion (laneViewport.getBounds());
+        const auto r = getLocalArea (&laneHolder, marqueeRect);
+        g.setColour (Theme::yellow.withAlpha (0.14f));
+        g.fillRect (r);
+        g.setColour (Theme::yellow.withAlpha (0.8f));
+        g.drawRect (r, 1);
+    }
     // loop region, as a faint wash over the lanes
     if (engine.loopEnabled && engine.loopEnd > engine.loopStart)
     {
@@ -5561,15 +5638,108 @@ void MainComponent::splitAtPlayhead()
     clipsChanged();
 }
 
+// ---- several clips at once
+
+std::vector<std::pair<Track*, int>> MainComponent::selectedClips() const
+{
+    if (multiSel.size() > 1)
+        return multiSel;
+    if (selTrack != nullptr && selClip >= 0)
+        return { { selTrack, selClip } };
+    return {};
+}
+
+std::vector<MainComponent::GroupStart> MainComponent::groupStarts() const
+{
+    std::vector<GroupStart> out;
+    for (auto& s : multiSel)
+    {
+        MidiClip m;
+        Clip c;
+        if (engine.getMidiClip (*s.first, s.second, m))
+            out.push_back ({ s.first, s.second, m.start });
+        else if (engine.getClip (*s.first, s.second, c))
+            out.push_back ({ s.first, s.second, c.start });
+    }
+    return out;
+}
+
+void MainComponent::setMultiSelection (std::vector<std::pair<Track*, int>> sel)
+{
+    envelopeClipId = -1;
+    envelopeTrack = nullptr;
+    multiSel = std::move (sel);
+    selTrack = multiSel.empty() ? nullptr : multiSel.back().first;
+    selClip = multiSel.empty() ? -1 : multiSel.back().second;
+    updateArmedTrack();
+    laneHolder.repaint();
+    repaint();
+}
+
+void MainComponent::selectAllClips()
+{
+    std::vector<std::pair<Track*, int>> all;
+    for (int i = 0; i < engine.getNumTracks(); ++i)
+        if (auto* t = engine.getTrack (i); t != nullptr && ! engine.isMaster (*t))
+        {
+            for (auto& c : engine.getClips (*t))
+                all.push_back ({ t, c.id });
+            for (auto& m : engine.getMidiClips (*t))
+                all.push_back ({ t, m.id });
+        }
+    setMultiSelection (std::move (all));
+}
+
+void MainComponent::beginMarquee (bool additive)
+{
+    marqueeOn = false;
+    marqueeAdditive = additive;
+    marqueeBase = additive ? selectedClips() : std::vector<std::pair<Track*, int>>();
+}
+
+void MainComponent::updateMarquee (juce::Point<int> from, juce::Point<int> to)
+{
+    marqueeOn = true;
+    marqueeRect = juce::Rectangle<int>::leftTopRightBottom (juce::jmin (from.x, to.x), juce::jmin (from.y, to.y), juce::jmax (from.x, to.x), juce::jmax (from.y, to.y));
+    auto sel = marqueeBase;
+    for (auto* lane : lanes)
+    {
+        if (! lane->isVisible())
+            continue;
+        const auto bounds = lane->getBounds();
+        const auto part = marqueeRect.getIntersection (bounds);
+        if (part.isEmpty())
+            continue;
+        for (int id : lane->clipIdsIn (part.translated (-bounds.getX(), -bounds.getY())))
+        {
+            const std::pair<Track*, int> item { &lane->getTrack(), id };
+            if (std::find (sel.begin(), sel.end(), item) == sel.end())
+                sel.push_back (item);
+        }
+    }
+    setMultiSelection (std::move (sel));
+}
+
+void MainComponent::endMarquee()
+{
+    if (marqueeOn)
+    {
+        marqueeOn = false;
+        repaint();
+    }
+}
+
 void MainComponent::deleteSelected()
 {
     if (rollVisible && roll->deleteSelectedNote())   // a selected note goes before the clip
         return;
 
-    if (selTrack != nullptr && selClip >= 0)
+    const auto sel = selectedClips();
+    if (! sel.empty())
     {
         beginEdit();
-        engine.deleteClip (*selTrack, selClip);
+        for (auto& s : sel)
+            engine.deleteClip (*s.first, s.second);
         selectClip (nullptr, -1);
         clipsChanged();
     }
@@ -5577,6 +5747,24 @@ void MainComponent::deleteSelected()
 
 void MainComponent::duplicateSelected()
 {
+    if (rollVisible && roll->duplicateNotes())
+        return;
+    const auto sel = selectedClips();
+    if (sel.size() > 1)   // several clips: the copies go right after the group, on the same tracks
+    {
+        int base = 0;
+        double end = 0.0;
+        const auto items = clipboardItemsFor (sel, &base, &end);
+        beginEdit();
+        auto created = pasteItems (items, base, end);
+        if (created.empty())
+            cancelEdit();
+        else
+            setMultiSelection (std::move (created));
+        clipsChanged();
+        return;
+    }
+
     if (selTrack != nullptr && selClip >= 0)
     {
         beginEdit();
@@ -5587,25 +5775,66 @@ void MainComponent::duplicateSelected()
     }
 }
 
+std::vector<MainComponent::ClipboardItem> MainComponent::clipboardItemsFor (const std::vector<std::pair<Track*, int>>& sel, int* baseIndex, double* endTime) const
+{
+    std::vector<ClipboardItem> items;
+    std::vector<int> trackIndex;
+    std::vector<double> starts;
+    double end = 0.0;
+    for (auto& s : sel)
+    {
+        ClipboardItem item;
+        if (engine.isMidiClip (*s.first, s.second))
+            item.valid = engine.getMidiClip (*s.first, s.second, item.midi), item.isMidi = true;
+        else
+            item.valid = engine.getClip (*s.first, s.second, item.audio);
+        if (! item.valid)
+            continue;
+        const double start = item.isMidi ? item.midi.start : item.audio.start;
+        const double length = item.isMidi ? item.midi.length : item.audio.length;
+        end = juce::jmax (end, start + length);
+        items.push_back (std::move (item));
+        trackIndex.push_back (engine.indexOfTrack (s.first));
+        starts.push_back (start);
+    }
+    if (items.empty())
+        return items;
+    const int top = *std::min_element (trackIndex.begin(), trackIndex.end());
+    const double first = *std::min_element (starts.begin(), starts.end());
+    for (size_t i = 0; i < items.size(); ++i)
+    {
+        items[i].trackOffset = trackIndex[i] - top;
+        items[i].timeOffset = starts[i] - first;
+    }
+    if (baseIndex != nullptr)
+        *baseIndex = top;
+    if (endTime != nullptr)
+        *endTime = end;
+    return items;
+}
+
 void MainComponent::copySelected (bool cut)
 {
-    if (selTrack == nullptr || selClip < 0)
+    if (rollVisible && roll->copyNotes (cut))   // several notes selected in the roll: those go on the clipboard
+        return;
+    const auto sel = selectedClips();
+    if (sel.empty())
         return;
 
-    ClipboardItem item;
-    if (engine.isMidiClip (*selTrack, selClip))
-        item.valid = engine.getMidiClip (*selTrack, selClip, item.midi), item.isMidi = true;
-    else
-        item.valid = engine.getClip (*selTrack, selClip, item.audio);
-
-    if (! item.valid)
+    int base = 0;
+    auto items = clipboardItemsFor (sel, &base);
+    if (items.empty())
         return;
-    clipboard = std::move (item);
+    RollPanel::noteClipboard.clear();   // (the newest copy is what a paste uses)
+    clipboard = items.front();
+    clipboardGroup = items.size() > 1 ? items : std::vector<ClipboardItem>();
+    clipboardBaseIndex = base;
 
     if (cut)
     {
         beginEdit();
-        engine.deleteClip (*selTrack, selClip);
+        for (auto& s : sel)
+            engine.deleteClip (*s.first, s.second);
         selectClip (nullptr, -1);
         clipsChanged();
     }
@@ -5613,6 +5842,9 @@ void MainComponent::copySelected (bool cut)
 
 Track* MainComponent::pasteTargetTrack() const
 {
+    if (clipboardGroup.size() > 1)   // several clips: back on the tracks they came from
+        if (auto* t = engine.getTrack (clipboardBaseIndex); t != nullptr && ! engine.isMaster (*t))
+            return t;
     const auto type = clipboard.isMidi ? Track::Type::Midi : Track::Type::Audio;
     if (selTrack != nullptr && selTrack->type == type && ! engine.isMaster (*selTrack))
         return selTrack;
@@ -5622,31 +5854,71 @@ Track* MainComponent::pasteTargetTrack() const
     return nullptr;
 }
 
-void MainComponent::pasteClip (Track* target, double at)
+// One clip put on a track (a copy of what was copied); the id of the new clip, or -1.
+int MainComponent::addClipCopy (Track& target, const ClipboardItem& item, double at)
 {
-    if (! clipboard.valid || target == nullptr || engine.isMaster (*target))
-        return;
-    if (target->type != (clipboard.isMidi ? Track::Type::Midi : Track::Type::Audio))
-        return;
-
-    beginEdit();
+    if (target.type != (item.isMidi ? Track::Type::Midi : Track::Type::Audio))
+        return -1;
     int id = -1;
-    if (clipboard.isMidi)
+    if (item.isMidi)
     {
-        id = engine.addMidiClip (*target, at, clipboard.midi.length);
+        id = engine.addMidiClip (target, at, item.midi.length);
         if (id >= 0)
-            engine.setMidiNotes (*target, id, clipboard.midi.notes);
+        {
+            engine.setMidiNotes (target, id, item.midi.notes);
+            if (! item.midi.ccs.empty())
+                engine.setMidiCcs (target, id, item.midi.ccs);
+        }
     }
     else
     {
-        Clip c = clipboard.audio;
+        Clip c = item.audio;
         c.takeGroup = 0;   // a pasted take is an ordinary clip
         c.takeIndex = 0;
         c.takeActive = true;
         c.start = juce::jmax (0.0, at);
-        id = engine.addClip (*target, std::move (c));
+        id = engine.addClip (target, std::move (c));
+    }
+    return id;
+}
+
+std::vector<std::pair<Track*, int>> MainComponent::pasteItems (const std::vector<ClipboardItem>& items, int baseTrackIndex, double at)
+{
+    std::vector<std::pair<Track*, int>> created;
+    for (auto& item : items)
+        if (auto* t = engine.getTrack (baseTrackIndex + item.trackOffset); t != nullptr && ! engine.isMaster (*t))
+            if (const int id = addClipCopy (*t, item, at + item.timeOffset); id >= 0)
+                created.push_back ({ t, id });
+    return created;
+}
+
+void MainComponent::pasteClip (Track* target, double at)
+{
+    if (! clipboard.valid || target == nullptr || engine.isMaster (*target))
+        return;
+
+    if (clipboardGroup.size() > 1)   // several clips: each on its own track, in the same layout as when they were copied
+    {
+        const int base = engine.indexOfTrack (target);
+        if (base < 0)
+            return;
+        beginEdit();
+        auto created = pasteItems (clipboardGroup, base, at);
+        if (created.empty())
+        {
+            cancelEdit();
+            return;
+        }
+        setMultiSelection (std::move (created));
+        clipsChanged();
+        return;
     }
 
+    if (target->type != (clipboard.isMidi ? Track::Type::Midi : Track::Type::Audio))
+        return;
+
+    beginEdit();
+    const int id = addClipCopy (*target, clipboard, at);
     if (id < 0)
     {
         cancelEdit();
@@ -5941,10 +6213,16 @@ void MainComponent::buildCommands()
     // editing
     add ("undo", "Undo", "Edit", K ('Z', ctrl, 0), [this] { undo(); });
     add ("redo", "Redo", "Edit", K ('Y', ctrl, 0), [this] { redo(); });
+    add ("selectall", "Select every clip (drag a rectangle over the lanes to select some)", "Edit", K ('A', ctrl, 0), [this] { if (! (rollVisible && roll->selectAllNotes())) selectAllClips(); });
     add ("duplicate", "Duplicate the selected clip", "Edit", K ('D', ctrl, 0), [this] { duplicateSelected(); }, hasClip);
     add ("cut", "Cut the selected clip", "Edit", K ('X', ctrl, 0), [this] { copySelected (true); }, hasClip);
     add ("copy", "Copy the selected clip", "Edit", K ('C', ctrl, 0), [this] { copySelected (false); }, hasClip);
-    add ("paste", "Paste the clip at the playhead", "Edit", K ('V', ctrl, 0), [this] { pasteClip (pasteTargetTrack(), engine.getPositionSeconds()); });
+    add ("paste", "Paste the clip at the playhead", "Edit", K ('V', ctrl, 0), [this]
+        {
+            if (rollVisible && ! RollPanel::noteClipboard.empty() && roll->pasteNotes (engine.getPositionSeconds()))
+                return;
+            pasteClip (pasteTargetTrack(), engine.getPositionSeconds());
+        });
     add ("delete", "Delete the selected clip", "Edit", K (K::deleteKey), [this] { deleteSelected(); });
     add ("delete2", "Delete the selected clip (second key)", "Edit", K (K::backspaceKey), [this] { deleteSelected(); }, nullptr, true);
     add ("split", "Split at the playhead", "Edit", K ('S'), [this] { splitAtPlayhead(); });

@@ -20,7 +20,11 @@ public:
     int getClipId() const override { return clipId; }
 
     bool stillValid() const override;
-    bool deleteSelectedNote() override { return false; }   // cells are toggled with the mouse
+    bool deleteSelectedNote() override;                    // (several selected hits go; a single hit is toggled with the mouse)
+    bool copyNotes (bool cut) override;
+    bool pasteNotes (double atSeconds) override;
+    bool duplicateNotes() override;
+    bool selectAllNotes() override;
     void repaintGrid() override;
 
     void paint (juce::Graphics&) override;

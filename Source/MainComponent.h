@@ -307,7 +307,32 @@ public:
     void openClipPanel (Track&, int clipId);   // gain, stretch and pitch of an audio clip
     // right-click menu on a clip (clipId >= 0) or on an empty spot of a lane (clipId < 0)
     void showClipMenu (Track&, int clipId, double atSeconds, juce::Component& source);
-    bool isSelected (const Track* t, int clipId) const { return t == selTrack && clipId == selClip && clipId >= 0; }
+    bool isSelected (const Track* t, int clipId) const
+    {
+        if (clipId < 0)
+            return false;
+        if (t == selTrack && clipId == selClip)
+            return true;
+        for (auto& s : multiSel)
+            if (s.first == t && s.second == clipId)
+                return true;
+        return false;
+    }
+
+    // Several clips selected at once (drag a rectangle over the lanes, Shift adds, Ctrl+A selects every clip). The last one is also selTrack / selClip.
+    std::vector<std::pair<Track*, int>> multiSel;
+    bool inMultiSelection (const Track* t, int clipId) const { return multiSel.size() > 1 && isSelected (t, clipId); }
+    struct GroupStart { Track* track; int id; double start; };
+    std::vector<GroupStart> groupStarts() const;                     // where the selected clips are now (to move them together)
+    std::vector<std::pair<Track*, int>> selectedClips() const;       // the one selected clip, or all of them
+    void setMultiSelection (std::vector<std::pair<Track*, int>>);
+    void selectAllClips();
+    void beginMarquee (bool additive);
+    void updateMarquee (juce::Point<int> from, juce::Point<int> to);   // (in the coordinates of the lane holder)
+    void endMarquee();
+    juce::Rectangle<int> marqueeRect;
+    bool marqueeOn = false, marqueeAdditive = false;
+    std::vector<std::pair<Track*, int>> marqueeBase;
     void setPlayhead (double seconds);
     void zoomBy (double factor, int anchorX);
     void importFiles (const juce::StringArray& paths, Track* target, double timeSeconds);
@@ -466,7 +491,14 @@ private:
         bool valid = false, isMidi = false;
         Clip audio;
         MidiClip midi;
+        int trackOffset = 0;        // (several clips: the track, counted from the top-most one, and the time from the first one)
+        double timeOffset = 0.0;
     };
+    static inline std::vector<ClipboardItem> clipboardGroup;   // (empty unless several clips were copied)
+    static inline int clipboardBaseIndex = 0;                   // (the track the top-most copied clip was on)
+    std::vector<ClipboardItem> clipboardItemsFor (const std::vector<std::pair<Track*, int>>& sel, int* baseIndex = nullptr, double* endTime = nullptr) const;
+    int addClipCopy (Track& target, const ClipboardItem& item, double at);
+    std::vector<std::pair<Track*, int>> pasteItems (const std::vector<ClipboardItem>& items, int baseTrackIndex, double at);
     static inline ClipboardItem clipboard;   // (one for all projects: copy in one tab, paste in another)
     struct SectionClipboard { bool valid = false; RangeBundle bundle; ArrSection section; };
     static inline SectionClipboard sectionClipboard;

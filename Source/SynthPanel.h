@@ -313,8 +313,8 @@ private:
         {
             if (safe == nullptr || result == 0)
                 return;
-            if (result == 1)
-                safe->askNameAndSave();
+            if (result == 1)   // (a moment later: the menu is still closing, and a dialog opened inside its callback would stay blocked)
+                juce::MessageManager::callAsync ([safe] { if (safe != nullptr) safe->askNameAndSave(); });
             else if (result >= 1000 && result - 1000 < names.size())
                 safe->userFolder().getChildFile (names[result - 1000] + ".json").deleteFile();
             else if (result >= 100 && result - 100 < names.size())
@@ -345,7 +345,7 @@ private:
             const auto name = juce::File::createLegalFileName (box->getTextEditorContents ("name").trim());
             if (name.isNotEmpty())
                 saveUser (name, safe->track.synth.capture());
-        }));
+        }), true);   // (true: the dialog deletes itself when it is closed)
     }
 
     void timerCallback() override
