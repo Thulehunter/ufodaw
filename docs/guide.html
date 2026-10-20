@@ -307,6 +307,7 @@
         <li><b>Scanning</b> runs in a helper process (UFODAW starts itself as the helper), so a plugin that crashes while it is examined no longer takes the program down.</li>
         <li><b>Loading:</b> a plugin that crashed the program while it was loaded is skipped the next time, so the project opens without it. Open the Plugins window to allow it again.</li>
         <li><b>Playing:</b> a plugin that crashes while processing sound is caught and switched off. An effect lets the sound through, an instrument goes silent, and a message names the plugin. Save and reopen the project to load it again.</li>
+        <li><b>In a separate process:</b> in the Plugins window you can let VST3 plugins run in a helper process of their own (Automatic: plugins that gave trouble and Waves; Always; Never). If such a plugin crashes, hangs or runs out of memory, UFODAW keeps running; a message offers <b>Restart plugin</b>, which brings it back with its settings.</li>
       </ul>
     </section>
 
@@ -527,7 +528,7 @@ ufodaw.set_notes(track, clip, notes)</code></pre>
   ["fr-nav", "fr-link"].forEach(function (id) {
     var a = document.getElementById(id); a.href = fr; a.target = "_blank"; a.rel = "noopener";
   });
-  var VERSION = "0.9.3.8";   // (update with every release)
+  var VERSION = "0.9.3.9";   // (update with every release)
   var body = "**What happened?**\n\n\n**What did you expect?**\n\n\n**How can it be repeated?**\n1. \n2. \n3. \n\n**Version:** UFODAW " + VERSION + "\n**Windows version:**\n**Audio device and driver (ASIO / WASAPI):**\n**Plugins involved (name, maker):**\n";
   var bug = REPO + "/issues/new?labels=bug&title=" + encodeURIComponent("Bug: ") + "&body=" + encodeURIComponent(body);
   ["bug-nav", "bug-link"].forEach(function (id) {
