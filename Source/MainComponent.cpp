@@ -2836,7 +2836,7 @@ class AudioDeviceTab : public juce::Component
 {
 public:
     explicit AudioDeviceTab (juce::AudioDeviceManager& dm)
-        : selector (dm, 0, 256, 1, 256, false, false, true, false)
+        : selector (dm, 0, 256, 1, 256, true, false, true, false)   // (true: the list of MIDI inputs; UFODAW switches all of them on by itself, a device that stays off could not be opened: another program has it)
     {
         addAndMakeVisible (selector);
 
@@ -2856,7 +2856,7 @@ public:
             addAndMakeVisible (hint);
         }
         showsHint = ! hasAsio;
-        setSize (560, showsHint ? 600 : 530);
+        setSize (560, showsHint ? 720 : 650);
     }
 
     void resized() override
