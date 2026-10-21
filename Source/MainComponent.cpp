@@ -780,6 +780,14 @@ public:
         g.fillAll (Theme::background);
         g.setColour (Theme::laneBg);
         g.fillRoundedRectangle (juce::Rectangle<float> (0.0f, 2.0f, (float) getWidth(), (float) getHeight() - 4.0f), 8.0f);
+        if (main.getSelectedTrack() == &track)   // the selected track (also when it has no clip): a faint wash and an outline
+        {
+            const juce::Rectangle<float> laneRect (0.0f, 2.0f, (float) getWidth(), (float) getHeight() - 4.0f);
+            g.setColour (Theme::orange.withAlpha (0.07f));
+            g.fillRoundedRectangle (laneRect, 8.0f);
+            g.setColour (Theme::orange.withAlpha (0.45f));
+            g.drawRoundedRectangle (laneRect.reduced (0.75f), 8.0f, 1.5f);
+        }
 
         // grid
         const auto& map = main.getTempoMap();
@@ -1170,7 +1178,7 @@ public:
         marqueePending = true;
         main.beginMarquee (e.mods.isShiftDown());
         if (! e.mods.isShiftDown())
-            main.selectClip (nullptr, -1);
+            main.selectClip (&track, -1);   // (no clip, but this track: for live MIDI, pasting and the highlight)
         main.setPlayhead (main.snapClick (t, e.mods));
     }
 
@@ -3625,6 +3633,7 @@ void MainComponent::selectClip (Track* t, int id)
         roll->showClip (roll->getTrack(), roll->getClipId());   // also drops the selected note
 
     updateArmedTrack();
+    laneHolder.repaint();   // (the lanes show which track is selected)
     repaint();
 }
 

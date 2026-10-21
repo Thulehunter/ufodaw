@@ -304,7 +304,8 @@ public:
         return pitch >= 0 && pitch < 128 && ((mask.load() >> (pitch & 63)) & 1ull) != 0;
     }
 
-    void selectClip (Track*, int clipId);
+    void selectClip (Track*, int clipId);            // (a clip id of -1 selects the track only: an empty lane can be selected too)
+    const Track* getSelectedTrack() const { return selTrack; }
 
     // The clip whose volume curve is being edited (the points are shown and can be dragged); none by default.
     int getEnvelopeClip() const { return envelopeClipId; }
