@@ -64,6 +64,17 @@ Put it in the scripts folder as `Bass line.lua` and run it from the menu. The li
 | `ufodaw.get_notes(track, clip)` | the notes of a clip |
 | `ufodaw.set_notes(track, clip, notes)` | replaces the notes of a clip |
 
+## Drum kits, effects and the arrangement
+
+| Function | What it does |
+|---|---|
+| `ufodaw.drum_kits()` | the names of the drum kits of the starter pack |
+| `ufodaw.drum_kit(track, name)` | fills the pads of a drum track with a kit (`"Boom Bap"`, `"Trap Hard"`, `"World Percussion"`, ...), with its soft and round-robin versions |
+| `ufodaw.set_fx(track, { eqOn = true, eqHpFreq = 80, compOn = true, reverbOn = true, reverbMix = 0.3, ... })` | the effects of a track, or of the master with `"master"` instead of a track number. The names are those of the project file: `eq... comp... sat... chorus... delay... reverb... lim... gate... deEss... mb...` (numbers, and `true` / `false` for the `...On` switches); an unknown name is an error |
+| `ufodaw.set_sections({ { name = "Intro", bars = 4 }, { name = "Verse", bars = 16 } })` | the named parts of the arrangement, one after the other from bar 1 |
+
+With `UFODAW.exe --run-script script.lua save_as=song.mdaw` the project that a script built is saved to that file. A whole song can be written by one script.
+
 ## Audio files (tracks of kind `"audio"`)
 
 | Function | What it does |

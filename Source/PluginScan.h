@@ -89,7 +89,7 @@ namespace PluginScan
             }
 
             // wait for the answer; a plugin that hangs or crashes ends the wait
-            const auto deadline = juce::Time::getMillisecondCounter() + 30000u;
+            const auto deadline = juce::Time::getMillisecondCounter() + 180000u;   // (big instruments such as EZdrummer 3 load their sound libraries while they are scanned: that can take a minute)
             while (! gotReply && ! lost && ! shouldExit() && juce::Time::getMillisecondCounter() < deadline)
                 event.wait (100);
 

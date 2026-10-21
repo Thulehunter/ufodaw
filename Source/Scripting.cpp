@@ -441,6 +441,131 @@ namespace
         return 1;
     }
 
+    // ---- drum kits, effects, sections
+    int l_drum_kits (lua_State* L)
+    {
+        lua_newtable (L);
+        int n = 0;
+        for (auto& kit : StarterPack::kits())
+        {
+            lua_pushstring (L, kit.name.toRawUTF8());
+            lua_rawseti (L, -2, ++n);
+        }
+        return 1;
+    }
+
+    // ufodaw.drum_kit(track, "Boom Bap"): fills the pads of a drum track with the sounds of a kit of the starter pack (with the soft and round-robin versions)
+    int l_drum_kit (lua_State* L)
+    {
+        auto& c = ctx (L);
+        auto* t = trackArg (L, 1);
+        if (t->kit == nullptr)
+            luaL_error (L, "drum_kit needs a track of kind \"drums\"");
+        const juce::String wanted = luaL_checkstring (L, 2);
+        const StarterPack::Kit* found = nullptr;
+        for (auto& kit : StarterPack::kits())
+            if (kit.name.equalsIgnoreCase (wanted))
+                found = &kit;
+        if (found == nullptr)
+            luaL_error (L, "there is no kit called %s (ufodaw.drum_kits() lists them)", wanted.toRawUTF8());
+        StarterPack::ensureInstalled();
+        c.edit();
+        for (int pad = 0; pad < DrumKit::numPads && pad < (int) found->pads.size(); ++pad)
+        {
+            const auto file = StarterPack::sample (found->pads[(size_t) pad].first, found->pads[(size_t) pad].second);
+            if (! file.existsAsFile() || ! c.engine.replaceDrumSample (*t, pad, file))
+                continue;
+            auto& pd = t->kit->getPad (pad);
+            pd.velLo = 0.0f;
+            pd.velHi = 1.0f;
+            const auto variants = StarterPack::variantsOf (found->pads[(size_t) pad].first, found->pads[(size_t) pad].second);
+            int slot = 0;
+            if (variants.soft != juce::File() && c.engine.loadDrumLayer (*t, pad, slot, variants.soft))
+            {
+                pd.layers[(size_t) slot].velLo = 0.0f;
+                pd.layers[(size_t) slot].velHi = 0.5f;
+                pd.velLo = 0.5f;
+                ++slot;
+            }
+            for (auto& other : variants.roundRobin)
+                if (slot < DrumKit::maxLayers && c.engine.loadDrumLayer (*t, pad, slot, other))
+                {
+                    pd.layers[(size_t) slot].velLo = pd.velLo.load();
+                    pd.layers[(size_t) slot].velHi = 1.0f;
+                    ++slot;
+                }
+        }
+        return 0;
+    }
+
+    // ufodaw.set_fx(track or "master", { eqOn = true, eqHpFreq = 80, reverbOn = true, reverbMix = 0.3, ... }): the settings of the effects of a track (the names
+    // are those of the project file: eq..., comp..., sat..., chorus..., delay..., reverb..., lim..., gate..., deEss..., mb...)
+    int l_set_fx (lua_State* L)
+    {
+        auto& c = ctx (L);
+        Track* t = nullptr;
+        if (lua_type (L, 1) == LUA_TSTRING && juce::String (lua_tostring (L, 1)).equalsIgnoreCase ("master"))
+            t = &c.engine.getMaster();
+        else
+            t = trackArg (L, 1);
+        luaL_checktype (L, 2, LUA_TTABLE);
+        c.edit();
+        lua_pushnil (L);
+        while (lua_next (L, 2) != 0)
+        {
+            if (lua_type (L, -2) != LUA_TSTRING)
+                luaL_error (L, "the settings of an effect are named: eqOn = true, reverbMix = 0.3, ...");
+            const juce::String name = lua_tostring (L, -2);
+            bool known = false;
+            if (lua_isboolean (L, -1))
+            {
+                const bool value = lua_toboolean (L, -1) != 0;
+                t->fx.forEachBool ([&] (const char* n, std::atomic<bool>& b) { if (name == n) { b = value; known = true; } });
+            }
+            else if (lua_isnumber (L, -1))
+            {
+                if (auto* f = t->fx.findFloat (name))
+                {
+                    *f = (float) lua_tonumber (L, -1);
+                    known = true;
+                }
+            }
+            else
+                luaL_error (L, "the setting %s must be a number or true / false", name.toRawUTF8());
+            if (! known)
+                luaL_error (L, "there is no effect setting called %s", name.toRawUTF8());
+            lua_pop (L, 1);
+        }
+        return 0;
+    }
+
+    // ufodaw.set_sections({ { name = "Intro", bars = 4 }, { name = "Verse", bars = 16 }, ... }): the named parts of the arrangement, one after the other from bar 1
+    int l_set_sections (lua_State* L)
+    {
+        auto& c = ctx (L);
+        luaL_checktype (L, 1, LUA_TTABLE);
+        std::vector<ArrSection> list;
+        int bar = 0;
+        const int count = (int) luaL_len (L, 1);
+        for (int i = 1; i <= count; ++i)
+        {
+            lua_rawgeti (L, 1, i);
+            luaL_checktype (L, -1, LUA_TTABLE);
+            lua_getfield (L, -1, "name");
+            lua_getfield (L, -2, "bars");
+            ArrSection s;
+            s.name = lua_isstring (L, -2) ? lua_tostring (L, -2) : "Part";
+            s.bars = juce::jlimit (1, 999, (int) lua_tointeger (L, -1));
+            s.startBar = bar;
+            bar += s.bars;
+            list.push_back (s);
+            lua_pop (L, 3);
+        }
+        c.edit();
+        c.engine.setSections (std::move (list));
+        return 0;
+    }
+
     // ---- selection, rendering, messages
     int l_selected (lua_State* L)
     {
@@ -565,6 +690,7 @@ end
             { "synth_preset", l_synth_preset }, { "synth_presets", l_synth_presets }, { "set_synth", l_set_synth },
             { "selected", l_selected }, { "render", l_render },
             { "add_audio_clip", l_add_audio_clip }, { "starter_sound", l_starter_sound },
+            { "drum_kits", l_drum_kits }, { "drum_kit", l_drum_kit }, { "set_fx", l_set_fx }, { "set_sections", l_set_sections },
         };
         lua_newtable (L);
         for (auto& f : fns)

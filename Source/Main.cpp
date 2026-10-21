@@ -143,6 +143,11 @@ public:
                     // (a script in the folder of an extension can include() the other files of it)
                     const juce::File base = script.getParentDirectory().getChildFile ("extension.json").existsAsFile() ? script.getParentDirectory() : juce::File();
                     const auto result = Scripting::run (*tabs->getActive(), source, script.getFileName(), params, maxSeconds, base);
+                    if (result.ok && params.count ("save_as") && params["save_as"].isNotEmpty())   // (a project that a script built, saved for the user)
+                    {
+                        tabs->getActive()->saveForCommandLine (juce::File (params["save_as"]));
+                        std::cout << "saved " << params["save_as"] << std::endl;
+                    }
                     if (result.output.isNotEmpty())
                         std::cout << result.output << std::endl;
                     if (! result.ok)
