@@ -61,6 +61,7 @@ public:
         PluginCrash::install();
         registerProjectFileType();
         Scripting::ensureExamples();         // the example scripts (Lua)
+        Scripting::ensureExampleExtension(); // and an example extension
         StarterPack::ensureInstalled();      // the sounds, drum kits and project templates that are made by the program (a fraction of a second, once)
         ProjectTemplates::ensureWritten();
         juce::LookAndFeel::setDefaultLookAndFeel (&lookAndFeel);   // the warm red/orange/yellow theme
@@ -99,6 +100,18 @@ public:
             return;
         }
 
+        // "UFODAW.exe --install-extension extension.zip": installs an extension without a dialog (the tests use it), prints the problem or "installed"
+        if (commandLine.trim().startsWith ("--install-extension"))
+        {
+            auto args = juce::StringArray::fromTokens (commandLine.trim(), true);
+            args.removeRange (0, 1);
+            const auto problem = args.isEmpty() ? juce::String ("no zip given") : Scripting::installExtension (juce::File (args[0].unquoted()));
+            std::cout << (problem.isEmpty() ? juce::String ("installed") : "ERROR " + problem) << std::endl;
+            setApplicationReturnValue (problem.isEmpty() ? 0 : 1);
+            juce::MessageManager::callAsync ([this] { quit(); });
+            return;
+        }
+
         // "UFODAW.exe --run-script script.lua [project.mdaw] [name=value ...]": runs a Lua script without dialogs (on the project, if one is given), prints
         // what it printed and the error if there is one, and ends with exit code 0 (ok) or 1 (the script failed)
         if (commandLine.trim().startsWith ("--run-script"))
@@ -127,7 +140,9 @@ public:
                         if (params.find (p.key) == params.end())
                             params[p.key] = p.defaultValue;
                     const double maxSeconds = params.count ("max_seconds") ? params["max_seconds"].getDoubleValue() : 20.0;
-                    const auto result = Scripting::run (*tabs->getActive(), source, script.getFileName(), params, maxSeconds);
+                    // (a script in the folder of an extension can include() the other files of it)
+                    const juce::File base = script.getParentDirectory().getChildFile ("extension.json").existsAsFile() ? script.getParentDirectory() : juce::File();
+                    const auto result = Scripting::run (*tabs->getActive(), source, script.getFileName(), params, maxSeconds, base);
                     if (result.output.isNotEmpty())
                         std::cout << result.output << std::endl;
                     if (! result.ok)

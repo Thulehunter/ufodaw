@@ -10,6 +10,8 @@ $exampleFolder = "$env:APPDATA\UFODAW\Scripts"
 foreach ($name in 'Hello (tour of the project).lua', 'Chord progression.lua', 'Euclidean drums.lua', 'Random melody.lua') {
     if (Test-Path "$exampleFolder\$name") { $scripts += "$exampleFolder\$name" }
 }
+# the scripts of the example extension (they use include)
+foreach ($s in @(Get-ChildItem "$env:APPDATA\UFODAW\Extensions\Example - Drum patterns\*.lua" -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne 'patterns.lua' })) { $scripts += $s.FullName }
 $failed = 0
 foreach ($s in $scripts) {
     $expectFail = (Split-Path $s -Leaf).StartsWith('fail-')

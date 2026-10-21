@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.22)
 # Link the C++ runtime statically so UFODAW.exe runs on a PC without the Visual C++ Redistributable.
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
-project(UFODAW VERSION 0.9.5 LANGUAGES C CXX)
+project(UFODAW VERSION 0.9.5.1 LANGUAGES C CXX)
 
 # /EHa: catch(...) also catches access violations, so a crash in a plugin's window (or another callback from the message loop) is caught by JUCE's
 # loop and handled by UFODAWApplication::unhandledException instead of ending the program.

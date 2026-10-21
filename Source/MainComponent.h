@@ -230,7 +230,7 @@ public:
     void scriptSetBpm (double bpm);
     void scriptDone();                               // the project changed: show it
     std::pair<Track*, int> scriptSelection() const { return { selTrack, selClip }; }
-    void runScriptFile (const juce::File&);          // asks for the script's parameters, runs it, tells the result
+    void runScriptFile (const juce::File&, const juce::File& extensionFolder = {});   // asks for the script's parameters, runs it, tells the result
     void showScriptMenu();                           // a menu of the scripts in the scripts folder
     SyncViewport& getLaneViewport() { return laneViewport; }
     juce::Component& getLaneHolder() { return laneHolder; }

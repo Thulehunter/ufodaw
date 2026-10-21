@@ -1,6 +1,7 @@
 #include "Scripting.h"
 #include "MainComponent.h"
 #include "SynthPresets.h"
+#include "StarterPack.h"
 #include <algorithm>
 #include <cmath>
 #include <string>
@@ -50,6 +51,7 @@ namespace
         juce::StringArray output;
         juce::uint32 deadline = 0;
         double maxSeconds = 20.0;
+        juce::File baseFolder;   // (an extension's folder: where include() reads from)
 
         void edit()   // (the first change of the script starts its undo step)
         {
@@ -394,6 +396,51 @@ namespace
         return 0;
     }
 
+    // ---- audio files
+    juce::File audioFileArg (lua_State* L, int index)
+    {
+        const juce::String path = luaL_checkstring (L, index);
+        const auto file = juce::File::isAbsolutePath (path) ? juce::File (path)
+                                                              : juce::File::getSpecialLocation (juce::File::userDocumentsDirectory).getChildFile (path);
+        if (! juce::StringArray { ".wav", ".flac", ".aiff", ".aif", ".mp3", ".ogg" }.contains (file.getFileExtension().toLowerCase()))
+            luaL_error (L, "an audio file is a .wav, .flac, .aiff, .mp3 or .ogg file");
+        if (! file.existsAsFile())
+            luaL_error (L, "there is no file %s", file.getFullPathName().toRawUTF8());
+        return file;
+    }
+
+    // ufodaw.add_audio_clip(track, path, bar): an audio file as a clip on an audio track, from this bar (1 is the first)
+    int l_add_audio_clip (lua_State* L)
+    {
+        auto& c = ctx (L);
+        auto* t = trackArg (L, 1);
+        if (t->type != Track::Type::Audio || t->bus)
+            luaL_error (L, "add_audio_clip needs a track of kind \"audio\"");
+        const auto file = audioFileArg (L, 2);
+        const double bar = luaL_optnumber (L, 3, 1.0);
+        if (bar < 1.0)
+            luaL_error (L, "the first bar is 1 or more");
+        const double start = c.engine.getTempoMap().barStartSeconds ((int) std::floor (bar) - 1) + (bar - std::floor (bar)) * c.engine.getTempoMap().beatSecondsAt (0.0) * 4.0;
+        c.edit();
+        const int id = c.engine.addClipFromFile (*t, file, start);
+        if (id < 0)
+            luaL_error (L, "%s could not be opened", file.getFileName().toRawUTF8());
+        lua_pushinteger (L, id);
+        return 1;
+    }
+
+    // ufodaw.starter_sound("Kicks", "Kick Punch"): the path of a sound of the starter pack (see the sample browser for the names)
+    int l_starter_sound (lua_State* L)
+    {
+        const juce::String category = luaL_checkstring (L, 1), name = luaL_checkstring (L, 2);
+        StarterPack::ensureInstalled();
+        const auto file = StarterPack::sample (category, name);
+        if (! file.existsAsFile())
+            luaL_error (L, "the starter pack has no %s in %s", name.toRawUTF8(), category.toRawUTF8());
+        lua_pushstring (L, file.getFullPathName().toRawUTF8());
+        return 1;
+    }
+
     // ---- selection, rendering, messages
     int l_selected (lua_State* L)
     {
@@ -517,6 +564,7 @@ end
             { "add_clip", l_add_clip }, { "clips", l_clips }, { "get_notes", l_get_notes }, { "set_notes", l_set_notes },
             { "synth_preset", l_synth_preset }, { "synth_presets", l_synth_presets }, { "set_synth", l_set_synth },
             { "selected", l_selected }, { "render", l_render },
+            { "add_audio_clip", l_add_audio_clip }, { "starter_sound", l_starter_sound },
         };
         lua_newtable (L);
         for (auto& f : fns)
@@ -622,6 +670,41 @@ end
         }
         return status;
     }
+
+    // include("name"): runs name.lua from the extension's own folder (once) in the same sandbox and gives back what it returns
+    int l_include (lua_State* L)
+    {
+        auto& c = ctx (L);
+        const juce::String name = luaL_checkstring (L, 1);
+        if (c.baseFolder == juce::File())
+            luaL_error (L, "include is for the scripts of an extension (File > Scripts > an extension)");
+        if (name.isEmpty() || ! name.containsOnly ("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"))
+            luaL_error (L, "the name in include is letters, digits, _ and - (the file name without .lua)");
+
+        lua_getfield (L, LUA_REGISTRYINDEX, "ufodaw.included");
+        lua_getfield (L, -1, name.toRawUTF8());
+        if (! lua_isnil (L, -1))
+            return 1;
+        lua_pop (L, 1);
+
+        const auto file = c.baseFolder.getChildFile (name + ".lua");
+        if (! file.existsAsFile() || ! file.isAChildOf (c.baseFolder))
+            luaL_error (L, "this extension has no %s.lua", name.toRawUTF8());
+        const auto text = file.loadFileAsString().toStdString();
+        lua_getfield (L, LUA_REGISTRYINDEX, "ufodaw.env");
+        const int env = lua_gettop (L);
+        if (loadSandboxed (L, text, ("=" + name + ".lua").toStdString(), env) != LUA_OK)
+            return lua_error (L);
+        lua_call (L, 0, 1);
+        if (lua_isnil (L, -1))
+        {
+            lua_pop (L, 1);
+            lua_pushboolean (L, 1);
+        }
+        lua_pushvalue (L, -1);
+        lua_setfield (L, -4, name.toRawUTF8());   // (cached in ufodaw.included)
+        return 1;
+    }
 }
 
 //==============================================================================
@@ -646,11 +729,13 @@ std::vector<Param> readParams (const juce::String& source)
     return out;
 }
 
-Result run (MainComponent& main, const juce::String& source, const juce::String& chunkName, const std::map<juce::String, juce::String>& params, double maxSeconds)
+Result run (MainComponent& main, const juce::String& source, const juce::String& chunkName, const std::map<juce::String, juce::String>& params, double maxSeconds,
+              const juce::File& baseFolder)
 {
     Result result;
     Context c (main);
     c.maxSeconds = maxSeconds;
+    c.baseFolder = baseFolder;
     MemoryState memory;
 
     lua_State* L = lua_newstate (limitedAlloc, &memory);
@@ -675,6 +760,13 @@ Result run (MainComponent& main, const juce::String& source, const juce::String&
 
     pushSandbox (L, &c, params);
     const int env = lua_gettop (L);
+    lua_pushvalue (L, env);
+    lua_setfield (L, LUA_REGISTRYINDEX, "ufodaw.env");
+    lua_newtable (L);
+    lua_setfield (L, LUA_REGISTRYINDEX, "ufodaw.included");
+    lua_pushlightuserdata (L, &c);
+    lua_pushcclosure (L, l_include, 1);
+    lua_setfield (L, env, "include");
 
     // the globals that the sandbox leaves out are removed from the real global table as well, so nothing can reach them by accident
     for (auto* name : { "dofile", "loadfile", "load", "require", "collectgarbage", "io", "os", "debug", "package" })
@@ -874,6 +966,203 @@ void ensureExamples()
         if (! file.existsAsFile())
             file.replaceWithText (juce::String::fromUTF8 (e.text));
     }
+    marker.replaceWithText ("1");
+}
+//==============================================================================
+// Extensions
+
+juce::File extensionsFolder()
+{
+    return juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory).getChildFile ("UFODAW").getChildFile ("Extensions");
+}
+
+namespace
+{
+    bool safeRelativePath (const juce::String& path)
+    {
+        return path.isNotEmpty() && ! path.contains ("..") && ! path.contains (":") && ! path.contains ("\\") && ! path.startsWithChar ('/');
+    }
+
+    // reads one extension folder; an empty name means it is not one (or its manifest is broken)
+    Extension readExtension (const juce::File& folder)
+    {
+        Extension e;
+        const auto manifest = juce::JSON::parse (folder.getChildFile ("extension.json"));
+        if (! manifest.isObject())
+            return e;
+        e.name = manifest["name"].toString().trim();
+        e.version = manifest["version"].toString();
+        e.author = manifest["author"].toString();
+        e.description = manifest["description"].toString();
+        e.folder = folder;
+        if (auto* list = manifest["scripts"].getArray())
+            for (auto& item : *list)
+            {
+                const auto relative = item["file"].toString();
+                if (! safeRelativePath (relative) || ! relative.endsWithIgnoreCase (".lua"))
+                    continue;
+                const auto file = folder.getChildFile (relative);
+                if (! file.existsAsFile() || ! file.isAChildOf (folder))
+                    continue;
+                const auto title = item["title"].toString().trim();
+                e.scripts.push_back ({ title.isNotEmpty() ? title : file.getFileNameWithoutExtension(), item["description"].toString(), file });
+            }
+        return e;
+    }
+}
+
+std::vector<Extension> listExtensions()
+{
+    std::vector<Extension> out;
+    for (auto& folder : extensionsFolder().findChildFiles (juce::File::findDirectories, false))
+    {
+        auto e = readExtension (folder);
+        if (e.name.isNotEmpty())
+            out.push_back (std::move (e));
+    }
+    std::sort (out.begin(), out.end(), [] (const Extension& a, const Extension& b) { return a.name.compareNatural (b.name) < 0; });
+    return out;
+}
+
+juce::String installExtension (const juce::File& zipFile)
+{
+    juce::ZipFile zip (zipFile);
+    if (zip.getNumEntries() <= 0)
+        return "That is not a zip file, or it is empty.";
+
+    // the manifest, at the top of the zip or in the one folder that holds everything
+    int manifestIndex = -1;
+    juce::String prefix;
+    for (int i = 0; i < zip.getNumEntries(); ++i)
+    {
+        const auto name = zip.getEntry (i)->filename.replace ("\\", "/");   // (some zip programs write backslashes)
+        if (name == "extension.json")
+        {
+            manifestIndex = i;
+            prefix = {};
+            break;
+        }
+        if (name.endsWith ("/extension.json") && name.indexOfChar ('/') == name.lastIndexOfChar ('/'))
+        {
+            manifestIndex = i;
+            prefix = name.upToLastOccurrenceOf ("/", true, false);
+        }
+    }
+    if (manifestIndex < 0)
+        return "There is no extension.json in the zip (it belongs at the top, or in one folder).";
+
+    std::unique_ptr<juce::InputStream> manifestStream (zip.createStreamForEntry (manifestIndex));
+    const auto manifest = juce::JSON::parse (manifestStream != nullptr ? manifestStream->readEntireStreamAsString() : juce::String());
+    const auto name = manifest["name"].toString().trim();
+    if (! manifest.isObject() || name.isEmpty())
+        return "extension.json must be JSON with a \"name\".";
+
+    // what may be in it: no paths that leave the folder, only scripts, text, pictures and sounds, not too big
+    static const juce::StringArray allowed { ".lua", ".json", ".md", ".txt", ".png", ".jpg", ".wav", ".flac", ".mp3", ".ogg" };
+    juce::int64 total = 0;
+    std::vector<std::pair<int, juce::String>> files;
+    for (int i = 0; i < zip.getNumEntries(); ++i)
+    {
+        const auto* entry = zip.getEntry (i);
+        const auto entryName = entry->filename.replace ("\\", "/");
+        if (! entryName.startsWith (prefix) || entryName.endsWithChar ('/'))
+            continue;
+        const auto relative = entryName.substring (prefix.length());
+        if (! safeRelativePath (relative))
+            return "The zip contains a path that is not allowed: " + entry->filename;
+        if (! allowed.contains (juce::File (relative).getFileExtension().toLowerCase()))
+            return "The zip contains a file type that extensions may not have: " + relative;
+        total += entry->uncompressedSize;
+        files.push_back ({ i, relative });
+    }
+    if (total > 80 * 1024 * 1024)
+        return "The extension is bigger than 80 MB.";
+
+    const auto target = extensionsFolder().getChildFile (juce::File::createLegalFileName (name));
+    target.deleteRecursively();   // (installing it again updates it)
+    target.createDirectory();
+    for (auto& f : files)
+    {
+        const auto file = target.getChildFile (f.second);
+        if (! file.isAChildOf (target))
+        {
+            target.deleteRecursively();
+            return "The zip contains a path that is not allowed: " + f.second;
+        }
+        file.getParentDirectory().createDirectory();
+        std::unique_ptr<juce::InputStream> in (zip.createStreamForEntry (f.first));
+        std::unique_ptr<juce::FileOutputStream> out (file.createOutputStream());
+        if (in == nullptr || out == nullptr || out->writeFromInputStream (*in, -1) < 0)
+        {
+            target.deleteRecursively();
+            return "Could not write " + f.second;
+        }
+    }
+    if (readExtension (target).name.isEmpty())
+    {
+        target.deleteRecursively();
+        return "The extension could not be read after installing.";
+    }
+    return {};
+}
+
+void ensureExampleExtension()
+{
+    const auto marker = extensionsFolder().getChildFile (".example");
+    if (marker.existsAsFile())
+        return;
+    const auto folder = extensionsFolder().getChildFile ("Example - Drum patterns");
+    folder.createDirectory();
+    auto write = [&] (const char* name, const char* text) { folder.getChildFile (name).replaceWithText (juce::String::fromUTF8 (text)); };
+    write ("extension.json", R"JSON({
+  "name": "Example - Drum patterns",
+  "version": "1.0",
+  "author": "UFODAW",
+  "description": "Two small scripts that write drum patterns and share one file of patterns with include(). Copy this folder to start an extension of your own.",
+  "scripts": [
+    { "title": "Four on the floor", "file": "four-on-the-floor.lua", "description": "A house beat on a new drum track" },
+    { "title": "Backbeat", "file": "backbeat.lua", "description": "Kick and snare on the beats, a hat in between" }
+  ]
+}
+)JSON");
+    write ("patterns.lua", R"LUA(-- Shared by the scripts of this extension: they load it with include("patterns").
+local patterns = {}
+
+-- 16 steps for a bar: x is a hit, . is nothing
+patterns.house    = { kick = "x...x...x...x...", snare = "....x.......x...", hat = "..x...x...x...x." }
+patterns.backbeat = { kick = "x.......x.......", snare = "....x.......x...", hat = "x.x.x.x.x.x.x.x." }
+
+-- writes a pattern for `bars` bars on a new drum track and gives back the track
+function patterns.write(pattern, name, bars)
+  local track = ufodaw.add_track("drums", name)
+  local clip = ufodaw.add_clip(track, 1, bars)
+  local pitches = { kick = 36, snare = 38, hat = 42 }
+  local notes = {}
+  for bar = 0, bars - 1 do
+    for lane, steps in pairs(pattern) do
+      for i = 1, #steps do
+        if steps:sub(i, i) == "x" then
+          notes[#notes + 1] = { pitch = pitches[lane], beat = bar * 4 + (i - 1) * 0.25, length = 0.1, velocity = lane == "hat" and 0.6 or 0.9 }
+        end
+      end
+    end
+  end
+  ufodaw.set_notes(track, clip, notes)
+  return track
+end
+
+return patterns
+)LUA");
+    write ("four-on-the-floor.lua", R"LUA(--@param bars 4 Bars
+local patterns = include("patterns")
+patterns.write(patterns.house, "House beat", params.bars)
+print("A house beat of " .. params.bars .. " bars")
+)LUA");
+    write ("backbeat.lua", R"LUA(--@param bars 4 Bars
+local patterns = include("patterns")
+patterns.write(patterns.backbeat, "Backbeat", params.bars)
+print("A backbeat of " .. params.bars .. " bars")
+)LUA");
     marker.replaceWithText ("1");
 }
 }

@@ -27,10 +27,25 @@ namespace Scripting
     };
 
     // Runs a script on the message thread. `chunkName` is shown in error messages (the file name).
+    // `baseFolder` is the folder of an extension: its scripts can load the other .lua files of that folder with include("name") (nothing else is readable)
     Result run (MainComponent&, const juce::String& source, const juce::String& chunkName, const std::map<juce::String, juce::String>& params,
-                double maxSeconds = 20.0);
+                double maxSeconds = 20.0, const juce::File& baseFolder = {});
 
     juce::File scriptsFolder();                        // %APPDATA%\UFODAW\Scripts
     juce::Array<juce::File> listScripts();             // the .lua files, sorted by name
     void ensureExamples();                             // writes the example scripts the first time
+
+    // Extensions: a folder in %APPDATA%\UFODAW\Extensions with an extension.json (name, version, author, description and a list of scripts: title, file,
+    // description) and the .lua files. Their scripts show in File > Scripts, and can share code with include("name"). An extension is installed from a zip.
+    struct ExtensionScript { juce::String title, description; juce::File file; };
+    struct Extension
+    {
+        juce::String name, version, author, description;
+        juce::File folder;
+        std::vector<ExtensionScript> scripts;
+    };
+    juce::File extensionsFolder();
+    std::vector<Extension> listExtensions();
+    juce::String installExtension (const juce::File& zip);   // empty when it worked, otherwise what is wrong with the zip
+    void ensureExampleExtension();                            // an example to copy, the first time
 }

@@ -337,6 +337,8 @@
       <p>Scripts are small Lua programs that look at the project and change it: write a chord progression, spread a euclidean rhythm over a drum track, humanize a clip, set up many tracks at once, render the project. They are text files in <code>%APPDATA%\UFODAW\Scripts</code>; six examples are written there the first time.</p>
       <h3>Running a script</h3>
       <p><b>File &gt; Scripts (Lua)...</b>, or the command palette (<kbd>Ctrl</kbd>+<kbd>K</kbd>, <i>run a lua script</i>). The program asks for the settings of the script first, runs it, and shows what it printed. The whole run is <b>one undo step</b>, so <kbd>Ctrl</kbd>+<kbd>Z</kbd> takes back everything it did.</p>
+      <h3>Extensions</h3>
+      <p>An extension is a folder in <code>%APPDATA%\UFODAW\Extensions</code> with an <code>extension.json</code> (name, version, author, description and a list of scripts) and the <code>.lua</code> files. Its scripts show in <b>File &gt; Scripts</b> in a submenu with the name of the extension. A script can load the other files of its extension with <code>include("name")</code>. <b>Install an extension (zip)...</b> in the same menu installs one from a zip. An example, <i>Example - Drum patterns</i>, is written the first time: copy that folder to start your own. Scripts can also put audio files on audio tracks (<code>ufodaw.add_audio_clip</code>) and find sounds of the starter pack (<code>ufodaw.starter_sound</code>). The full list is in <a href="https://github.com/Thulehunter/ufodaw/blob/main/SCRIPTING.md">SCRIPTING.md</a>.</p>
       <h3>A first script</h3>
       <pre><code>--@param bars 4 How many bars
 local track = ufodaw.add_track("midi", "Bass line")
@@ -528,7 +530,7 @@ ufodaw.set_notes(track, clip, notes)</code></pre>
   ["fr-nav", "fr-link"].forEach(function (id) {
     var a = document.getElementById(id); a.href = fr; a.target = "_blank"; a.rel = "noopener";
   });
-  var VERSION = "0.9.5";   // (update with every release)
+  var VERSION = "0.9.5.1";   // (update with every release)
   var body = "**What happened?**\n\n\n**What did you expect?**\n\n\n**How can it be repeated?**\n1. \n2. \n3. \n\n**Version:** UFODAW " + VERSION + "\n**Windows version:**\n**Audio device and driver (ASIO / WASAPI):**\n**Plugins involved (name, maker):**\n";
   var bug = REPO + "/issues/new?labels=bug&title=" + encodeURIComponent("Bug: ") + "&body=" + encodeURIComponent(body);
   ["bug-nav", "bug-link"].forEach(function (id) {

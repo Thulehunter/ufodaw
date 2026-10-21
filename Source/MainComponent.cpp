@@ -6442,17 +6442,17 @@ void MainComponent::scriptDone()
     repaint();
 }
 
-void MainComponent::runScriptFile (const juce::File& file)
+void MainComponent::runScriptFile (const juce::File& file, const juce::File& extensionFolder)
 {
     const auto source = file.loadFileAsString();
     const auto params = Scripting::readParams (source);
     juce::Component::SafePointer<MainComponent> safe (this);
 
-    auto execute = [safe, file, source] (std::map<juce::String, juce::String> values)
+    auto execute = [safe, file, source, extensionFolder] (std::map<juce::String, juce::String> values)
     {
         if (safe == nullptr)
             return;
-        const auto result = Scripting::run (*safe, source, file.getFileName(), values);
+        const auto result = Scripting::run (*safe, source, file.getFileName(), values, 20.0, extensionFolder);
         if (! result.ok)
             juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "The script stopped: " + file.getFileNameWithoutExtension(),
                                                     result.error.substring (0, 900) + (result.output.isNotEmpty() ? "\n\nIt printed:\n" + result.output.substring (0, 400) : juce::String()));
@@ -6485,21 +6485,66 @@ void MainComponent::runScriptFile (const juce::File& file)
 void MainComponent::showScriptMenu()
 {
     Scripting::ensureExamples();
+    Scripting::ensureExampleExtension();
     const auto scripts = Scripting::listScripts();
+    const auto extensions = Scripting::listExtensions();
     juce::PopupMenu menu;
     for (int i = 0; i < scripts.size(); ++i)
         menu.addItem (100 + i, scripts[i].getFileNameWithoutExtension());
     if (scripts.isEmpty())
         menu.addItem (1, "(no scripts yet)", false);
+
+    // each extension is a submenu with its scripts (their ids count on from 1000)
+    std::vector<std::pair<juce::File, juce::File>> extensionScripts;   // (the script, the folder of its extension)
+    if (! extensions.empty())
+    {
+        menu.addSeparator();
+        for (auto& e : extensions)
+        {
+            juce::PopupMenu sub;
+            for (auto& s : e.scripts)
+            {
+                sub.addItem (1000 + (int) extensionScripts.size(), s.title);
+                extensionScripts.push_back ({ s.file, e.folder });
+            }
+            if (e.scripts.empty())
+                sub.addItem (1, "(this extension has no scripts)", false);
+            menu.addSubMenu (e.name + (e.version.isNotEmpty() ? "  " + e.version : juce::String()), sub);
+        }
+    }
     menu.addSeparator();
     menu.addItem (2, "Open the scripts folder");
+    menu.addItem (3, "Install an extension (zip)...");
+    menu.addItem (4, "Open the extensions folder");
     juce::Component::SafePointer<MainComponent> safe (this);
-    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&railFile), [safe, scripts] (int result)
+    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&railFile), [safe, scripts, extensionScripts] (int result)
     {
         if (safe == nullptr || result == 0)
             return;
         if (result == 2)
             Scripting::scriptsFolder().revealToUser();
+        else if (result == 4)
+        {
+            Scripting::extensionsFolder().createDirectory();
+            Scripting::extensionsFolder().revealToUser();
+        }
+        else if (result == 3)
+        {
+            auto chooser = std::make_shared<juce::FileChooser> ("Choose an extension (a zip file)", juce::File::getSpecialLocation (juce::File::userDocumentsDirectory), "*.zip");
+            chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles, [chooser] (const juce::FileChooser& fc)
+            {
+                const auto zip = fc.getResult();
+                if (! zip.existsAsFile())
+                    return;
+                const auto problem = Scripting::installExtension (zip);
+                if (problem.isNotEmpty())
+                    juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "The extension was not installed", problem);
+                else
+                    juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::InfoIcon, "Extension installed", "It is in File > Scripts now.");
+            });
+        }
+        else if (result >= 1000 && result - 1000 < (int) extensionScripts.size())
+            safe->runScriptFile (extensionScripts[(size_t) (result - 1000)].first, extensionScripts[(size_t) (result - 1000)].second);
         else if (result >= 100 && result - 100 < scripts.size())
             safe->runScriptFile (scripts[result - 100]);
     });
