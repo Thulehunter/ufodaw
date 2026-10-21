@@ -15,7 +15,7 @@
 <meta property="og:image" content="https://ufodaw.eu/icon.png">
 <meta name="twitter:card" content="summary">
 <script type="application/ld+json">
-{"@context":"https://schema.org","@type":"SoftwareApplication","name":"UFODAW","applicationCategory":"MultimediaApplication","applicationSubCategory":"Digital audio workstation","operatingSystem":"Windows","softwareVersion":"0.9.5.3","license":"https://www.gnu.org/licenses/agpl-3.0.html","url":"https://ufodaw.eu/","image":"https://ufodaw.eu/icon.png","downloadUrl":"https://github.com/Thulehunter/ufodaw/releases/latest","offers":{"@type":"Offer","price":"0","priceCurrency":"EUR"}}
+{"@context":"https://schema.org","@type":"SoftwareApplication","name":"UFODAW","applicationCategory":"MultimediaApplication","applicationSubCategory":"Digital audio workstation","operatingSystem":"Windows","softwareVersion":"0.9.5.4","license":"https://www.gnu.org/licenses/agpl-3.0.html","url":"https://ufodaw.eu/","image":"https://ufodaw.eu/icon.png","downloadUrl":"https://github.com/Thulehunter/ufodaw/releases/latest","offers":{"@type":"Offer","price":"0","priceCurrency":"EUR"}}
 </script>
 <script type="application/ld+json">
 {"@context":"https://schema.org","@type":"VideoObject","name":"UFODAW demo: record, arrange and mix","description":"A two-minute tour of UFODAW, a free digital audio workstation for Windows: piano roll, EQ and effects chain, track groups, freeze and the loudness meter.","thumbnailUrl":"https://ufodaw.eu/ufodaw-demo-poster.jpg","contentUrl":"https://ufodaw.eu/ufodaw-demo.mp4","uploadDate":"2026-10-19","duration":"PT2M19S"}
@@ -48,7 +48,7 @@
       <a class="btn primary" href="#download">Download for Windows</a>
       <a class="btn" href="#features">See what it does</a>
     </div>
-    <p class="meta">Version 0.9.5.3 · Free &amp; open source · AGPLv3 · Windows 64-bit · installer, no admin rights needed</p>
+    <p class="meta">Version 0.9.5.4 · Free &amp; open source · AGPLv3 · Windows 64-bit · installer, no admin rights needed</p>
   </section>
 
   <section class="strip" aria-label="Highlights">
@@ -208,7 +208,9 @@
   <section id="new" class="alt">
     <h2>What's new</h2>
     <div class="log">
-      <div><h3>0.9.5.3 <small>latest</small></h3><ul>
+      <div><h3>0.9.5.4 <small>latest</small></h3><ul>
+        <li><b>The timeline snaps:</b> a click or drag on the ruler (or on an empty spot of a track) puts the playhead on the nearest bar, beat or subdivision line, in every time signature, and the grid gets finer as you zoom in. Hold <kbd>Alt</kbd>, or switch <i>Snap</i> off, to move it freely. Dragging out the loop or punch region with the right button can be free with <kbd>Alt</kbd> as well.</li></ul></div>
+      <div><h3>0.9.5.3</h3><ul>
         <li><b>The MIDI inputs are listed:</b> <i>Audio and MIDI settings</i> shows an <i>Active MIDI inputs</i> list with every MIDI device that Windows offers, so you can see whether your keyboard, drum module or interface is there. The program switches all of them on by itself; a device that is not in the list is not offered by Windows (check its driver).</li></ul></div>
       <div><h3>0.9.5.2</h3><ul>
         <li><b>Big instruments scan correctly:</b> the plugin scan waited 30 seconds for each plugin; instruments that load a sound library while they are scanned, such as EZdrummer 3, were marked as failed ("Deactivated after failing to initialise correctly"). The scan now waits up to three minutes.</li>
@@ -306,10 +308,10 @@
 
   <section id="download">
     <h2>Download</h2>
-    <p class="center">Grab <code>UFODAW-0.9.5.3-setup.exe</code> (the installer) from the Releases page and run it, or take <code>UFODAW-0.9.5.3-win64.zip</code>, unzip it anywhere and run <code>UFODAW.exe</code>. Double-click any <code>.mdaw</code> file to open a project directly.</p>
+    <p class="center">Grab <code>UFODAW-0.9.5.4-setup.exe</code> (the installer) from the Releases page and run it, or take <code>UFODAW-0.9.5.4-win64.zip</code>, unzip it anywhere and run <code>UFODAW.exe</code>. Double-click any <code>.mdaw</code> file to open a project directly.</p>
     <div class="cta center">
       <!-- TODO: replace # with your GitHub Releases URL -->
-      <a class="btn primary" href="#" id="dl">Download 0.9.5.3 (Windows 64-bit)</a>
+      <a class="btn primary" href="#" id="dl">Download 0.9.5.4 (Windows 64-bit)</a>
       <a class="btn" href="#" id="src">Source code</a>
     </div>
     <p class="meta center">Releases are not code-signed yet, so Windows SmartScreen may show a warning. Choose “More info” → “Run anyway”.</p>
@@ -355,7 +357,7 @@
     document.getElementById("fr-nav").href = fr;
     document.getElementById("fr-nav").target = "_blank";
     document.getElementById("fr-list").href = REPO + "/issues?q=label%3Aenhancement";
-    var VERSION = "0.9.5.3";   // (update with every release)
+    var VERSION = "0.9.5.4";   // (update with every release)
     var body = "**What happened?**\n\n\n**What did you expect?**\n\n\n**How can it be repeated?**\n1. \n2. \n3. \n\n**Version:** UFODAW " + VERSION + "\n**Windows version:**\n**Audio device and driver (ASIO / WASAPI):**\n**Plugins involved (name, maker):**\n";
     var bug = REPO + "/issues/new?labels=bug&title=" + encodeURIComponent("Bug: ") + "&body=" + encodeURIComponent(body);
     document.getElementById("bug").href = bug;

@@ -341,6 +341,9 @@ public:
     bool marqueeOn = false, marqueeAdditive = false;
     std::vector<std::pair<Track*, int>> marqueeBase;
     void setPlayhead (double seconds);
+    // Where a click on the timeline puts the playhead: on the nearest bar, beat or subdivision line of the grid (the time signature of every part is
+    // followed; how fine the grid is depends on the zoom). Alt, or the Snap button off, leaves it where the mouse is.
+    double snapClick (double seconds, const juce::ModifierKeys&) const;
     void zoomBy (double factor, int anchorX);
     void importFiles (const juce::StringArray& paths, Track* target, double timeSeconds);
     void clipsChanged();

@@ -704,12 +704,13 @@ public:
     }
 
     // left button: playhead; right button: drag out the loop region (with Shift: the punch region)
+    // (the playhead snaps to the grid, in every time signature; hold Alt to move it freely)
     void mouseDown (const juce::MouseEvent& e) override
     {
         loopDragging = e.mods.isPopupMenu();
         punchDragging = loopDragging && e.mods.isShiftDown();
         if (loopDragging)
-            loopAnchor = main.snapTime (timeAt (e.x));
+            loopAnchor = e.mods.isAltDown() ? timeAt (e.x) : main.snapTime (timeAt (e.x));
         else
             move (e);
     }
@@ -718,7 +719,7 @@ public:
     {
         if (loopDragging)
         {
-            const double t = main.snapTime (timeAt (e.x));
+            const double t = e.mods.isAltDown() ? timeAt (e.x) : main.snapTime (timeAt (e.x));
             if (punchDragging)
                 main.setPunchRegion (juce::jmin (loopAnchor, t), juce::jmax (loopAnchor, t));
             else
@@ -734,7 +735,7 @@ public:
 
 private:
     double timeAt (int x) const { return juce::jmax (0.0, (x + main.getScrollX()) / main.getPixelsPerSecond()); }
-    void move (const juce::MouseEvent& e) { main.setPlayhead (timeAt (e.x)); }
+    void move (const juce::MouseEvent& e) { main.setPlayhead (main.snapClick (timeAt (e.x), e.mods)); }
 
     bool loopDragging = false, punchDragging = false;
     double loopAnchor = 0.0;
@@ -1170,7 +1171,7 @@ public:
         main.beginMarquee (e.mods.isShiftDown());
         if (! e.mods.isShiftDown())
             main.selectClip (nullptr, -1);
-        main.setPlayhead (t);
+        main.setPlayhead (main.snapClick (t, e.mods));
     }
 
     // the right edge of a MIDI / drum clip: the pointer says it can be dragged, the tooltip says what the modifiers do
@@ -1308,7 +1309,7 @@ public:
                 }
             }
             else
-                main.setPlayhead (t);   // scrub
+                main.setPlayhead (main.snapClick (t, e.mods));   // scrub
             return;
         }
 
@@ -3399,6 +3400,32 @@ double MainComponent::snapTime (double seconds) const
         return seconds;
     const double beats = tempoMap.secondsToBeats (seconds);   // snap in 16th notes, wherever the tempo changes
     return tempoMap.beatsToSeconds (std::round (beats * 4.0) / 4.0);
+}
+
+double MainComponent::snapClick (double seconds, const juce::ModifierKeys& mods) const
+{
+    if (mods.isAltDown() || ! snapButton.getToggleState())
+        return seconds;
+
+    // the grid gets finer as you zoom in: bars only, then beats, then halves of a beat, then quarters
+    const double beatPx = tempoMap.beatSecondsAt (seconds) * pixelsPerSecond;
+    const int subdivisions = beatPx >= 120.0 ? 4 : beatPx >= 60.0 ? 2 : 1;
+    const bool barsOnly = beatPx < 14.0;
+
+    const double reach = tempoMap.barSecondsAt (seconds) * 1.5;
+    double best = seconds, bestDistance = 1.0e18;
+    tempoMap.forEachGridLine (juce::jmax (0.0, seconds - reach), seconds + reach, subdivisions, [&] (double sec, int kind, int)
+    {
+        if (barsOnly && kind != 2)
+            return;
+        const double d = std::abs (sec - seconds);
+        if (d < bestDistance)
+        {
+            bestDistance = d;
+            best = sec;
+        }
+    });
+    return best;
 }
 
 // The lamp in the top bar lights when the master mix, any track, or the input of an armed track has clipped; the tooltip says where.
