@@ -9,8 +9,10 @@ namespace
     constexpr int sectionGap = 12;
 }
 
-PluginPanel::PluginPanel (Track& t, Engine& e, PluginHost& h, std::function<void()> onBeginEdit, std::function<void()> onOpenBuiltIn)
-    : track (t), engine (e), host (h), beginEdit (std::move (onBeginEdit)), openBuiltIn (std::move (onOpenBuiltIn))
+PluginPanel::PluginPanel (Track& t, Engine& e, PluginHost& h, std::function<void()> onBeginEdit, std::function<void()> onOpenBuiltIn,
+                         std::function<void()> onChooseSoundFile)
+    : track (t), engine (e), host (h), beginEdit (std::move (onBeginEdit)), openBuiltIn (std::move (onOpenBuiltIn)),
+      chooseSoundFile (std::move (onChooseSoundFile))
 {
     isMidi = track.type == Track::Type::Midi;
 
@@ -52,6 +54,41 @@ PluginPanel::PluginPanel (Track& t, Engine& e, PluginHost& h, std::function<void
             }
         };
         addAndMakeVisible (instrumentEdit);
+
+        addAndMakeVisible (sfLabel);
+        sfButton.setTooltip ("Play this track with a SoundFont (.sf2) or an SFZ instrument. Thousands of free ones exist; the file stays where it is "
+                             "(the project remembers its place).");
+        sfButton.onClick = [this]
+        {
+            if (! chooseSoundFile)
+                return;
+            auto callback = chooseSoundFile;
+            if (auto* box = findParentComponentOfClass<juce::CallOutBox>())
+                box->dismiss();   // (the file chooser belongs to the main window, this panel goes away with its callout)
+            juce::MessageManager::callAsync (callback);
+        };
+        addAndMakeVisible (sfButton);
+        sfClear.setTooltip ("Back to the built-in synth");
+        sfClear.onClick = [this]
+        {
+            beginEdit();
+            engine.setSfBank (track, nullptr);
+            updateSoundFile();
+            updateInstrumentButton();
+        };
+        addChildComponent (sfClear);
+        addChildComponent (presetLabel);
+        presetBox.onChange = [this]
+        {
+            if (presetBox.getSelectedId() <= 0)
+                return;
+            beginEdit();
+            if (! engine.setSfPreset (track, presetBox.getSelectedId() - 1))
+                alert ("Cannot load the preset", "This preset has no samples.");
+            updateSoundFile();
+        };
+        addChildComponent (presetBox);
+        updateSoundFile();
 
         // MIDI input: every input, or one device; and every channel, or one
         inputBox.addItem ("All MIDI inputs", 1);
@@ -153,11 +190,31 @@ void PluginPanel::refreshLayout()
     repaint();
 }
 
+
+void PluginPanel::updateSoundFile()
+{
+    const auto bank = track.sfInstrument != nullptr ? track.sfInstrument->getBank() : nullptr;
+    sfButton.setButtonText (bank != nullptr ? bank->file.getFileName() : juce::String ("Load SoundFont / SFZ..."));
+    sfClear.setVisible (bank != nullptr);
+
+    const bool presets = bank != nullptr && bank->format == SfBank::Sf2 && bank->presets.size() > 1;
+    presetLabel.setVisible (presets);
+    presetBox.setVisible (presets);
+    presetBox.clear (juce::dontSendNotification);
+    if (presets)
+    {
+        for (int i = 0; i < (int) bank->presets.size(); ++i)
+            presetBox.addItem (juce::String::formatted ("%03d:%03d  ", bank->presets[(size_t) i].bank, bank->presets[(size_t) i].number) + bank->presets[(size_t) i].name, i + 1);
+        presetBox.setSelectedId (bank->presetIndex + 1, juce::dontSendNotification);
+    }
+    refreshLayout();
+}
 //==============================================================================
 void PluginPanel::updateInstrumentButton()
 {
     instrumentButton.setButtonText (track.instrument != nullptr
                                         ? track.instrument->description.name + "  (" + track.instrument->description.manufacturerName + ")"
+                                        : track.sfInstrument != nullptr && track.sfInstrument->getBank() != nullptr ? "SoundFont / SFZ: " + track.sfInstrument->getBank()->describe()
                                         : track.kit != nullptr ? juce::String ("Built-in drum kit")
                                                                : track.sampler != nullptr ? juce::String ("Built-in sampler") : juce::String ("Built-in synth"));
 }
@@ -184,6 +241,7 @@ void PluginPanel::openInstrumentSearch()
             if (index < 0 || index >= candidates.size())
             {
                 eng->setInstrument (*tr, nullptr);   // back to the built-in sound
+                eng->setSfBank (*tr, nullptr);
             }
             else
             {
@@ -201,7 +259,10 @@ void PluginPanel::openInstrumentSearch()
                 }
             }
             if (safe != nullptr)
+            {
                 safe->updateInstrumentButton();
+                safe->updateSoundFile();
+            }
         }),
         instrumentButton.getScreenBounds(), nullptr);
 }
@@ -474,6 +535,24 @@ int PluginPanel::layoutAll (bool apply)
         line.removeFromRight (6);
         place (instrumentButton, line);
         area.removeFromTop (6);
+
+        auto sfLine = area.removeFromTop (30);
+        place (sfLabel, sfLine.removeFromLeft (74));
+        if (sfClear.isVisible())
+        {
+            place (sfClear, sfLine.removeFromRight (26));
+            sfLine.removeFromRight (6);
+        }
+        place (sfButton, sfLine);
+        area.removeFromTop (6);
+
+        if (presetBox.isVisible())
+        {
+            auto presetLine = area.removeFromTop (30);
+            place (presetLabel, presetLine.removeFromLeft (74));
+            place (presetBox, presetLine);
+            area.removeFromTop (6);
+        }
 
         auto inputLine = area.removeFromTop (30);
         place (inputLabel, inputLine.removeFromLeft (74));

@@ -1,4 +1,5 @@
 #include "Synth.h"
+#include "Wavetable.h"
 #include <algorithm>
 #include <cmath>
 
@@ -48,6 +49,7 @@ namespace
 void Synth::prepare (double rate)
 {
     sampleRate = rate;
+    Wavetable::bank();   // (made here, on the message thread, the first time)
     reset();
 }
 
@@ -211,6 +213,7 @@ void Synth::render (float* outL, float* outR, int numSamples, const SynthParams&
     const SynthValues p = params.capture();
 
     const int unison = std::clamp (p.unison, 1, 5);
+    const bool wavetable = p.engine == 2;
     const double sr = sampleRate;
     auto timeToStep = [sr] (float seconds) { return 1.0f / (float) std::max (1.0, seconds * sr); };
     auto timeToCoef = [sr] (float seconds) { return 1.0f - std::exp (-4.6f / (float) std::max (1.0, seconds * sr)); };   // (-40 dB after `seconds`)
@@ -260,7 +263,7 @@ void Synth::render (float* outL, float* outR, int numSamples, const SynthParams&
                 v.currentLog = v.targetLog;
 
             double lfo = 0.0;
-            if (p.lfoPitch > 0.0f || p.lfoCutoff > 0.0f || p.lfoAmp > 0.0f)
+            if (p.lfoPitch > 0.0f || p.lfoCutoff > 0.0f || p.lfoAmp > 0.0f || (wavetable && p.wtLfo > 0.0f))
             {
                 switch (p.lfoShape)
                 {
@@ -290,6 +293,25 @@ void Synth::render (float* outL, float* outR, int numSamples, const SynthParams&
                 incUnison[u] = std::min (0.45, inc * unisonRatio[u]);
             const double inc2 = std::min (0.45, inc * osc2Ratio), incSub = std::min (0.45, inc * 0.5);
 
+            // the wavetable engine: which two frames of the table to read, in the version without harmonics above the Nyquist frequency
+            const float* tableA[5] = {};
+            const float* tableB[5] = {};
+            float tableFrac = 0.0f;
+            if (wavetable)
+            {
+                const double position = std::clamp ((double) p.wtPos + p.wtLfo * 0.5 * lfo + p.wtEnv * v.filt.level, 0.0, 1.0);
+                const double framePos = position * (Wavetable::numFrames - 1);
+                const int f0 = std::min ((int) framePos, Wavetable::numFrames - 2);
+                tableFrac = (float) (framePos - f0);
+                const int set = std::clamp (p.wtTable, 0, Wavetable::numSets - 1);
+                for (int u = 0; u < unison; ++u)
+                {
+                    const int mip = Wavetable::mipFor (incUnison[u]);
+                    tableA[u] = Wavetable::bank().frame (set, f0, mip);
+                    tableB[u] = Wavetable::bank().frame (set, f0 + 1, mip);
+                }
+            }
+
             const double octaves = p.keyTrack * (v.pitch - 60) / 12.0 + p.filterEnv * v.filt.level + p.lfoCutoff * lfo;
             const double cutoff = std::clamp (p.cutoff * std::exp2 (octaves), 20.0, maxCutoff);
             const float g = (float) std::tan (twoPi * 0.5 * cutoff / sr);
@@ -308,7 +330,8 @@ void Synth::render (float* outL, float* outR, int numSamples, const SynthParams&
                 float l = 0.0f, r = 0.0f;
                 for (int u = 0; u < unison; ++u)
                 {
-                    const float x = oscillator (p.waveform, v.phase[u], incUnison[u], pulseWidth);
+                    const float x = wavetable ? Wavetable::read (tableA[u], tableB[u], tableFrac, v.phase[u])
+                                              : oscillator (p.waveform, v.phase[u], incUnison[u], pulseWidth);
                     l += x * gainL[u];
                     r += x * gainR[u];
                     v.phase[u] += incUnison[u];

@@ -140,6 +140,7 @@ private:
 PluginHost::PluginHost()
 {
     formats.addDefaultFormats();   // VST3 (JUCE_PLUGINHOST_VST3)
+    formats.addFormat (new ClapPluginFormat());
 
     juce::PropertiesFile::Options options;
     options.applicationName = "UFODAW";

@@ -237,6 +237,37 @@ namespace SynthPresets
                 v.cutoff = 5000; v.lfoPitch = 8; v.lfoRate = 5.0f; v.lfoDelay = 0.6f;
             });
 
+            // ---- wavetable (the wavetable engine: Wavetable.h)
+            add ("Wavetable", "WT Morph pad", [] (SynthValues& v)
+            {
+                v.engine = 2; v.wtTable = 0; v.wtPos = 0.2f; v.wtLfo = 0.6f; v.lfoRate = 0.3f; v.unison = 3; v.unisonDetune = 14; v.spread = 0.8f;
+                v.attack = 0.4f; v.decay = 0.5f; v.sustain = 0.8f; v.release = 0.9f; v.cutoff = 6000; v.level = 0.9f;
+            });
+            add ("Wavetable", "WT Glass bell", [] (SynthValues& v)
+            {
+                v.engine = 2; v.wtTable = 3; v.wtPos = 0.35f; v.wtEnv = -0.3f; v.unison = 2; v.unisonDetune = 6; v.attack = 0.002f; v.decay = 1.2f; v.sustain = 0.0f; v.release = 1.0f;
+                v.cutoff = 12000; v.fAttack = 0.002f; v.fDecay = 0.8f; v.fSustain = 0.0f;
+            });
+            add ("Wavetable", "WT Vowel lead", [] (SynthValues& v)
+            {
+                v.engine = 2; v.wtTable = 2; v.wtPos = 0.0f; v.wtLfo = 0.5f; v.lfoRate = 0.5f; v.mono = 1; v.glide = 0.05f; v.unison = 2; v.unisonDetune = 8;
+                v.attack = 0.02f; v.decay = 0.2f; v.sustain = 0.85f; v.release = 0.25f; v.cutoff = 9000;
+            });
+            add ("Wavetable", "WT Organ", [] (SynthValues& v)
+            {
+                v.engine = 2; v.wtTable = 4; v.wtPos = 0.3f; v.wtLfo = 0.3f; v.lfoRate = 0.15f; v.attack = 0.01f; v.decay = 0.1f; v.sustain = 1.0f; v.release = 0.08f; v.cutoff = 9000;
+            });
+            add ("Wavetable", "WT PWM bass", [] (SynthValues& v)
+            {
+                v.engine = 2; v.wtTable = 5; v.wtPos = 0.1f; v.wtEnv = 0.8f; v.subLevel = 0.4f; v.attack = 0.003f; v.decay = 0.3f; v.sustain = 0.7f; v.release = 0.12f;
+                v.cutoff = 900; v.resonance = 0.2f; v.filterEnv = 1.0f; v.fDecay = 0.3f; v.fSustain = 0.0f; v.keyTrack = 0.3f;
+            });
+            add ("Wavetable", "WT Digital pluck", [] (SynthValues& v)
+            {
+                v.engine = 2; v.wtTable = 1; v.wtPos = 0.9f; v.wtEnv = -0.8f; v.attack = 0.002f; v.decay = 0.35f; v.sustain = 0.0f; v.release = 0.2f;
+                v.cutoff = 10000; v.fAttack = 0.002f; v.fDecay = 0.2f; v.fSustain = 0.0f; v.unison = 2; v.unisonDetune = 5;
+            });
+
             // ---- effects
             add ("FX", "Riser", [] (SynthValues& v)
             {

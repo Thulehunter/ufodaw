@@ -2,6 +2,7 @@
 
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <juce_events/juce_events.h>
+#include "ClapFormat.h"
 #include <mutex>
 #include <queue>
 
@@ -16,7 +17,7 @@ namespace PluginScan
     class Worker : public juce::ChildProcessWorker, private juce::AsyncUpdater
     {
     public:
-        Worker() { formats.addDefaultFormats(); }
+        Worker() { formats.addDefaultFormats(); formats.addFormat (new ClapPluginFormat()); }
 
         void handleMessageFromCoordinator (const juce::MemoryBlock& block) override
         {

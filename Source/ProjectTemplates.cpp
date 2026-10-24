@@ -70,6 +70,8 @@ namespace
         o->setProperty ("osc2Wave", params.osc2Wave.load());
         o->setProperty ("unison", params.unison.load());
         o->setProperty ("lfoShape", params.lfoShape.load());
+        o->setProperty ("engine", params.engine.load());
+        o->setProperty ("wtTable", params.wtTable.load());
         for (auto& info : SynthParams::floatInfo())
             o->setProperty (juce::Identifier (info.name), (double) (params.*(info.member)).load());
         return var (o);

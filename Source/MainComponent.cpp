@@ -1,5 +1,6 @@
 #include "MainComponent.h"
 #include "PianoRoll.h"
+#include "Wavetable.h"
 #include "DrumSequencer.h"
 #include "FxPanel.h"
 #include "PluginPanel.h"
@@ -195,7 +196,7 @@ public:
         };
         addAndMakeVisible (fxButton);
 
-        vstButton.setTooltip ("VST3 plugins: instrument and effects");
+        vstButton.setTooltip ("VST3 and CLAP plugins: instrument and effects");
         vstButton.onClick = [this] { openPlugins (track, vstButton); };
         addAndMakeVisible (vstButton);
 
@@ -212,7 +213,7 @@ public:
             nameLabel.setColour (juce::Label::textColourId, Theme::yellow);
             volume.setTooltip ("Master volume: everything you hear goes through it (double-click: reset)");
             fxButton.setTooltip ("Effects on the whole mix: EQ, compressor, delay, reverb");
-            vstButton.setTooltip ("VST3 effect plugins on the whole mix (a limiter or EQ, for example)");
+            vstButton.setTooltip ("VST3 and CLAP effect plugins on the whole mix (a limiter or EQ, for example)");
             autoButton.setTooltip ("Automation of the master volume and its effects");
             meterButton.setTooltip ("The master meter: loudness (LUFS), spectrum and a reference track to compare your mix with");
             meterButton.onClick = [this] { if (openMeter) openMeter(); };
@@ -490,6 +491,7 @@ public:
             else
             {
                 text = track.instrument != nullptr ? track.instrument->description.name
+                                                    : track.sfInstrument != nullptr && track.sfInstrument->getBank() != nullptr ? "SoundFont: " + track.sfInstrument->getBank()->describe()
                                                     : track.sampler != nullptr ? "Sampler: " + (track.sampler->getSample() != nullptr ? track.sampler->getName() : juce::String ("no sample"))
                                                     : track.kit != nullptr ? juce::String ("Drum kit") : juce::String ("Built-in synth");
                 if (track.sequencer)
@@ -3067,7 +3069,7 @@ MainComponent::MainComponent (int slot, std::shared_ptr<juce::AudioDeviceManager
     audioButton.onClick = [this] { openAudioSettings(); };
     addAndMakeVisible (audioButton);
 
-    pluginsButton.setTooltip ("Scan for and manage VST3 plugins");
+    pluginsButton.setTooltip ("Scan for and manage VST3 and CLAP plugins");
     pluginsButton.setWantsKeyboardFocus (false);
     pluginsButton.onClick = [this] { pluginHost.showManager(); };
     addAndMakeVisible (pluginsButton);
@@ -4298,6 +4300,84 @@ void MainComponent::sampleClip (Track& t, int clipId)
     clipsChanged();
 }
 
+// A SoundFont (.sf2) or SFZ file for a MIDI track; without a track (nullptr) it gets a new MIDI track.
+void MainComponent::chooseSoundFile (Track* target)
+{
+    juce::Component::SafePointer<MainComponent> safe (this);
+    const TrackRef ref (target);
+    static juce::File lastFolder;
+    chooser = std::make_unique<juce::FileChooser> ("Choose a SoundFont or SFZ instrument", lastFolder, "*.sf2;*.sfz");
+    chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+                          [safe, ref] (const juce::FileChooser& fc)
+                          {
+                              const auto file = fc.getResult();
+                              if (safe == nullptr || file == juce::File())
+                                  return;
+                              lastFolder = file.getParentDirectory();
+                              safe->loadSoundFile (safe->engine.indexOfTrack (ref) >= 0 ? static_cast<Track*> (ref) : nullptr, file);
+                          });
+}
+
+void MainComponent::loadSoundFile (Track* target, const juce::File& file)
+{
+    juce::String error;
+    auto bank = SfBank::load (file, 0, error);
+    if (bank == nullptr)
+    {
+        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Cannot load " + file.getFileName(), error);
+        return;
+    }
+
+    beginEdit();
+    if (target != nullptr && (target->type != Track::Type::Midi || target->kit != nullptr || target->sampler != nullptr))
+        target = nullptr;   // (a drum rack or sampler keeps its own sound: the instrument gets a track of its own)
+    const bool isNew = target == nullptr;
+    if (isNew)
+    {
+        target = engine.addTrack (file.getFileNameWithoutExtension(), Track::Type::Midi);
+        const int barIndex = tempoMap.barAtSeconds (engine.getPositionSeconds());
+        const double start = tempoMap.barStartSeconds (barIndex);
+        const int id = engine.addMidiClip (*target, start, tempoMap.barStartSeconds (barIndex + 2) - start);
+        addTrackUI (*target);
+        selectClip (target, id);   // opens the piano roll
+    }
+    if (target->instrument != nullptr)
+        pluginHost.closeEditorsFor (target->instrument.get());
+    engine.setSfBank (*target, bank);
+    clipsChanged();
+
+    if (! bank->missingFiles.isEmpty())
+        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Samples not found",
+                                                juce::String (bank->missingFiles.size()) + " sample file(s) of this SFZ could not be found, for example:\n"
+                                                + bank->missingFiles[0]);
+    else if (bank->format == SfBank::Sf2 && bank->presets.size() > 1)
+        showSoundFontPresets (target);   // a SoundFont has many presets: pick one
+}
+
+// The presets of the SoundFont a track plays, as a menu (the track header's instrument panel has the same list)
+void MainComponent::showSoundFontPresets (Track* t)
+{
+    const auto bank = t != nullptr && t->sfInstrument != nullptr ? t->sfInstrument->getBank() : nullptr;
+    if (bank == nullptr || bank->format != SfBank::Sf2)
+        return;
+    juce::PopupMenu menu;
+    menu.addSectionHeader (bank->name);
+    for (int i = 0; i < (int) bank->presets.size(); ++i)
+        menu.addItem (i + 1, juce::String::formatted ("%03d:%03d  ", bank->presets[(size_t) i].bank, bank->presets[(size_t) i].number) + bank->presets[(size_t) i].name,
+                      true, i == bank->presetIndex);
+    const TrackRef ref (t);
+    juce::Component::SafePointer<MainComponent> safe (this);
+    menu.showMenuAsync (juce::PopupMenu::Options(), [safe, ref] (int result)
+    {
+        if (safe == nullptr || result <= 0 || safe->engine.indexOfTrack (ref) < 0)
+            return;
+        safe->beginEdit();
+        if (! safe->engine.setSfPreset (*ref, result - 1))
+            safe->cancelEdit();
+        safe->clipsChanged();
+    });
+}
+
 void MainComponent::openInstrumentEditor (Track& t)
 {
     if (t.sampler != nullptr)
@@ -4323,11 +4403,18 @@ void MainComponent::openPlugins (Track& t, juce::Component& anchor)
                                                                             {
                                                                                 if (safe != nullptr && safe->engine.indexOfTrack (ref) >= 0)
                                                                                 {
-                                                                                    if (ref->sampler != nullptr || ref->kit != nullptr)
+                                                                                    if (ref->sfInstrument != nullptr)
+                                                                                        safe->showSoundFontPresets (ref);
+                                                                                    else if (ref->sampler != nullptr || ref->kit != nullptr)
                                                                                         safe->openInstrumentEditor (*ref);
                                                                                     else if (ref->type == Track::Type::Midi && ref->instrument == nullptr && ref->voices != nullptr)
                                                                                         safe->openSynthPanel (*ref);   // the built-in synth: all its settings
                                                                                 }
+                                                                            },
+                                                                            [safe, ref]
+                                                                            {
+                                                                                if (safe != nullptr && safe->engine.indexOfTrack (ref) >= 0)
+                                                                                    safe->chooseSoundFile (ref);
                                                                             }),
                                             anchor.getScreenBounds(), nullptr);
 }
@@ -7272,6 +7359,7 @@ void MainComponent::addTrackMenu()
     menu.addItem (3, "MIDI track (built-in synth or VST)");
     menu.addItem (4, "Drum track");
     menu.addItem (5, "Sampler (plays one sample)");
+    menu.addItem (8, "SoundFont / SFZ instrument...");
     menu.addSeparator();
     menu.addItem (6, "Bus (group / effects return)");
     const auto templates = templatesFolder().findChildFiles (juce::File::findFiles, false, "*.mdaw");
@@ -7295,6 +7383,7 @@ void MainComponent::addTrackMenu()
         if (result == 3) addMidiTrack (false);
         if (result == 4) addMidiTrack (true);
         if (result == 5) addSamplerTrack();
+        if (result == 8) chooseSoundFile (nullptr);
         if (result == 6) addBusTrack();
     });
 }
@@ -7655,6 +7744,16 @@ void MainComponent::importFiles (const juce::StringArray& paths, Track* target, 
 {
     juce::StringArray failed;
 
+    if (paths.size() > 0)   // a SoundFont / SFZ instrument dropped on the window or on a MIDI track
+    {
+        const auto ext = juce::File (paths[0]).getFileExtension().toLowerCase();
+        if (ext == ".sf2" || ext == ".sfz")
+        {
+            loadSoundFile (target != nullptr && target->type == Track::Type::Midi ? target : nullptr, juce::File (paths[0]));
+            return;
+        }
+    }
+
     if (target != nullptr && target->sampler != nullptr && paths.size() > 0)   // dropped on a sampler track: it becomes the sample
     {
         beginEdit();
@@ -7855,6 +7954,7 @@ void MainComponent::saveProject (const juce::File& file, SaveKind kind)
             if (t->synth.unison.load() != 1)   s->setProperty ("unison", t->synth.unison.load());
             if (t->synth.lfoShape.load() != 0) s->setProperty ("lfoShape", t->synth.lfoShape.load());
             if (t->synth.engine.load() != 0)   s->setProperty ("engine", t->synth.engine.load());
+            if (t->synth.wtTable.load() != 0)  s->setProperty ("wtTable", t->synth.wtTable.load());
             if (t->synth.mono.load() != 0)     s->setProperty ("mono", t->synth.mono.load());
             o->setProperty ("synth", juce::var (s));
 
@@ -7935,6 +8035,18 @@ void MainComponent::saveProject (const juce::File& file, SaveKind kind)
                     so->setProperty ("file", projectFilePath ? projectFilePath (t->sampler->getFile()) : t->sampler->getFile().getRelativePathFrom (baseDir));
                 writeSamplerParams (*so, t->sampler->params, t->sampler->getStretch());
                 o->setProperty ("sampler", juce::var (so));
+            }
+
+            if (t->sfInstrument != nullptr && t->sfInstrument->getBank() != nullptr)   // a SoundFont / SFZ plays the track: the file, the preset, the volume
+            {
+                const auto bank = t->sfInstrument->getBank();
+                auto* so = new juce::DynamicObject();
+                so->setProperty ("file", projectFilePath ? projectFilePath (bank->file) : bank->file.getRelativePathFrom (baseDir));
+                so->setProperty ("preset", bank->presetIndex);
+                if (bank->format == SfBank::Sf2 && bank->presetIndex < (int) bank->presets.size())
+                    so->setProperty ("presetName", bank->presets[(size_t) bank->presetIndex].name);   // (found again if the file's presets moved)
+                so->setProperty ("volume", (double) t->sfInstrument->volume.load());
+                o->setProperty ("soundFont", juce::var (so));
             }
         }
         writeEffectsAndAutomation (*o, *t);   // effects, plugins, automation
@@ -8250,6 +8362,8 @@ void MainComponent::collectProject()
                 }
             if (t->sampler != nullptr)
                 add (t->sampler->getFile());
+            if (t->sfInstrument != nullptr && t->sfInstrument->getBank() != nullptr && t->sfInstrument->getBank()->format == SfBank::Sf2)
+                add (t->sfInstrument->getBank()->file);   // (an SFZ stays where it is: its samples sit in folders next to it)
         }
 
     chooser = std::make_unique<juce::FileChooser> ("Choose where the project folder goes", currentProject.getParentDirectory(), "");
@@ -8990,8 +9104,44 @@ void MainComponent::loadProject (const juce::File& file, bool asTemplate, bool r
             t->synth.osc2Wave = (int) s.getProperty ("osc2Wave", (int) SynthParams::Saw);
             t->synth.unison = juce::jlimit (1, 5, (int) s.getProperty ("unison", 1));
             t->synth.lfoShape = juce::jlimit (0, 3, (int) s.getProperty ("lfoShape", 0));
-            t->synth.engine = juce::jlimit (0, 1, (int) s.getProperty ("engine", 0));
+            t->synth.engine = juce::jlimit (0, 2, (int) s.getProperty ("engine", 0));
+            t->synth.wtTable = juce::jlimit (0, Wavetable::numSets - 1, (int) s.getProperty ("wtTable", 0));
             t->synth.mono = juce::jlimit (0, 1, (int) s.getProperty ("mono", 0));
+
+            if (item.hasProperty ("soundFont"))   // a SoundFont / SFZ instead of the built-in synth
+            {
+                const auto sv = item["soundFont"];
+                const auto sfFile = resolvePath (sv["file"].toString());
+                juce::String sfError;
+                if (! sfFile.existsAsFile())
+                {
+                    missing.add (sfFile.getFullPathName());
+                }
+                else if (! engine.loadSfInstrument (*t, sfFile, (int) sv.getProperty ("preset", 0), sfError))
+                {
+                    pluginProblems.add ("Instrument " + sfFile.getFileName() + ": " + sfError);
+                }
+                else if (auto bank = t->sfInstrument->getBank())
+                {
+                    const auto presetName = sv.getProperty ("presetName", "").toString();
+                    if (bank->format == SfBank::Sf2 && presetName.isNotEmpty() && bank->presetIndex < (int) bank->presets.size()
+                        && bank->presets[(size_t) bank->presetIndex].name != presetName)   // (the file changed: look for the preset by name)
+                        for (int pi = 0; pi < (int) bank->presets.size(); ++pi)
+                            if (bank->presets[(size_t) pi].name == presetName)
+                            {
+                                engine.setSfPreset (*t, pi);
+                                break;
+                            }
+                    t->sfInstrument->volume = (float) (double) sv.getProperty ("volume", 1.0);
+                    if (auto current = t->sfInstrument->getBank())
+                    {
+                        for (auto& m : current->missingFiles)
+                            missing.add (m);
+                        if (selfTesting)   // (the test renders at once: the samples are read first)
+                            current->pool->waitForPreload (20000);
+                    }
+                }
+            }
 
             if ((bool) item.getProperty ("subAuto", false))
                 t->subAutoDone = true;
@@ -9275,6 +9425,49 @@ juce::String MainComponent::selfTestReport (bool& ok, bool expectWarning)
                                                               + (told ? "" : " not-told") + (stateKept ? "" : " state-lost") + (restarted ? "" : " " + error) + ")");
         }
 
+    // SoundFont / SFZ tracks: each one sounds on its own (the samples are read first), and still does after "Save as" and opening that file
+    auto soundOfTrack = [this] (int index)
+    {
+        const auto file = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("ufodaw-selftest-instrument.wav");
+        file.deleteFile();
+        float result = -1.0f;
+        Engine::RenderOptions options;
+        options.onlyTrack = engine.getTrack (index);
+        options.masterProcessing = false;
+        if (engine.renderToFile (file, 3.0, options))
+        {
+            juce::AudioFormatManager formats;
+            formats.registerBasicFormats();
+            if (std::unique_ptr<juce::AudioFormatReader> reader (formats.createReaderFor (file)); reader != nullptr)
+            {
+                juce::AudioBuffer<float> buffer ((int) reader->numChannels, (int) reader->lengthInSamples);
+                reader->read (&buffer, 0, buffer.getNumSamples(), 0, true, true);
+                result = 0.0f;
+                for (int c = 0; c < buffer.getNumChannels(); ++c)
+                    result = juce::jmax (result, buffer.getMagnitude (c, 0, buffer.getNumSamples()));
+            }
+        }
+        file.deleteFile();
+        return result;
+    };
+    std::vector<int> sfIndices;
+    for (int i = 0; i < engine.getNumTracks(); ++i)
+        if (engine.getTrack (i)->sfInstrument != nullptr)
+            sfIndices.push_back (i);
+    bool sfOk = true;
+    juce::String sfText;
+    for (int i : sfIndices)
+    {
+        const float p = soundOfTrack (i);
+        sfOk = sfOk && p > 0.01f;
+        sfText << " instrument" << (i + 1) << "=" << (p > 0.01f ? "ok" : "SILENT");
+    }
+    for (int i : sfIndices)   // (the instrument panel of the track builds and lays out with the SoundFont / SFZ in it)
+    {
+        PluginPanel panel (*engine.getTrack (i), engine, pluginHost, [] {});
+        sfOk = sfOk && panel.getHeight() > 100;
+    }
+
     // Save as: the project is written to a new file and read back; the number of tracks must be the same (and nothing may crash)
     const int tracksBefore = engine.getNumTracks();
     const auto saved = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("ufodaw-selftest-saved").getChildFile ("saved.mdaw");
@@ -9285,13 +9478,23 @@ juce::String MainComponent::selfTestReport (bool& ok, bool expectWarning)
     selfTestProblems.clear();
     loadProject (saved);
     const bool reloaded = engine.getNumTracks() == tracksBefore;
+    std::vector<int> sfAfter;
+    for (int i = 0; i < engine.getNumTracks(); ++i)
+        if (engine.getTrack (i)->sfInstrument != nullptr)
+            sfAfter.push_back (i);
+    bool sfReloaded = sfAfter == sfIndices;
+    for (int i : sfAfter)
+        sfReloaded = sfReloaded && soundOfTrack (i) > 0.01f;
+    if (! sfIndices.empty())
+        sfText << " instrumentsReopened=" << (sfReloaded ? "ok" : "FAILED");
+
     saved.getParentDirectory().deleteRecursively();
 
-    ok = warningOk && engine.getNumTracks() > 0 && rendered && peak > 0.001f && wrote && reloaded && sandboxOk;
+    ok = warningOk && engine.getNumTracks() > 0 && rendered && peak > 0.001f && wrote && reloaded && sandboxOk && sfOk && sfReloaded;
     if (slots > 0)
         engine.stop();
     return "tracks=" + juce::String (engine.getNumTracks()) + " clips=" + juce::String (clips) + " slots=" + juce::String (slots) + " drumLayers=" + juce::String (layers) + " render=" + (rendered ? "ok" : "FAILED")
-           + " peak=" + juce::String (peak, 3) + " saveAs=" + (wrote && reloaded ? "ok" : "FAILED") + sandboxText + problemText;
+           + " peak=" + juce::String (peak, 3) + " saveAs=" + (wrote && reloaded ? "ok" : "FAILED") + sandboxText + sfText + problemText;
 }
 
 // One dialog for everything that did not come through when a project opened. Missing audio files can be looked for in a folder: the project is

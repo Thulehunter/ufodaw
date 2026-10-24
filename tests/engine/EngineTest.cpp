@@ -2,6 +2,9 @@
 #include "Stretch.h"
 #include "SynthPresets.h"
 #include "StarterPack.h"
+#include "SfTests.h"
+#include "Wavetable.h"
+#include "ClapTests.h"
 #include <iostream>
 #if JUCE_WINDOWS
  #include "SandboxTests.h"
@@ -161,6 +164,52 @@ static bool report (bool ok, const juce::String& what)
     return ok;
 }
 
+// The wavetable engine: table 0 starts as a sine, moves to a saw and a square; a high note has no aliasing; the position changes the sound.
+#if defined (_MSC_VER)
+ __declspec (noinline)
+#endif
+static bool wavetableTests()
+{
+    const double rate = 48000.0;
+    auto play = [&] (int note, double pos, int table)
+    {
+        Synth synth; synth.prepare (rate);
+        SynthParams params; params.engine = 2; params.wtTable = table; params.wtPos = (float) pos; params.attack = 0.002f; params.cutoff = 18000.0f; params.sustain = 1.0f;
+        std::vector<float> l ((size_t) rate), r (l.size());
+        synth.noteOn (note, 0.8f, params);
+        for (size_t done = 0; done < l.size(); done += 512) synth.render (l.data() + done, r.data() + done, (int) std::min<size_t> (512, l.size() - done), params);
+        return l;
+    };
+    auto mag = [&] (const std::vector<float>& x, double hz) { return SfTests::magnitude (x, hz, 0.2, 0.9); };
+    bool ok = true;
+
+    const auto sine = play (69, 0.0, 0);
+    ok &= report (mag (sine, 440.0) > 20.0 * mag (sine, 880.0) && mag (sine, 440.0) > 0.05, "wavetable: the first frame of the basic table is a sine at 440 Hz");
+    const auto saw = play (69, 2.0 / 3.0, 0);
+    const double sawRatio = mag (saw, 880.0) / mag (saw, 440.0);
+    ok &= report (sawRatio > 0.4 && sawRatio < 0.6 && mag (saw, 1320.0) / mag (saw, 440.0) > 0.25, "wavetable: two thirds in the basic table is a saw (harmonics 1/n: " + juce::String (sawRatio, 2) + ")");
+    const auto square = play (69, 1.0, 0);
+    ok &= report (mag (square, 880.0) < 0.05 * mag (square, 440.0) && mag (square, 1320.0) / mag (square, 440.0) > 0.25, "wavetable: the last frame is a square (odd harmonics only)");
+    const auto high = play (100, 2.0 / 3.0, 0);   // 2637 Hz: a saw without band limiting would fold back below it
+    const double fundamental = mag (high, 440.0 * std::pow (2.0, 31.0 / 12.0));
+    double worst = 0.0;
+    for (double f : { 1000.0, 1500.0, 1850.0, 3100.0, 4200.0 }) worst = std::max (worst, mag (high, f));
+    ok &= report (fundamental > 0.01 && worst < 0.05 * fundamental, "wavetable: a high note is band-limited (fundamental " + juce::String (fundamental, 3) + ", alias " + juce::String (worst / fundamental, 3) + " of it)");
+    double different = 0.0;
+    const auto a = play (60, 0.0, 1), b = play (60, 1.0, 1);
+    for (size_t i = 4800; i < 24000; ++i) different += std::abs (a[i] - b[i]);
+    ok &= report (different > 50.0, "wavetable: the position changes the sound");
+    bool allTables = true;
+    for (int t = 0; t < Wavetable::numSets; ++t)
+    {
+        const auto x = play (57, 0.5, t);
+        float peak = 0; for (auto v : x) { if (! std::isfinite (v)) peak = 1e9f; peak = std::max (peak, std::abs (v)); }
+        allTables = allTables && peak > 0.02f && peak < 1.0f;
+    }
+    ok &= report (allTables, "wavetable: every table sounds, finite and not clipping");
+    return ok;
+}
+
 int main (int argc, char** argv)
 {
     juce::ScopedJuceInitialiser_GUI gui;
@@ -173,6 +222,28 @@ int main (int argc, char** argv)
         return ok ? 0 : 1;
     }
    #endif
+    if (argc > 2 && juce::String (argv[1]) == "sfgen")   // writes the test SoundFont and SFZ into a folder (tests/projects/sf)
+    {
+        const juce::File dir (juce::File::getCurrentWorkingDirectory().getChildFile (argv[2]));
+        SfTests::writeSf2 (dir.getChildFile ("test.sf2"));
+        SfTests::writeSfz (dir);
+        std::cout << "written to " << dir.getFullPathName() << std::endl;
+        return 0;
+    }
+   #ifdef TEST_CLAP_PATH
+    if (argc > 1 && juce::String (argv[1]) == "clap")   // only the CLAP tests
+    {
+        const bool ok = ClapTests::run ([] (bool ok, const juce::String& what) { return report (ok, what); }, 3);
+        std::cout << (ok ? "ALL PASSED" : "FAILED") << std::endl;
+        return ok ? 0 : 1;
+    }
+   #endif
+    if (argc > 1 && juce::String (argv[1]) == "sf")   // only the SoundFont / SFZ tests
+    {
+        const bool ok = SfTests::run ([] (bool ok, const juce::String& what) { return report (ok, what); }, juce::File::getSpecialLocation (juce::File::tempDirectory));
+        std::cout << (ok ? "ALL PASSED" : "FAILED") << std::endl;
+        return ok ? 0 : 1;
+    }
     const int workers = juce::jmax (1, argc > 1 ? juce::String (argv[1]).getIntValue() : 3);
     std::cout << "cores: " << juce::SystemStats::getNumCpus() << ", workers: " << workers << "\n";
     bool all = true;
@@ -461,6 +532,75 @@ int main (int argc, char** argv)
         const double ms = juce::Time::getMillisecondCounterHiRes() - t0;
         all &= report (fine, "drums: the new acoustic and electronic drums have the right length, width and weight" + detail);
         all &= report (ms < 6000.0, "starter pack: written in " + juce::String (ms, 0) + " ms");
+    }
+
+    all &= wavetableTests();
+
+   #ifdef TEST_CLAP_PATH
+    all &= ClapTests::run ([] (bool ok, const juce::String& what) { return report (ok, what); }, workers);   // CLAP hosting
+   #endif
+
+    // 10. SoundFont and SFZ instruments: the players themselves, then on tracks (serial and parallel mixing identical, a copy of the track plays)
+    {
+        const auto tmp = juce::File::getSpecialLocation (juce::File::tempDirectory);
+        all &= SfTests::run ([] (bool ok, const juce::String& what) { return report (ok, what); }, tmp);
+
+        auto build = [&] (Engine& x)
+        {
+            auto* piano = x.addTrack ("SoundFont", Track::Type::Midi);
+            auto* organ = x.addTrack ("SFZ", Track::Type::Midi);
+            auto* synth = x.addTrack ("Synth", Track::Type::Midi);
+            juce::String error;
+            const bool a = x.loadSfInstrument (*piano, tmp.getChildFile ("sftest/test.sf2"), 0, error);
+            const bool b = x.loadSfInstrument (*organ, tmp.getChildFile ("sftest/sfz/test.sfz"), 0, error);
+            for (auto* t : { piano, organ })
+                if (t->sfInstrument != nullptr && t->sfInstrument->getBank() != nullptr)
+                    t->sfInstrument->getBank()->pool->waitForPreload (5000);
+            std::vector<Note> notes;
+            for (int i = 0; i < 20; ++i) notes.push_back ({ 50 + (i * 7) % 24, i * 0.25, 0.3, 0.5f + 0.02f * (float) (i % 10) });
+            for (auto* t : { piano, organ, synth })
+            {
+                const int id = x.addMidiClip (*t, 0.0, 6.0);
+                x.setMidiNotes (*t, id, notes);
+                if (t == piano)   // the sustain pedal down for the first two seconds, a pitch bend sweep
+                    x.setMidiCcs (*t, id, { { 0.0, 64, 1.0f }, { 2.0, 64, 0.0f }, { 3.0, CcEvent::kPitchBend, 0.5f }, { 3.5, CcEvent::kPitchBend, 0.75f }, { 4.0, CcEvent::kPitchBend, 0.5f } });
+            }
+            piano->pan = -0.3f; organ->pan = 0.3f;
+            return a && b;
+        };
+
+        auto run = [&] (int n, std::vector<float>& out)
+        {
+            Engine x; x.prepareToPlay (512, 48000.0);
+            const bool loaded = build (x);
+            x.setWorkerThreads (n);
+            x.forceParallel = n > 0;
+            juce::AudioBuffer<float> b (2, 512); juce::AudioSourceChannelInfo info (&b, 0, 512);
+            x.play();
+            for (int blk = 0; blk < 500; ++blk) { b.clear(); x.getNextAudioBlock (info); for (int i = 0; i < 512; ++i) { out.push_back (b.getSample (0, i)); out.push_back (b.getSample (1, i)); } }
+            return loaded;
+        };
+        std::vector<float> serial, par;
+        const bool l1 = run (0, serial), l2 = run (workers, par);
+        float peak = 0; for (auto v : par) peak = std::max (peak, std::abs (v));
+        all &= report (l1 && l2 && serial.size() == par.size() && largestDifference (serial, par) < 1e-9 && peak > 0.05f,
+                       "SoundFont + SFZ tracks: serial and " + juce::String (workers) + " workers identical (peak " + juce::String (peak, 3) + ")");
+
+        [&]   // (a lambda: the engine would add to the stack frame of main)
+        {
+            Engine x; x.prepareToPlay (512, 48000.0);
+            build (x);
+            auto* piano = x.getTrack (0);
+            Track* copy = x.duplicateTrack (*piano);
+            all &= report (copy != nullptr && copy->sfInstrument != nullptr && copy->sfInstrument != piano->sfInstrument
+                           && copy->sfInstrument->getBank() == piano->sfInstrument->getBank(), "SoundFont track: a copy of the track plays the same instrument with its own voices");
+            const auto saved = x.captureState();
+            x.setSfBank (*piano, nullptr);
+            all &= report (piano->sfInstrument == nullptr, "SoundFont track: back to the built-in synth");
+            x.restoreState (saved);
+            piano = x.getTrack (0);
+            all &= report (piano->sfInstrument != nullptr && piano->sfInstrument->getBank() != nullptr, "SoundFont track: undo brings the instrument back");
+        }();
     }
 
     // 9. plugins in a separate process (the test plugin in a helper process of UFODAW.exe, against the same plugin in this program)

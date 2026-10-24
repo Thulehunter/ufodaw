@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.22)
 # Link the C++ runtime statically so UFODAW.exe runs on a PC without the Visual C++ Redistributable.
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
-project(UFODAW VERSION 0.9.5.5 LANGUAGES C CXX)
+project(UFODAW VERSION 0.9.6 LANGUAGES C CXX)
 
 # /EHa: catch(...) also catches access violations, so a crash in a plugin's window (or another callback from the message loop) is caught by JUCE's
 # loop and handled by UFODAWApplication::unhandledException instead of ending the program.
@@ -33,6 +33,13 @@ FetchContent_Declare(JUCE
     GIT_SHALLOW ON
     PATCH_COMMAND ${CMAKE_COMMAND} -DJUCE_DIR=<SOURCE_DIR> -P ${CMAKE_CURRENT_SOURCE_DIR}/scripts/patch-juce.cmake)
 FetchContent_MakeAvailable(JUCE)
+
+# CLAP: the plugin API headers (MIT, header only) for hosting CLAP plugins (Source/ClapFormat.*)
+FetchContent_Declare(clap
+    GIT_REPOSITORY https://github.com/free-audio/clap.git
+    GIT_TAG 1.2.2
+    GIT_SHALLOW ON)
+FetchContent_MakeAvailable(clap)
 
 # Rubber Band: time-stretching and pitch-shifting of audio clips. Its single-file build (no separate library, built-in FFT)
 # is compiled into the program. GPL: see the README.
@@ -90,16 +97,18 @@ target_sources(UFODAW PRIVATE
     Source/PluginProxy.cpp
     Source/PluginHostWorker.cpp
     Source/PluginPanel.cpp
+    Source/ClapFormat.cpp
     Source/PianoRoll.cpp
     Source/Stretch.cpp
     Source/Sampler.cpp
+    Source/SfInstrument.cpp
     Source/StarterPack.cpp
     Source/ProjectTemplates.cpp
     Source/AudioExport.cpp
     ${SHINE_SOURCES}
     Source/MainComponent.cpp
     "${rubberband_SOURCE_DIR}/single/RubberBandSingle.cpp")
-target_include_directories(UFODAW PRIVATE "${rubberband_SOURCE_DIR}" "${shine_SOURCE_DIR}/src/lib")
+target_include_directories(UFODAW PRIVATE "${rubberband_SOURCE_DIR}" "${shine_SOURCE_DIR}/src/lib" "${clap_SOURCE_DIR}/include")
 if(MSVC)   # (the C sources of Shine use GCC's __attribute__: a forced include takes it away)
     set_source_files_properties(${SHINE_SOURCES} PROPERTIES COMPILE_FLAGS "/FI\"${CMAKE_SOURCE_DIR}/Source/ShineCompat.h\"")
 endif()
@@ -169,7 +178,7 @@ if(UFODAW_BUILD_TESTS)
         tests/engine/EngineTest.cpp
         Source/PluginProxy.cpp
         Source/Engine.cpp Source/EngineLauncher.cpp Source/ExternalMidi.cpp Source/Tuner.cpp Source/Synth.cpp Source/Fx.cpp Source/DrumKit.cpp
-        Source/Stretch.cpp Source/Sampler.cpp Source/StarterPack.cpp Source/ProjectTemplates.cpp Source/AudioExport.cpp
+        Source/Stretch.cpp Source/Sampler.cpp Source/SfInstrument.cpp Source/StarterPack.cpp Source/ProjectTemplates.cpp Source/AudioExport.cpp
         ${SHINE_SOURCES}
         "${rubberband_SOURCE_DIR}/single/RubberBandSingle.cpp")
     target_include_directories(EngineTest PRIVATE Source "${rubberband_SOURCE_DIR}" "${shine_SOURCE_DIR}/src/lib")
@@ -177,4 +186,13 @@ if(UFODAW_BUILD_TESTS)
     target_link_libraries(EngineTest PRIVATE
         juce::juce_audio_formats juce::juce_audio_devices juce::juce_audio_processors juce::juce_gui_basics
         juce::juce_recommended_config_flags)
+
+    # a small CLAP plugin file (two plugins) for the tests of the CLAP hosting
+    add_library(TestClap MODULE tests/clap/TestClap.cpp)
+    target_include_directories(TestClap PRIVATE "${clap_SOURCE_DIR}/include")
+    set_target_properties(TestClap PROPERTIES PREFIX "" SUFFIX ".clap" OUTPUT_NAME "ufodaw-test")
+    add_dependencies(EngineTest TestClap)
+    target_sources(EngineTest PRIVATE Source/ClapFormat.cpp)
+    target_include_directories(EngineTest PRIVATE "${clap_SOURCE_DIR}/include")
+    target_compile_definitions(EngineTest PRIVATE TEST_CLAP_PATH="$<TARGET_FILE:TestClap>")
 endif()

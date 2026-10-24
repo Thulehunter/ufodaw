@@ -1,0 +1,8 @@
+{
+  "version": 3,
+  "bpm": 120.0,
+  "tracks": [
+    { "name": "Gone", "type": "midi", "clips": [], "soundFont": { "file": "sf/does-not-exist.sf2", "preset": 0 },
+      "midiClips": [ { "start": 0.0, "length": 2.0, "notes": [ { "pitch": 60, "start": 0.0, "length": 1.0, "velocity": 0.9 } ] } ] }
+  ]
+}

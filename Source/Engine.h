@@ -13,6 +13,7 @@
 #include "ExternalMidi.h"
 #include "TempoMap.h"
 #include "Sampler.h"
+#include "SfInstrument.h"
 #include "AudioExport.h"
 #include "Loudness.h"
 
@@ -296,6 +297,7 @@ struct Track
     std::unique_ptr<Synth> voices;      // audio-thread state, created for MIDI tracks
     std::shared_ptr<DrumKit> kit;       // set on drum tracks: a MIDI track that plays the drum kit instead of the synth
     std::shared_ptr<Sampler> sampler;   // set on sampler tracks: a MIDI track that plays a sample (Simpler-style) instead of the synth
+    std::shared_ptr<SfInstrument> sfInstrument;   // set on a MIDI track that plays a SoundFont / SFZ instead of the synth (the engine lock guards changes)
 
     FxParams fx;                        // effect chain settings
     std::unique_ptr<TrackFx> fxState;   // audio-thread state of the chain
@@ -405,6 +407,8 @@ struct TrackState
     std::vector<LaneState> autoLanes;   // includes "volume" and "pan"
     bool hasSampler = false, hasKit = false;
     Sampler::State samplerState;                // the Simpler of a sampler track
+    bool hasSf = false;
+    SfInstrument::State sfState;                // the SoundFont / SFZ of a MIDI track
     std::vector<DrumKit::PadState> padStates;   // the drum rack of a drum track
     bool sequencer = false;
     bool recordArmed = false;
@@ -424,6 +428,7 @@ struct TrackState
     std::vector<std::shared_ptr<PluginSlot>> midiFx;
     std::shared_ptr<DrumKit> kit;
     std::shared_ptr<Sampler> sampler;
+    std::shared_ptr<SfInstrument> sfInstrument;
     std::shared_ptr<PluginSlot> instrument;                 // plugins are shared with the live project,
     std::vector<std::shared_ptr<PluginSlot>> inserts;       // so undo restores which ones are present, not their settings
 };
@@ -686,6 +691,11 @@ public:
     void removeMidiFx (Track&, int index);
     void preparePlugin (PluginSlot&);                           // layout + prepareToPlay for the current audio setup
     void setInstrument (Track&, std::shared_ptr<PluginSlot>);   // null = built-in synth
+    // A SoundFont (.sf2) or SFZ file plays the MIDI track (a plugin instrument gives way). setSfBank (null) = the built-in synth again.
+    bool loadSfInstrument (Track&, const juce::File&, int preset, juce::String& error);
+    bool setSfPreset (Track&, int preset);                       // another preset of the SoundFont the track plays
+    void setSfBank (Track&, std::shared_ptr<const SfBank>);
+    void waitForInstrumentSamples();                              // until the SoundFont / SFZ samples are loaded (exports call this)
     void addInsert (Track&, std::shared_ptr<PluginSlot>);
     void removeInsert (Track&, int index);
     int getMaxBlockSize() const { return maxBlock; }
@@ -911,6 +921,7 @@ private:
     void applyDelay (Track&, float* l, float* r, int numSamples, int delaySamples);
     void renderDrumTrack (Track&, int numSamples, juce::int64 pos, bool running, float* outL, float* outR);
     void renderSamplerTrack (Track&, int numSamples, juce::int64 pos, bool running, float* outL, float* outR);
+    void renderSfTrack (Track&, int numSamples, juce::int64 pos, bool running, float* outL, float* outR);
     void renderPluginInstrument (Track&, int numSamples, float* outL, float* outR);
     void processInsert (PluginSlot&, float* l, float* r, int numSamples);
     bool processPlugin (PluginSlot&, juce::AudioBuffer<float>&, juce::MidiBuffer&);   // processBlock behind the crash guard; false = the plugin crashed (now or before)
@@ -935,6 +946,7 @@ private:
         Engine& engine;
         std::atomic<juce::int64> samples { 0 };
         std::atomic<bool> playing { false };
+        std::atomic<bool> insideMix { false };   // the mix runs under `lock` and waits for its worker threads: they must not ask for the lock again
     };
     PlayHead playHead { *this };
 

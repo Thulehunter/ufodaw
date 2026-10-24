@@ -1,0 +1,3 @@
+// a second file, included by main
+<group> lokey=84 hikey=96 pitch_keycenter=84 loop_mode=no_loop
+<region> sample=saw tooth.wav tune=0

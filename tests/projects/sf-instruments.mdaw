@@ -1,0 +1,22 @@
+{
+  "version": 3,
+  "bpm": 120.0,
+  "masterGain": 0.8,
+  "tracks": [
+    {
+      "name": "SoundFont", "type": "midi", "gain": 0.8, "clips": [],
+      "soundFont": { "file": "sf/test.sf2", "preset": 1, "presetName": "Test octave up", "volume": 1.0 },
+      "midiClips": [ { "start": 0.0, "length": 4.0, "notes": [ { "pitch": 60, "start": 0.0, "length": 0.5, "velocity": 0.8 }, { "pitch": 64, "start": 0.5, "length": 0.5, "velocity": 0.7 }, { "pitch": 67, "start": 1.0, "length": 1.0, "velocity": 0.7 }, { "pitch": 74, "start": 2.0, "length": 1.0, "velocity": 0.9 } ] } ]
+    },
+    {
+      "name": "SFZ", "type": "midi", "gain": 0.8, "clips": [],
+      "soundFont": { "file": "sf/test.sfz", "preset": 0, "volume": 1.0 },
+      "midiClips": [ { "start": 0.0, "length": 4.0, "notes": [ { "pitch": 69, "start": 0.0, "length": 0.5, "velocity": 0.8 }, { "pitch": 69, "start": 0.5, "length": 0.5, "velocity": 0.8 }, { "pitch": 36, "start": 1.0, "length": 1.0, "velocity": 0.7 }, { "pitch": 60, "start": 2.0, "length": 1.0, "velocity": 0.9 } ] } ]
+    },
+    {
+      "name": "Wavetable", "type": "midi", "gain": 0.7, "clips": [],
+      "synth": { "engine": 2, "wtTable": 2, "wtPos": 0.3, "wtLfo": 0.5, "attack": 0.01, "sustain": 0.8, "release": 0.3, "cutoff": 9000 },
+      "midiClips": [ { "start": 0.0, "length": 4.0, "notes": [ { "pitch": 48, "start": 0.0, "length": 1.5, "velocity": 0.8 }, { "pitch": 55, "start": 2.0, "length": 1.5, "velocity": 0.8 } ] } ]
+    }
+  ]
+}

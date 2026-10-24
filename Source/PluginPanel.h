@@ -10,7 +10,8 @@
 class PluginPanel : public juce::Component
 {
 public:
-    PluginPanel (Track&, Engine&, PluginHost&, std::function<void()> onBeginEdit, std::function<void()> onOpenBuiltIn = nullptr);
+    PluginPanel (Track&, Engine&, PluginHost&, std::function<void()> onBeginEdit, std::function<void()> onOpenBuiltIn = nullptr,
+                std::function<void()> onChooseSoundFile = nullptr);
 
     void paint (juce::Graphics&) override;
     void resized() override;
@@ -62,6 +63,14 @@ private:
     juce::TextButton instrumentEdit { "Edit" };
     std::function<void()> openBuiltIn;   // the built-in instrument's own window (the sampler, the drum rack)
     juce::Array<juce::PluginDescription> instruments;
+
+    // A SoundFont (.sf2) or SFZ file as the instrument of this MIDI track (instead of the built-in synth or a plugin), and the preset of a SoundFont.
+    juce::Label sfLabel { {}, "Sound file" };
+    juce::TextButton sfButton, sfClear { "x" };
+    juce::Label presetLabel { {}, "Preset" };
+    juce::ComboBox presetBox;
+    std::function<void()> chooseSoundFile;   // opens the file chooser (owned by the main window: this panel closes first)
+    void updateSoundFile();
 
     // Which MIDI input (keyboard, e-drum...) and channel this track listens to and records from.
     juce::Label inputLabel { {}, "MIDI input" };

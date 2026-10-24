@@ -370,6 +370,9 @@ private:
     void addEmptyAudioTrack();
     void addBusTrack();                                      // a group / effects-return bus
     void addSamplerTrack();                                  // a MIDI track that plays one sample (Simpler-style)
+    void chooseSoundFile (Track* target);                    // a SoundFont / SFZ for a MIDI track (nullptr: a new track)
+    void loadSoundFile (Track* target, const juce::File&);
+    void showSoundFontPresets (Track*);
     void openSampler (Track&);                               // the sampler's window: sample, markers, mode, envelope, filter
     void sampleClip (Track&, int clipId);                    // an audio clip's audio becomes the sample of a new sampler track
     void startSamplerStretch (std::shared_ptr<Sampler>, double ratio, std::function<void (bool)> done);   // in the background, with a progress window

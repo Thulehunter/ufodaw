@@ -38,6 +38,9 @@
     X (pianoBright,  0.5f,   0.0f,   1.0f,     "Piano brightness")    \
     X (pianoDetune,  0.5f,   0.0f,   1.0f,     "Piano string detune") \
     X (pianoHammer,  0.35f,  0.0f,   1.0f,     "Piano hammer noise")  \
+    X (wtPos,        0.0f,   0.0f,   1.0f,     "Wavetable position")  /* where in the table the oscillator reads (engine: wavetable) */ \
+    X (wtLfo,        0.0f,   0.0f,   1.0f,     "LFO to position")     \
+    X (wtEnv,        0.0f,  -1.0f,   1.0f,     "Envelope to position") /* the filter envelope moves the position */ \
     X (level,        1.0f,   0.0f,   4.0f,     "Synth volume")
 
 // name, default: waveform, osc 2 wave (0 sine, 1 saw, 2 square, 3 triangle), unison voices (1..5), LFO shape (0 sine, 1 triangle, 2 square, 3 random steps)
@@ -46,7 +49,8 @@
     X (osc2Wave, 1) \
     X (unison,   1) \
     X (lfoShape, 0) \
-    X (engine,   0) /* 0 = subtractive synth, 1 = piano */ \
+    X (engine,   0) /* 0 = subtractive synth, 1 = piano, 2 = wavetable */ \
+    X (wtTable,  0) /* the wavetable set (Wavetable.h) */ \
     X (mono,     0) /* 1 = one note at a time, legato: a held note glides to the next */
 
 // Every setting of a synth as plain numbers (for undo, presets and project files).

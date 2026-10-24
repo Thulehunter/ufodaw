@@ -155,6 +155,9 @@ New to it? The [guide](https://ufodaw.eu/guide.html) explains the deeper feature
   note and tuning from the sample itself. Right-click an audio clip > *Sample this clip* turns it into a sampler track with one note.
   Open it again with the track's instrument button (*Sampler: ...*) or *Sampler window* in the piano roll.
   The **Stretch** slider time-stretches the sample (0.25x-4x) without changing its pitch (Rubber Band); it works on drum pads too.
+- **SoundFont and SFZ instruments** - a MIDI track can play a `.sf2` SoundFont or an `.sfz` instrument instead of the built-in synth: **+ (left rail) > SoundFont / SFZ instrument...**, *Load SoundFont / SFZ...* in the track's instrument panel, or drop the file on the window or a MIDI track. A SoundFont's presets are chosen in a menu / the *Preset* box. Both formats are read by UFODAW's own code (no third-party library: `Source/SfInstrument.*`) into one list of regions and played by one voice engine: 64 voices per track, velocity, loops (also held), the volume envelope, pan, tuning, a low-pass filter, sustain pedal, pitch bend, CC 7 / 10 / 11, round robin, release triggers, groups (`off_by`), key switches, `#include` / `#define` / `default_path`. Samples (wav, flac, ogg, aiff) are decoded by a helper thread: up to 384 MB right away, the rest when a note asks for it, never more than 1.5 GB; exports wait for the samples. The project stores the file's place (relative, plus the preset); *Collect files* copies a `.sf2` but leaves an SFZ and its sample folders where they are. See the guide for the supported opcodes.
+- **Wavetable synth** - *Sound engine > Wavetable* in the synth window: the oscillator reads one of six tables (basic sine / triangle / saw / square, digital, vowels, comb, organ drawbars, pulse width) of 16 morphing waves. *Wavetable position* moves through the table; the LFO (*LFO to position*) and the filter envelope (*Envelope to position*) can move it by themselves, and a small picture shows the wave. Every wave exists in eight band-limited versions (128 down to 1 harmonic), so high notes do not alias. Unison, the second oscillator and sub, the filter, envelopes, glide and mono mode work as in the Synth engine; six sounds (*WT Morph pad* ...) are in the *Wavetable* category. It can be automated and scripted (`engine = "wavetable"`, `wtTable`).
+- **CLAP plugins** - `.clap` files are found by the plugin scan next to VST3 (folders: `Common Files\CLAP`, `%LOCALAPPDATA%\Programs\Common\CLAP`, and `CLAP_PATH`), and then work like any plugin: as instrument or effect, with automation, undo, project files and delay compensation. The hosting is UFODAW's own (`Source/ClapFormat.*`, the MIT-licensed CLAP headers): notes and MIDI (pedal, bend), parameters with the plugin's own value text, state, latency, tail, tempo and position, the plugin's window (embedded, or its own floating window). Not supported: note expressions / per-note modulation, notes sent out by a plugin, voice info, 64-bit audio, and plugins run inside the program (not in the helper process of the VST3 sandbox). `EngineTest clap` checks it with a small test plugin (`tests/clap`).
 - **Tempo calculator and BPM detection** - in the sampler window, *Tempo...* tells how many beats the part between the markers lasts and the tempo that makes; *Detect the tempo* finds it from the audio. Set the project tempo to it, or stretch the sample (pitch kept) to the project's tempo.
 - **Slice by hits, and slices to MIDI** - in the sampler's *Slice* mode, *Slice by hits* cuts the part between the markers at its hits (kicks, snares, hats...) instead of in equal parts; the slider next to it sets the sensitivity. *To MIDI* puts the slices on the track as a pattern (one note per slice from the slice key up, in the timing of the sample) at the playhead.
 
@@ -409,6 +412,7 @@ powershell -ExecutionPolicy Bypass -File scripts\selftest.ps1
 ```
 
 - `EngineTest` (`tests/engine/EngineTest.cpp`) renders a project with synth, drums, audio, a plugin with latency, buses, sends and a sidechain, in real time and offline, once on one thread and once with worker threads: the results must be identical. It also checks pitch shifting and the clip launcher.
+- `EngineTest sf` runs only the SoundFont / SFZ checks (`tests/engine/SfTests.h`: it writes a small SoundFont and SFZ itself, plays notes and measures pitch, loops, release, pedal, pitch bend, round robin, release triggers, groups, missing samples); the full run also mixes SoundFont and SFZ tracks serially and with workers (identical), duplicates and restores such a track. `EngineTest sfgen <folder>` writes the test instruments (`tests/projects/sf/` is made this way).
 - `scripts/selftest.ps1` starts the program with `--selftest`, which opens every project in `tests/projects/` (an old format, a newer format, a missing file, launcher cells) and the starter-pack projects without dialogs, renders a few seconds of each and checks the result.
 
 ## Project layout
@@ -422,6 +426,9 @@ powershell -ExecutionPolicy Bypass -File scripts\selftest.ps1
 | `Source/MainComponent.*` | Main window: arrangement, transport, project files, undo/redo |
 | `Source/PianoRoll.*`, `Source/DrumSequencer.*` | Note editors below the arrangement |
 | `Source/Sampler.*`, `Source/SamplerPanel.h` | The sampler instrument and its window |
+| `Source/SfInstrument.*` | SoundFont (.sf2) and SFZ players: file readers, sample loader thread, voice engine |
+| `Source/Wavetable.h` | The wavetables of the synth's wavetable engine (built once, band-limited) |
+| `Source/ClapFormat.*` | CLAP plugin hosting as a JUCE plugin format (scan, instances, parameters, state, window) |
 | `Source/Stretch.*`, `Source/ClipPanel.h` | Time-stretch and pitch-shift (Rubber Band), and the clip gain / stretch / pitch panel |
 | `Source/Tuner.*` | Pitch detection (YIN) and the tuner window |
 | `Source/TempoMap.h`, `Source/TempoPanel.h` | Tempo and time signature sections: seconds / beats / bars, and the list to edit them |
@@ -439,7 +446,8 @@ The audio thread never blocks: the UI edits the project under a lock that the au
 - Delay compensation covers audio plugins (instrument and effect inserts) up to 2 s; when a plugin reports another latency while playing, the compensation crossfades over about 10 ms (no click).
 - What is done inside a plugin's own window is part of undo as one step (opening the window takes it; Ctrl+Z puts the plugin back as it was). Plugins that keep their state outside what they save (a sample they loaded by hand, for example) may not go back completely.
 - Automation of effect and plugin parameters is applied every 64 samples (volume and pan are ramped); synth parameters are applied once per audio block. While a parameter is automated its slider can still be moved but the envelope wins during playback.
-- VST3 only on Windows. VST2 cannot be hosted (Steinberg no longer licenses it) and CLAP is not supported by the plugin-hosting code UFODAW is built on. The macOS build also hosts Audio Units (untested: it needs a Mac).
+- VST3 and CLAP on Windows. VST2 cannot be hosted (Steinberg no longer licenses it); CLAP plugins run inside the program (a crash in one is caught like in a VST3 that is not sandboxed). The macOS build also hosts Audio Units (untested: it needs a Mac).
+- SoundFont: SF3 (compressed) files, 24-bit extension samples, modulators (vibrato, filter envelope) and the per-note pitch-bend range are not supported; SFZ: opcodes that are not listed in the guide are ignored (no `sample=*saw` generators, no `lfo`/`eg` blocks, no CC-switched regions). Wavetable: the tables are built in; loading your own wavetable files and editing frames are not there yet.
 - Windows only so far.
 
 ## License
@@ -452,6 +460,7 @@ It is built on:
 - [JUCE](https://juce.com) 8 (AGPLv3, or a commercial licence from its makers), which also provides VST3 hosting under the GPLv3 terms of Steinberg's VST3 SDK.
 - The [Rubber Band Library](https://breakfastquay.com/rubberband/) (Particular Programs Ltd., GPL v2 or later) for time-stretching and pitch-shifting. A closed-source build would need a commercial licence from them as well.
 - [Shine](https://github.com/toots/shine) (an MP3 encoder by Gabriel Bouvigne and others, LGPL v2) for exporting MP3 files. Its C sources are compiled into the program.
+- The [CLAP](https://github.com/free-audio/clap) plugin API headers (MIT licence, header only, fetched at build time) for hosting CLAP plugins.
 - Optionally Steinberg's ASIO SDK (not included; see *Audio interfaces and ASIO*). Builds that include ASIO follow Steinberg's licence for it (the SDK is also offered under the GPLv3).
 
 VST is a registered trademark of Steinberg Media Technologies GmbH. UFODAW is not affiliated with or endorsed by Steinberg, the JUCE team or Particular Programs.

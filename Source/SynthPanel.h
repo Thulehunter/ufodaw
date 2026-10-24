@@ -5,6 +5,42 @@
 #include "SynthPresets.h"
 #include "Theme.h"
 
+#include "Wavetable.h"
+
+// The wave the wavetable engine reads at the moment (the table, the position, and the LFO / envelope are not included): a small picture next to the sliders.
+class WavetableView : public juce::Component, private juce::Timer
+{
+public:
+    explicit WavetableView (const SynthParams& p) : params (p) { startTimerHz (10); }
+
+    void paint (juce::Graphics& g) override
+    {
+        auto r = getLocalBounds().toFloat();
+        g.setColour (Theme::laneBg);
+        g.fillRoundedRectangle (r, 3.0f);
+        const int set = juce::jlimit (0, Wavetable::numSets - 1, params.wtTable.load());
+        const double fp = juce::jlimit (0.0f, 1.0f, params.wtPos.load()) * (Wavetable::numFrames - 1);
+        const int f0 = juce::jmin ((int) fp, Wavetable::numFrames - 2);
+        const float frac = (float) (fp - f0);
+        const float* a = Wavetable::bank().frame (set, f0, 0);
+        const float* b = Wavetable::bank().frame (set, f0 + 1, 0);
+        juce::Path path;
+        const int points = juce::jmax (2, (int) r.getWidth());
+        for (int i = 0; i < points; ++i)
+        {
+            const float v = Wavetable::read (a, b, frac, (double) i / (points - 1));
+            const float y = r.getCentreY() - v * (r.getHeight() * 0.42f);
+            if (i == 0) path.startNewSubPath (r.getX(), y); else path.lineTo (r.getX() + (float) i * r.getWidth() / (float) (points - 1), y);
+        }
+        g.setColour (Theme::orange);
+        g.strokePath (path, juce::PathStrokeType (1.5f));
+    }
+
+private:
+    void timerCallback() override { repaint(); }
+    const SynthParams& params;
+};
+
 // The window of the built-in synth: every setting of one track's synth, and the ready-made sounds. Changes apply at once (they are heard while a
 // note plays); each drag is one undo step.
 class SynthPanel : public juce::Component, private juce::Timer
@@ -46,7 +82,7 @@ public:
 
         // oscillators
         section ("ENGINE");
-        choiceCombo ("Sound engine", track.synth.engine, { "Synth", "Piano" });
+        choiceCombo ("Sound engine", track.synth.engine, { "Synth", "Piano", "Wavetable" });
         section ("OSCILLATOR 1");
         waveCombo (wave1, "Wave", track.synth.waveform);
         floatSlider ("pulseWidth");
@@ -79,6 +115,17 @@ public:
         floatSlider ("pianoBright");
         floatSlider ("pianoDetune");
         floatSlider ("pianoHammer");
+        section ("WAVETABLE (ENGINE: WAVETABLE)");
+        {
+            juce::StringArray names;
+            for (int i = 0; i < Wavetable::numSets; ++i)
+                names.add (Wavetable::setName (i));
+            choiceCombo ("Table", track.synth.wtTable, names);
+        }
+        floatSlider ("wtPos");
+        floatSlider ("wtLfo");
+        floatSlider ("wtEnv");
+        addRow (new juce::Label ({}, "Preview"), new WavetableView (track.synth));
         nextColumn();
 
         section ("AMPLIFIER");
@@ -105,7 +152,7 @@ public:
         floatSlider ("lfoAmp");
         floatSlider ("lfoDelay");
 
-        setSize (columnWidth * 3 + 28, 580);
+        setSize (columnWidth * 3 + 28, 700);
         startTimerHz (4);
     }
 
@@ -194,7 +241,8 @@ public:
         v.waveform = juce::jlimit (0, 3, v.waveform);
         v.osc2Wave = juce::jlimit (0, 3, v.osc2Wave);
         v.lfoShape = juce::jlimit (0, 3, v.lfoShape);
-        v.engine = juce::jlimit (0, 1, v.engine);
+        v.engine = juce::jlimit (0, 2, v.engine);
+        v.wtTable = juce::jlimit (0, 5, v.wtTable);
         v.mono = juce::jlimit (0, 1, v.mono);
         return true;
     }

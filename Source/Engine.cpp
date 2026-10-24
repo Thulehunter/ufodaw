@@ -108,6 +108,8 @@ void Engine::prepareToPlay (int samplesPerBlock, double newRate)
             t->kit->prepare (newRate);
         if (t->sampler != nullptr)
             t->sampler->prepare (newRate);
+        if (t->sfInstrument != nullptr)
+            t->sfInstrument->prepare (newRate);
         sizeDelayBuffers (*t, newRate, trackL.size());
         t->fxState->prepare (newRate);
         if (t->instrument != nullptr)
@@ -124,11 +126,21 @@ void Engine::prepareToPlay (int samplesPerBlock, double newRate)
 
 juce::Optional<juce::AudioPlayHead::PositionInfo> Engine::PlayHead::getPosition() const
 {
+    // While a block is mixed the audio thread holds the lock and waits for the worker threads that render the tracks: a plugin that asks for the position
+    // on such a thread must not wait for that lock (nobody could be editing the tempo map then, the editors need the lock too).
+    struct Guard
+    {
+        explicit Guard (const Engine& e, bool take) : lock (e.lock), taken (take) { if (taken) lock.enter(); }
+        ~Guard() { if (taken) lock.exit(); }
+        const juce::CriticalSection& lock;
+        bool taken;
+    } guard (engine, ! insideMix.load());
+
     const double rate = juce::jmax (1.0, engine.sampleRate);
     const auto samples = this->samples.load();
     const double seconds = (double) samples / rate;
 
-    const juce::ScopedLock sl (engine.lock);   // (the audio thread already holds it while it mixes; the tempo map is edited under it)
+
     const auto& map = engine.tempoMap;
     const auto& section = map.sectionAt (seconds);
     const double beats = map.secondsToBeats (seconds);
@@ -266,6 +278,7 @@ void Engine::preparePlugin (PluginSlot& s)
 
 void Engine::setInstrument (Track& t, std::shared_ptr<PluginSlot> slot)
 {
+    std::shared_ptr<SfInstrument> sfRemoved;
     const juce::ScopedLock sl (lock);
     if (t.type != Track::Type::Midi)
         return;
@@ -274,10 +287,81 @@ void Engine::setInstrument (Track& t, std::shared_ptr<PluginSlot> slot)
                                            [&] (auto& lane) { return lane->plugin == t.instrument; }),
                            t.autoLanes.end());
     t.instrument = std::move (slot);
+    if (t.instrument != nullptr)   // a plugin instrument replaces a SoundFont / SFZ (released after the lock: its loader thread is stopped then)
+        sfRemoved = std::move (t.sfInstrument);
     t.liveMidi.clear();
     t.pluginTailSamples = 0.0;
     if (t.voices != nullptr)
         t.voices->reset();
+}
+
+// A SoundFont / SFZ plays this MIDI track (null: the built-in synth again).
+void Engine::setSfBank (Track& t, std::shared_ptr<const SfBank> bank)
+{
+    if (t.type != Track::Type::Midi)
+        return;
+    std::shared_ptr<const SfBank> oldBank;     // (released after the lock: stopping the loader thread of the old samples can take a moment)
+    std::shared_ptr<SfInstrument> oldInstrument;
+    std::shared_ptr<PluginSlot> oldPlugin;
+    {
+        const juce::ScopedLock sl (lock);
+        if (bank == nullptr)
+        {
+            oldInstrument = std::move (t.sfInstrument);
+        }
+        else
+        {
+            if (t.instrument != nullptr)   // (a plugin instrument gives way)
+            {
+                t.autoLanes.erase (std::remove_if (t.autoLanes.begin(), t.autoLanes.end(),
+                                                   [&] (auto& lane) { return lane->plugin == t.instrument; }),
+                                   t.autoLanes.end());
+                oldPlugin = std::move (t.instrument);
+                t.liveMidi.clear();
+                t.pluginTailSamples = 0.0;
+            }
+            if (t.sfInstrument == nullptr)
+            {
+                t.sfInstrument = std::make_shared<SfInstrument>();
+                t.sfInstrument->prepare (sampleRate);
+            }
+            oldBank = t.sfInstrument->getBank();
+            t.sfInstrument->setBank (std::move (bank));
+        }
+        if (t.voices != nullptr)
+            t.voices->reset();
+    }
+}
+
+bool Engine::loadSfInstrument (Track& t, const juce::File& file, int preset, juce::String& error)
+{
+    if (t.type != Track::Type::Midi)
+    {
+        error = "Only MIDI tracks can play a SoundFont or SFZ.";
+        return false;
+    }
+    auto bank = SfBank::load (file, preset, error);
+    if (bank == nullptr)
+        return false;
+    setSfBank (t, std::move (bank));
+    return true;
+}
+
+bool Engine::setSfPreset (Track& t, int preset)
+{
+    std::shared_ptr<const SfBank> current;
+    {
+        const juce::ScopedLock sl (lock);
+        if (t.sfInstrument != nullptr)
+            current = t.sfInstrument->getBank();
+    }
+    if (current == nullptr)
+        return false;
+    auto bank = current->withPreset (preset);
+    if (bank == nullptr)
+        return false;
+    setSfBank (t, std::move (bank));
+    return true;
 }
 
 void Engine::addInsert (Track& t, std::shared_ptr<PluginSlot> slot)
@@ -1809,7 +1893,7 @@ std::vector<AutoTarget> Engine::listAutomationTargets (const Track& t) const
     for (auto& spec : fxParamSpecs())
         out.push_back ({ juce::String ("fx.") + spec.id, spec.label, "Effects" });
 
-    if (t.type == Track::Type::Midi && t.instrument == nullptr && t.kit == nullptr && t.sampler == nullptr)
+    if (t.type == Track::Type::Midi && t.instrument == nullptr && t.kit == nullptr && t.sampler == nullptr && t.sfInstrument == nullptr)
         for (auto* name : { "cutoff", "resonance", "drive", "filterEnv", "attack", "decay", "sustain", "release", "osc2Mix", "osc2Detune", "subLevel",
                             "unisonDetune", "lfoRate", "lfoPitch", "lfoCutoff", "lfoAmp", "glide", "level" })
             for (auto& info : SynthParams::floatInfo())
@@ -1965,6 +2049,11 @@ TrackState Engine::captureTrack (const Track& t) const
         ts.hasKit = true;
         ts.padStates = t.kit->captureState();
     }
+    if (t.sfInstrument != nullptr)
+    {
+        ts.hasSf = true;
+        ts.sfState = t.sfInstrument->captureState();
+    }
     ts.name = t.name;
     ts.colour = t.colour;
     ts.groupId = t.groupId;
@@ -1999,6 +2088,7 @@ TrackState Engine::captureTrack (const Track& t) const
         ts.autoLanes.push_back ({ lane->id, lane->points, lane->active.load(), lane->data });
     ts.kit = t.kit;
     ts.sampler = t.sampler;
+    ts.sfInstrument = t.sfInstrument;
     const_cast<Track&> (t).fx.forEachFloat ([&ts] (const char*, std::atomic<float>& v) { ts.fxFloats.push_back (v.load()); });
     const_cast<Track&> (t).fx.forEachBool ([&ts] (const char*, std::atomic<bool>& v) { ts.fxBools.push_back (v.load() ? 1 : 0); });
     return ts;
@@ -2037,6 +2127,7 @@ void Engine::applyTrackState (Track& t, const TrackState& ts)
     t.midiFx = ts.midiFx;
     t.kit = ts.kit;
     t.sampler = ts.sampler;
+    t.sfInstrument = ts.sfInstrument;
     t.sequencer = ts.sequencer;
     t.recordArmed = ts.recordArmed;
     t.midiInputId = ts.midiInputId;
@@ -2081,6 +2172,11 @@ void Engine::applyTrackState (Track& t, const TrackState& ts)
         t.sampler->applyState (ts.samplerState);
     if (ts.hasKit && t.kit != nullptr)
         t.kit->applyState (ts.padStates);
+    if (ts.hasSf && t.sfInstrument != nullptr)
+    {
+        t.sfInstrument->applyState (ts.sfState);   // (the instrument is shared with the snapshot: its bank goes back into it)
+        t.sfInstrument->prepare (sampleRate);
+    }
 }
 
 std::shared_ptr<PluginSlot> Engine::findPluginSlot (const PluginSlot* slot) const
@@ -2273,6 +2369,8 @@ void Engine::drainPreviewEvents()
                         t->liveMidi.addEvent (m, 0);
                     else if (! t->externalOuts.empty())
                         forwardExternal (*t, m, 0);
+                    else if (t->sfInstrument != nullptr)
+                        t->sfInstrument->control (e.controller, e.velocity);
                     return;
                 }
 
@@ -2288,6 +2386,10 @@ void Engine::drainPreviewEvents()
                     t->liveMidi.addEvent (e.on ? juce::MidiMessage::noteOn (1, e.pitch, e.velocity)
                                                : juce::MidiMessage::noteOff (1, e.pitch), 0);
                     t->pluginTailSamples = 3.0 * sampleRate;
+                }
+                else if (t->sfInstrument != nullptr)
+                {
+                    if (e.on) t->sfInstrument->noteOn (e.pitch, e.velocity); else t->sfInstrument->noteOff (e.pitch);
                 }
                 else if (t->kit != nullptr)
                 {
@@ -2316,6 +2418,7 @@ bool Engine::anySynthActive() const
         if ((t->voices != nullptr && t->voices->isActive())
             || (t->kit != nullptr && t->kit->isActive())
             || (t->sampler != nullptr && t->sampler->isActive())
+            || (t->sfInstrument != nullptr && t->sfInstrument->isActive())
             || (t->instrument != nullptr && (t->pluginTailSamples > 0.0 || t->instrument->editorOpen.load())))   // (an open editor keeps its plugin running)
             return true;
     return false;
@@ -2335,6 +2438,8 @@ void Engine::silenceSynths()
             t->kit->reset();
         if (t->sampler != nullptr)
             t->sampler->reset();
+        if (t->sfInstrument != nullptr)
+            t->sfInstrument->reset();
         t->fxState->reset();
         if (t->instrument != nullptr)
             t->instrument->instance->reset();
@@ -2371,6 +2476,8 @@ void Engine::releaseAllNotes (Track& t)
         t.kit->stopAll();
     if (t.sampler != nullptr)
         t.sampler->allNotesOff();
+    if (t.sfInstrument != nullptr)
+        t.sfInstrument->allNotesOff();
     if (t.instrument != nullptr)
     {
         t.liveMidi.addEvent (juce::MidiMessage::allNotesOff (1), 0);
@@ -3184,6 +3291,44 @@ void Engine::renderSamplerTrack (Track& t, int n, juce::int64 pos, bool running,
         t.sampler->render (outL + done, outR + done, n - done);
 }
 
+// A SoundFont / SFZ track: the notes and the controller moves (sustain pedal, pitch bend, volume...) of the clips, each at its own sample.
+void Engine::renderSfTrack (Track& t, int n, juce::int64 pos, bool running, float* outL, float* outR)
+{
+    std::fill (outL, outL + n, 0.0f);
+    std::fill (outR, outR + n, 0.0f);
+    collectNoteEvents (t, n, pos, running);
+
+    auto& sf = *t.sfInstrument;
+    auto& notes = t.work.noteEvents;
+    auto& ccs = t.work.ccEvents;
+    std::stable_sort (ccs.begin(), ccs.end(), [] (const CcBlockEvent& a, const CcBlockEvent& b) { return a.offset < b.offset; });
+
+    size_t ni = 0, ci = 0;
+    int done = 0;
+    while (ni < notes.size() || ci < ccs.size())
+    {
+        const bool takeCc = ci < ccs.size() && (ni >= notes.size() || ccs[ci].offset <= notes[ni].offset);
+        const int offset = takeCc ? ccs[ci].offset : notes[ni].offset;
+        if (offset > done)
+        {
+            sf.render (outL + done, outR + done, offset - done);
+            done = offset;
+        }
+        if (takeCc)
+        {
+            sf.control (ccs[ci].controller, ccs[ci].value);
+            ++ci;
+        }
+        else
+        {
+            const auto& e = notes[ni++];
+            if (e.on) sf.noteOn (e.pitch, e.velocity); else sf.noteOff (e.pitch);
+        }
+    }
+    if (done < n)
+        sf.render (outL + done, outR + done, n - done);
+}
+
 void Engine::renderMidiTrack (Track& t, int n, juce::int64 pos, bool running, float* outL, float* outR)
 {
     std::fill (outL, outL + n, 0.0f);
@@ -3307,6 +3452,10 @@ void Engine::renderTrackSignal (Track& t, int n, juce::int64 pos, bool running, 
         {
             // plays hardware instead of the built-in sound: just send this block's notes out
             collectNoteEvents (t, nn, pos, running);
+        }
+        else if (t.sfInstrument != nullptr)
+        {
+            renderSfTrack (t, nn, pos, running, bufL, bufR);        // (stereo: SoundFont / SFZ zones have their own pan)
         }
         else if (t.sampler != nullptr)
         {
@@ -3549,6 +3698,8 @@ void Engine::mixBlock (float* outL, float* outR, int n, juce::int64 pos, bool wi
     // Denormal numbers (the tails of filters, reverbs and plugin effects fading to nothing) make some CPUs many times slower;
     // flush them to zero for everything that runs inside the mix, plugins included.
     juce::ScopedNoDenormals noDenormals;
+    // (the lock is held while a block is mixed: plugins on worker threads read the position without it, see PlayHead::getPosition)
+    struct MixFlag { std::atomic<bool>& flag; explicit MixFlag (std::atomic<bool>& f) : flag (f) { flag = true; } ~MixFlag() { flag = false; } } mixFlag (playHead.insideMix);
 
     if (launcherClear.exchange (false))   // the transport was stopped: what the clip launcher played is over
         for (auto& t : tracks)
@@ -3866,6 +4017,8 @@ bool Engine::renderToFile (const juce::File& file, double seconds, const RenderO
     if (seconds <= 0.0)
         return false;
 
+    waitForInstrumentSamples();   // (a SoundFont / SFZ whose samples are still being read would export silence)
+
     file.deleteFile();
     std::unique_ptr<juce::FileOutputStream> stream (file.createOutputStream());
     if (stream == nullptr)
@@ -3968,6 +4121,7 @@ void Engine::silenceEverything()
         if (t->voices != nullptr)  t->voices->reset();
         if (t->kit != nullptr)     t->kit->reset();
         if (t->sampler != nullptr) t->sampler->reset();
+        if (t->sfInstrument != nullptr) t->sfInstrument->reset();
         if (t->instrument != nullptr)
             t->liveMidi.addEvent (juce::MidiMessage::allSoundOff (1), 0);
     }
@@ -4635,6 +4789,13 @@ Track* Engine::duplicateTrack (const Track& src)
     const juce::ScopedLock sl (lock);
     ts.kit = copy->kit;           // the new kit / sampler get the settings and samples of the old ones
     ts.sampler = copy->sampler;
+    ts.sfInstrument = nullptr;
+    if (ts.hasSf)                 // (a SoundFont / SFZ is shared: the bank is immutable, each track has its own voices)
+    {
+        ts.sfInstrument = std::make_shared<SfInstrument>();
+        ts.sfInstrument->prepare (sampleRate);
+        ts.sfInstrument->applyState (ts.sfState);
+    }
     applyTrackState (*copy, ts);
     copy->recordArmed = false;
     copy->frozen = false;         // (a copy of a frozen track plays itself again)
@@ -4797,4 +4958,18 @@ void Engine::setSubLaneState (Track& t, int index, int mute, int solo)
     if (mute >= 0) t.subLanes[(size_t) index].mute = mute != 0;
     if (solo >= 0) t.subLanes[(size_t) index].solo = solo != 0;
     updateSubLaneMask (t);
+}
+
+// An export or a freeze must hear every sample of the SoundFont / SFZ instruments: wait (a minute at most) until their loader threads are done.
+void Engine::waitForInstrumentSamples()
+{
+    std::vector<std::shared_ptr<const SfBank>> banks;
+    {
+        const juce::ScopedLock sl (lock);
+        for (auto& t : tracks)
+            if (t->sfInstrument != nullptr && t->sfInstrument->getBank() != nullptr)
+                banks.push_back (t->sfInstrument->getBank());
+    }
+    for (auto& b : banks)
+        b->pool->waitForPreload (60000);
 }

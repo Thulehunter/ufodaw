@@ -44,6 +44,8 @@
     <a href="#latency">Latency &amp; audio setup</a>
     <a href="#automation">Automation</a>
     <a href="#sampler">Sampler &amp; slicing</a>
+    <a href="#instruments">SoundFont &amp; SFZ instruments</a>
+    <a href="#clap">CLAP plugins</a>
     <a href="#warp">Warp &amp; stretch</a>
     <a href="#drums">Drums &amp; sub-tracks</a>
     <a href="#midi">MIDI routing &amp; sequencers</a>
@@ -159,6 +161,33 @@
       <h3>Tempo tools</h3>
       <p><b>Tempo…</b> tells you how many beats the marked part lasts and what tempo that makes. <b>Detect the tempo</b> finds it from the audio. Then either set the project tempo to it, or stretch the sample (pitch kept) to the project's tempo.</p>
       <p>Right-click any audio clip and choose <b>Sample this clip</b> to turn it into a sampler track with one note. The <b>Stretch</b> slider (0.25x–4x) changes length without changing pitch, and works on drum pads too.</p>
+    </section>
+
+    <section id="instruments">
+      <h2>SoundFont and SFZ instruments</h2>
+      <p>A MIDI track can play a <b>SoundFont (.sf2)</b> or an <b>SFZ (.sfz)</b> instrument instead of the built-in synth. Thousands of free pianos, strings, drum kits and orchestral sounds come in these formats. Choose <b>+ &gt; SoundFont / SFZ instrument…</b> for a new track, or open the track's <b>Instrument and plugins…</b> panel (the instrument row in the track header) and click <b>Load SoundFont / SFZ…</b>. You can also drop a .sf2 or .sfz file on the window or on a MIDI track.</p>
+      <p>A SoundFont has many <b>presets</b> (a piano, a violin, a drum kit…): pick one in the menu that appears after loading, or later in the <b>Preset</b> box of the same panel. The track header shows the name of the instrument. The <b>x</b> next to the file name goes back to the built-in synth. Loading a plugin instrument replaces the SoundFont, and the other way round.</p>
+
+      <h3>What is played</h3>
+      <p>Polyphony (up to 64 notes per track), velocity, loops (also while the key is held), the volume envelope of every zone, pan, tuning, a low-pass filter, the sustain pedal (CC 64), pitch bend (±2 semitones), CC 7 and 11 (volume), CC 10 (pan) and all-notes-off. Pedal and bend can be recorded from a MIDI keyboard or drawn as controller lanes in the piano roll, and they sound while the project plays, not just live.</p>
+      <p>SFZ files may use <code>&lt;control&gt; &lt;global&gt; &lt;master&gt; &lt;group&gt; &lt;region&gt;</code>, <code>#include</code>, <code>#define</code> and <code>default_path</code>, and these opcodes: <code>sample</code>, <code>key lokey hikey</code>, <code>lovel hivel</code>, <code>pitch_keycenter pitch_keytrack tune transpose</code>, <code>loop_mode loop_start loop_end</code> (no_loop, one_shot, loop_continuous, loop_sustain), <code>offset end</code>, <code>volume pan amp_veltrack</code>, <code>ampeg_delay/attack/hold/decay/sustain/release</code>, <code>cutoff resonance fil_type</code>, <code>trigger</code> (attack, release, first, legato), <code>seq_length seq_position</code> (round robin), <code>lorand hirand</code>, <code>group off_by off_mode</code> (a closed hi-hat cuts an open one) and key switches (<code>sw_last sw_lokey sw_hikey sw_default</code>). Samples may be wav, flac, ogg or aiff. Opcodes that are not listed are ignored, so most instruments still play, only without the extras.</p>
+
+      <h3>Big instruments, memory and saving</h3>
+      <p>Samples are read by a helper thread, never by the audio thread: a few hundred megabytes load right away, the rest when a note asks for it (a note on a sample that is not ready yet is silent that once). Exporting waits until everything is loaded. The project remembers the <b>file's place</b> (relative to the project like audio files, plus the preset); the instrument itself is not copied into the project, except by <b>Collect files</b>, which copies a .sf2 (an SFZ stays where it is because its samples sit in folders next to it). If the file is missing when you open the project you get the usual "files not found" message and the track is silent until you load it again.</p>
+
+      <h3>A small SFZ to start with</h3>
+      <p>Save this as <code>my-piano.sfz</code> next to a <code>samples</code> folder with C3.wav, C4.wav and C5.wav, then load it:</p>
+<pre><code>&lt;control&gt;
+default_path=samples/
+&lt;global&gt;
+ampeg_attack=0.005  ampeg_release=0.4
+&lt;group&gt; loop_mode=no_loop
+&lt;region&gt; sample=C3.wav lokey=0  hikey=53 pitch_keycenter=c3
+&lt;region&gt; sample=C4.wav lokey=54 hikey=65 pitch_keycenter=c4
+&lt;region&gt; sample=C5.wav lokey=66 hikey=127 pitch_keycenter=c5
+&lt;group&gt; trigger=release volume=-12
+&lt;region&gt; sample=key-noise.wav lokey=0 hikey=127 pitch_keycenter=60</code></pre>
+      <p>The last group plays a key-up noise when a key is released. <code>seq_length=3 seq_position=1</code> (2, 3) on three regions with the same keys gives round-robin variations.</p>
     </section>
 
     <section id="warp">
@@ -360,12 +389,20 @@ ufodaw.set_notes(track, clip, notes)</code></pre>
       <h2>Synth, piano and drums</h2>
       <h3>The built-in synth</h3>
       <p>Every MIDI track without a plugin has a synth. In the piano roll, the <b>Sounds</b> box gives 43 ready-made sounds (bass, leads, pads, keys, plucks, pianos, brass, a riser) and <b>Edit sound...</b> opens all settings: up to five detuned unison oscillators spread over the stereo image, a second oscillator and a sub oscillator, pulse width, a resonant filter with drive, key tracking and its own envelope, the amplifier envelope, an LFO (to pitch, cutoff or volume, with a fade-in), glide, a pitch envelope (for 808 basses) and a mono legato mode. Changes sound at once and every drag is one undo step. Most settings can be automated.</p>
+      <h3>The wavetable engine</h3>
+      <p>Choose <b>Wavetable</b> as the sound engine for an oscillator that reads a table of waves instead of a fixed shape. Pick one of six tables (basic shapes, digital, vowels, comb, organ drawbars, pulse width) and move <b>Wavetable position</b> through its sixteen waves: the small picture shows the wave you are on. <b>LFO to position</b> and <b>Envelope to position</b> (the filter envelope, also backwards) make the sound move by itself, which is where wavetable pads and plucks get their life. The filter, envelopes, unison, second oscillator, sub and glide work as always; the <i>Wavetable</i> sounds in the list are a good start. Every wave is band-limited per octave, so high notes stay clean.</p>
       <h3>The piano engine</h3>
       <p>Choose <b>Piano</b> as the sound engine for a piano built from decaying partials: the notes beat softly like two or three strings, the hammer adds a burst of noise and harder notes are brighter. <i>Ring time</i>, <i>brightness</i>, <i>string detune</i> and <i>hammer noise</i> change the character; the piano sounds in the list are a good start.</p>
       <h3>Drums</h3>
       <p>The drum rack has fourteen kits (<i>Punch</i>, <i>808</i>, <i>Lo-fi</i>, <i>House</i>, <i>Tight</i>, <i>909</i>, <i>Acoustic</i>, <i>Trap Hard</i>, <i>Boom Bap</i>, <i>Techno</i>, <i>Rock</i>, <i>Vintage 707</i>, <i>Disco Funk</i> and <i>World Percussion</i>). Drag a sound from the sample browser (the folder button on the left) onto a pad to use your own sound there. Every pad gets a soft version for light hits and round-robin versions that take turns, so a repeated hit does not sound the same. Hit a pad softly or hard (with a MIDI keyboard, or by the velocity of the notes in a drum clip) to hear the layers.</p>
       <h3>Render from the command line</h3>
       <p><code>UFODAW.exe --render project.mdaw out.wav</code> renders a whole project to an audio file without a dialog; the format follows the extension (wav, flac, aiff, mp3 or ogg).</p>
+    </section>
+
+    <section id="clap">
+      <h2>CLAP plugins</h2>
+      <p>UFODAW hosts <b>CLAP</b> plugins (<code>.clap</code> files) as well as VST3. Open <b>Plugins</b> and scan: the usual CLAP folders are searched (<code>C:\Program Files\Common Files\CLAP</code>, <code>%LOCALAPPDATA%\Programs\Common\CLAP</code> and every folder in the <code>CLAP_PATH</code> variable). A CLAP plugin then appears in the same lists as your VST3 plugins, as an instrument for a MIDI track or as an effect, and behaves the same: parameters can be automated, the plugin's settings are saved in the project, delay compensation follows the latency it reports, and its window opens from the <b>Edit</b> button (inside the editor window, or as its own window when the plugin wants that).</p>
+      <p>Notes, the sustain pedal and pitch bend reach the plugin, as do the tempo and the song position. Not supported yet: note expressions and per-note modulation, plugins that send notes out, and 64-bit audio. CLAP plugins run inside the program; if one crashes while it loads, the usual "skipped" message tells you and the plugin manager lets you allow it again.</p>
     </section>
 
     <section id="launcher">
@@ -530,7 +567,7 @@ ufodaw.set_notes(track, clip, notes)</code></pre>
   ["fr-nav", "fr-link"].forEach(function (id) {
     var a = document.getElementById(id); a.href = fr; a.target = "_blank"; a.rel = "noopener";
   });
-  var VERSION = "0.9.5.5";   // (update with every release)
+  var VERSION = "0.9.6";   // (update with every release)
   var body = "**What happened?**\n\n\n**What did you expect?**\n\n\n**How can it be repeated?**\n1. \n2. \n3. \n\n**Version:** UFODAW " + VERSION + "\n**Windows version:**\n**Audio device and driver (ASIO / WASAPI):**\n**Plugins involved (name, maker):**\n";
   var bug = REPO + "/issues/new?labels=bug&title=" + encodeURIComponent("Bug: ") + "&body=" + encodeURIComponent(body);
   ["bug-nav", "bug-link"].forEach(function (id) {

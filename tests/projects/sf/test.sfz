@@ -1,0 +1,20 @@
+// test instrument of UFODAW (sine and saw waves)
+<control>
+default_path=samples/
+#define $LOOP loop_continuous
+<global> ampeg_release=0.05 /* a block comment */
+#include "extra.sfz"
+<group> lokey=31 hikey=39 pitch_keycenter=69 loop_mode=$LOOP loop_start=0 loop_end=4399 ampeg_attack=0.01
+<region> sample=sine.wav
+<group> key=69 loop_mode=$LOOP loop_start=0 loop_end=4399 seq_length=2
+<region> seq_position=1 sample=sine.wav
+<region> seq_position=2 sample=saw tooth.wav
+<group> key=60 loop_mode=$LOOP loop_start=0 loop_end=4399 pitch_keycenter=69
+<region> lovel=1 hivel=63 sample=sine.wav
+<region> lovel=64 hivel=127 sample=saw tooth.wav
+<group> key=30 trigger=release pitch_keycenter=69
+<region> sample=saw tooth.wav loop_mode=no_loop
+<group> key=50 loop_mode=one_shot
+<region> sample=sine.wav
+<group> lokey=51 hikey=52 group=1 off_by=1 loop_mode=$LOOP loop_start=0 loop_end=4399 pitch_keycenter=69
+<region> sample=sine.wav
