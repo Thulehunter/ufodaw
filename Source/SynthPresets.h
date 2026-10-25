@@ -268,6 +268,73 @@ namespace SynthPresets
                 v.cutoff = 10000; v.fAttack = 0.002f; v.fDecay = 0.2f; v.fSustain = 0.0f; v.unison = 2; v.unisonDetune = 5;
             });
 
+            // ---- wavetable, more tables (Wavetable.h: wavefold, saturated, choir, rising, glass, sync, FM, texture)
+            add ("Wavetable", "WT Choir pad", [] (SynthValues& v)
+            {
+                v.engine = 2; v.wtTable = 8; v.wtPos = 0.05f; v.wtLfo = 0.5f; v.lfoRate = 0.12f; v.unison = 4; v.unisonDetune = 12; v.spread = 0.9f;
+                v.attack = 0.9f; v.decay = 0.6f; v.sustain = 0.85f; v.release = 1.4f; v.cutoff = 5000; v.lfoDelay = 0.5f;
+            });
+            add ("Wavetable", "WT Dream pad", [] (SynthValues& v)
+            {
+                v.engine = 2; v.wtTable = 0; v.wtPos = 0.55f; v.wtLfo = 0.35f; v.lfoRate = 0.2f; v.wtEnv = 0.3f; v.unison = 5; v.unisonDetune = 18; v.spread = 1.0f;
+                v.attack = 0.7f; v.decay = 0.8f; v.sustain = 0.75f; v.release = 1.6f; v.cutoff = 3500; v.fAttack = 1.0f; v.fDecay = 1.0f; v.fSustain = 0.6f; v.lfoCutoff = 0.4f;
+            });
+            add ("Wavetable", "WT Texture drone", [] (SynthValues& v)
+            {
+                v.engine = 2; v.wtTable = 13; v.wtPos = 0.2f; v.wtLfo = 0.8f; v.lfoRate = 0.08f; v.unison = 3; v.unisonDetune = 25; v.spread = 1.0f; v.subLevel = 0.3f;
+                v.attack = 1.6f; v.decay = 1.0f; v.sustain = 0.9f; v.release = 2.0f; v.cutoff = 2500; v.resonance = 0.25f; v.lfoCutoff = 0.5f;
+            });
+            add ("Wavetable", "WT Fold lead", [] (SynthValues& v)
+            {
+                v.engine = 2; v.wtTable = 6; v.wtPos = 0.25f; v.wtVel = 0.8f; v.wtEnv = 0.4f; v.mono = 1; v.glide = 0.07f; v.unison = 2; v.unisonDetune = 9;
+                v.attack = 0.008f; v.decay = 0.3f; v.sustain = 0.75f; v.release = 0.2f; v.cutoff = 10000; v.fDecay = 0.4f; v.fSustain = 0.3f; v.pitchEnv = 0.0f;
+            });
+            add ("Wavetable", "WT Sync lead", [] (SynthValues& v)
+            {
+                v.engine = 2; v.wtTable = 11; v.wtPos = 0.2f; v.wtLfo = 0.9f; v.lfoRate = 0.45f; v.mono = 1; v.glide = 0.04f; v.unison = 2; v.unisonDetune = 7;
+                v.attack = 0.01f; v.decay = 0.25f; v.sustain = 0.8f; v.release = 0.25f; v.cutoff = 7000; v.lfoPitch = 6; v.lfoDelay = 0.5f;
+            });
+            add ("Wavetable", "WT Pulse lead", [] (SynthValues& v)
+            {
+                v.engine = 2; v.wtTable = 5; v.wtPos = 0.15f; v.wtLfo = 0.5f; v.lfoRate = 3.5f; v.mono = 1; v.glide = 0.03f; v.unison = 1;
+                v.attack = 0.005f; v.decay = 0.2f; v.sustain = 0.8f; v.release = 0.15f; v.cutoff = 6000; v.resonance = 0.15f;
+            });
+            add ("Wavetable", "WT Saturated bass", [] (SynthValues& v)
+            {
+                v.engine = 2; v.wtTable = 7; v.wtPos = 0.3f; v.wtVel = 0.8f; v.wtEnv = 0.4f; v.subLevel = 0.45f;
+                v.attack = 0.003f; v.decay = 0.3f; v.sustain = 0.75f; v.release = 0.12f; v.cutoff = 800; v.resonance = 0.2f; v.filterEnv = 1.2f; v.fDecay = 0.25f; v.fSustain = 0.1f; v.keyTrack = 0.3f;
+            });
+            add ("Wavetable", "WT Wobble bass", [] (SynthValues& v)
+            {
+                v.engine = 2; v.wtTable = 6; v.wtPos = 0.3f; v.wtLfo = 0.9f; v.lfoRate = 2.0f; v.subLevel = 0.4f; v.lfoCutoff = 1.0f; v.mono = 1; v.glide = 0.05f;
+                v.attack = 0.004f; v.decay = 0.3f; v.sustain = 0.9f; v.release = 0.15f; v.cutoff = 600; v.resonance = 0.35f; v.drive = 0.2f;
+            });
+            add ("Wavetable", "WT Glass keys", [] (SynthValues& v)
+            {
+                v.engine = 2; v.wtTable = 10; v.wtPos = 0.25f; v.wtEnv = -0.4f; v.unison = 2; v.unisonDetune = 8; v.spread = 0.6f;
+                v.attack = 0.003f; v.decay = 0.9f; v.sustain = 0.0f; v.release = 0.7f; v.cutoff = 9000; v.fAttack = 0.002f; v.fDecay = 0.5f; v.fSustain = 0.0f;
+            });
+            add ("Wavetable", "WT Lo-fi keys", [] (SynthValues& v)
+            {
+                v.engine = 2; v.wtTable = 1; v.wtPos = 0.4f; v.wtEnv = -0.3f; v.wtLfo = 0.15f; v.lfoRate = 0.4f; v.lfoPitch = 12; v.lfoDelay = 0.3f; v.drive = 0.15f;
+                v.attack = 0.005f; v.decay = 0.7f; v.sustain = 0.15f; v.release = 0.5f; v.cutoff = 2800; v.fDecay = 0.5f; v.fSustain = 0.2f; v.filterEnv = 0.8f;
+            });
+            add ("Wavetable", "WT FM bell", [] (SynthValues& v)
+            {
+                v.engine = 2; v.wtTable = 12; v.wtPos = 0.45f; v.wtEnv = -0.6f; v.unison = 2; v.unisonDetune = 5; v.spread = 0.5f;
+                v.attack = 0.002f; v.decay = 1.6f; v.sustain = 0.0f; v.release = 1.4f; v.cutoff = 14000; v.fAttack = 0.002f; v.fDecay = 1.2f; v.fSustain = 0.0f;
+            });
+            add ("Wavetable", "WT Hollow pluck", [] (SynthValues& v)
+            {
+                v.engine = 2; v.wtTable = 3; v.wtPos = 0.6f; v.wtEnv = -0.7f; v.unison = 2; v.unisonDetune = 6;
+                v.attack = 0.002f; v.decay = 0.4f; v.sustain = 0.0f; v.release = 0.25f; v.cutoff = 9000; v.fAttack = 0.002f; v.fDecay = 0.3f; v.fSustain = 0.0f;
+            });
+            add ("Wavetable", "WT Rising strings", [] (SynthValues& v)
+            {
+                v.engine = 2; v.wtTable = 9; v.wtPos = 0.45f; v.wtEnv = 0.4f; v.wtLfo = 0.25f; v.lfoRate = 0.25f; v.unison = 5; v.unisonDetune = 20; v.spread = 1.0f;
+                v.attack = 0.35f; v.decay = 0.6f; v.sustain = 0.8f; v.release = 0.9f; v.cutoff = 5500; v.fAttack = 0.6f; v.fDecay = 0.8f; v.fSustain = 0.7f;
+            });
+
             // ---- effects
             add ("FX", "Riser", [] (SynthValues& v)
             {
@@ -287,7 +354,11 @@ namespace SynthPresets
                 { "Airy pad", 0.951f }, { "Electric piano", 0.983f }, { "Clav", 0.671f }, { "Organ", 0.879f },
                 { "Soft keys", 1.096f }, { "Pluck", 1.263f }, { "Harp", 0.897f }, { "Marimba", 0.938f },
                 { "Bell", 0.867f }, { "Arp pluck", 0.987f }, { "Brass", 1.032f }, { "Brass section", 1.318f },
-                { "Flute", 1.086f }, { "Riser", 1.657f } };
+                { "Flute", 1.086f }, { "Riser", 1.657f },
+                { "WT Glass bell", 2.47f }, { "WT Vowel lead", 2.52f }, { "WT Organ", 0.868f }, { "WT PWM bass", 1.17f }, { "WT Digital pluck", 2.12f },
+                { "WT Choir pad", 1.225f }, { "WT Dream pad", 0.705f }, { "WT Texture drone", 1.572f }, { "WT Fold lead", 2.145f }, { "WT Sync lead", 2.75f },
+                { "WT Pulse lead", 2.96f }, { "WT Saturated bass", 1.04f }, { "WT Wobble bass", 2.68f }, { "WT Lo-fi keys", 1.55f }, { "WT FM bell", 0.774f },
+                { "WT Hollow pluck", 2.48f }, { "WT Rising strings", 0.9f } };
             for (auto& p : out)
                 for (auto& t : trims)
                     if (std::string (p.name) == t.first)

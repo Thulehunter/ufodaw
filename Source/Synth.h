@@ -41,6 +41,7 @@
     X (wtPos,        0.0f,   0.0f,   1.0f,     "Wavetable position")  /* where in the table the oscillator reads (engine: wavetable) */ \
     X (wtLfo,        0.0f,   0.0f,   1.0f,     "LFO to position")     \
     X (wtEnv,        0.0f,  -1.0f,   1.0f,     "Envelope to position") /* the filter envelope moves the position */ \
+    X (wtVel,        0.0f,  -1.0f,   1.0f,     "Velocity to position") /* a harder key reads further into the table (or back); a medium key stays at the position */ \
     X (level,        1.0f,   0.0f,   4.0f,     "Synth volume")
 
 // name, default: waveform, osc 2 wave (0 sine, 1 saw, 2 square, 3 triangle), unison voices (1..5), LFO shape (0 sine, 1 triangle, 2 square, 3 random steps)

@@ -4,6 +4,7 @@
 #include "StarterPack.h"
 #include "SfTests.h"
 #include "Wavetable.h"
+#include "SynthPanel.h"
 #include "ClapTests.h"
 #include <iostream>
 #if JUCE_WINDOWS
@@ -168,7 +169,7 @@ static bool report (bool ok, const juce::String& what)
 #if defined (_MSC_VER)
  __declspec (noinline)
 #endif
-static bool wavetableTests()
+static bool wavetableTests (int workers)
 {
     const double rate = 48000.0;
     auto play = [&] (int note, double pos, int table)
@@ -207,6 +208,100 @@ static bool wavetableTests()
         allTables = allTables && peak > 0.02f && peak < 1.0f;
     }
     ok &= report (allTables, "wavetable: every table sounds, finite and not clipping");
+    // the size of the tables
+    ok &= report (Wavetable::numFrames >= 64 && Wavetable::size == 2048 && Wavetable::numSets >= 12, "wavetable: " + juce::String (Wavetable::numSets) + " tables of " + juce::String (Wavetable::numFrames) + " waves of 2048 samples");
+
+    // the new tables do what their name says
+    {
+        const double f0 = 440.0 * std::pow (2.0, -9.0 / 12.0);   // note 60
+        auto rising0 = play (60, 0.1, 9), rising1 = play (60, 1.0, 9);
+        ok &= report (mag (rising1, f0 * 40.0) > 5.0 * mag (rising0, f0 * 40.0) && mag (rising1, f0 * 40.0) > 0.0003, "wavetable: the rising table gains overtones with the position (" + juce::String (mag (rising1, f0 * 40.0), 5) + " against " + juce::String (mag (rising0, f0 * 40.0), 5) + ")");
+        auto fold0 = play (60, 0.0, 6), fold1 = play (60, 1.0, 6);
+        ok &= report (mag (fold0, f0) > 20.0 * mag (fold0, f0 * 5.0) && mag (fold1, f0 * 5.0) > 0.1 * mag (fold1, f0), "wavetable: the wavefold table goes from a sine to a rich wave");
+        const auto sat0 = play (60, 0.0, 7), sat1 = play (60, 1.0, 7);
+        ok &= report (mag (sat1, f0 * 3.0) > 2.0 * mag (sat0, f0 * 3.0), "wavetable: the saturated table gets more harmonics with the position");
+    }
+
+    // no table aliases on a high note (the energy between the harmonics stays low)
+    {
+        const double fundamental = 440.0 * std::pow (2.0, 31.0 / 12.0);   // note 100
+        bool clean = true;
+        juce::String dirty;
+        for (int table : { 1, 6, 7, 9, 10, 11, 12, 13 })
+            for (double pos : { 0.5, 1.0 })
+            {
+                const auto x = play (100, pos, table);
+                const double main = mag (x, fundamental);
+                double worst = 0.0;
+                for (double f : { 1000.0, 1500.0, 1850.0, 3100.0, 4200.0 }) worst = std::max (worst, mag (x, f));
+                if (main > 1.0e-4 && worst > 0.05 * main) { clean = false; dirty << " " << table << "@" << juce::String (pos, 1); }
+            }
+        ok &= report (clean, "wavetable: high notes are clean in every table" + (dirty.isEmpty() ? juce::String() : " (aliasing in:" + dirty + ")"));
+    }
+
+    // the velocity moves the position
+    {
+        auto playVelocity = [&] (float velocity)
+        {
+            Synth synth; synth.prepare (rate);
+            SynthParams params; params.engine = 2; params.wtTable = 6; params.wtPos = 0.5f; params.wtVel = 1.0f; params.attack = 0.002f; params.cutoff = 18000.0f; params.sustain = 1.0f;
+            std::vector<float> l ((size_t) rate / 2), r (l.size());
+            synth.noteOn (60, velocity, params);
+            for (size_t done = 0; done < l.size(); done += 512) synth.render (l.data() + done, r.data() + done, (int) std::min<size_t> (512, l.size() - done), params);
+            return l;
+        };
+        const auto soft = playVelocity (0.2f), hard = playVelocity (1.0f);
+        const double f0 = 440.0 * std::pow (2.0, -9.0 / 12.0);
+        ok &= report (SfTests::magnitude (hard, f0 * 6.0, 0.1, 0.4) / SfTests::magnitude (hard, f0, 0.1, 0.4) != SfTests::magnitude (soft, f0 * 6.0, 0.1, 0.4) / SfTests::magnitude (soft, f0, 0.1, 0.4),
+                      "wavetable: the velocity changes the position");
+    }
+
+    // the same wavetable sounds every time (deterministic tables)
+    ok &= report (play (64, 0.37, 10) == play (64, 0.37, 10), "wavetable: the same notes give the same samples");
+
+    // tracks with the engine: serial and parallel mixing identical, and the engine's settings survive a captured state
+    {
+        auto build = [] (Engine& x)
+        {
+            const int tables[3] = { 2, 11, 13 };
+            for (int i = 0; i < 3; ++i)
+            {
+                auto* t = x.addTrack ("Wavetable " + juce::String (i), Track::Type::Midi);
+                t->synth.engine = 2; t->synth.wtTable = tables[i]; t->synth.wtPos = 0.2f + 0.3f * (float) i; t->synth.wtLfo = 0.6f; t->synth.wtEnv = 0.4f - 0.4f * (float) i; t->synth.wtVel = 0.5f;
+                t->synth.unison = 1 + 2 * i; t->synth.lfoRate = 0.7f; t->synth.attack = 0.01f; t->synth.cutoff = 6000.0f; t->synth.filterEnv = 1.0f;
+                std::vector<Note> notes;
+                for (int n = 0; n < 16; ++n) notes.push_back ({ 40 + 12 * i + (n * 5) % 19, n * 0.25, 0.4, 0.4f + 0.04f * (float) (n % 10) });
+                x.setMidiNotes (*t, x.addMidiClip (*t, 0.0, 5.0), notes);
+            }
+        };
+        auto run = [&] (int n, std::vector<float>& out)
+        {
+            Engine x; x.prepareToPlay (512, 48000.0);
+            build (x);
+            x.setWorkerThreads (n);
+            x.forceParallel = n > 0;
+            juce::AudioBuffer<float> b (2, 512); juce::AudioSourceChannelInfo info (&b, 0, 512);
+            x.play();
+            for (int blk = 0; blk < 400; ++blk) { b.clear(); x.getNextAudioBlock (info); for (int i = 0; i < 512; ++i) { out.push_back (b.getSample (0, i)); out.push_back (b.getSample (1, i)); } }
+        };
+        std::vector<float> serial, par;
+        run (0, serial); run (workers, par);
+        float peak = 0; for (auto v : par) peak = std::max (peak, std::abs (v));
+        ok &= report (serial.size() == par.size() && largestDifference (serial, par) < 1e-9 && peak > 0.05f,
+                      "wavetable tracks: serial and " + juce::String (workers) + " workers identical (peak " + juce::String (peak, 3) + ")");
+
+        [&]   // (a lambda: the engine would add to the stack frame of main)
+        {
+            Engine x; x.prepareToPlay (512, 48000.0);
+            build (x);
+            const auto saved = x.captureState();
+            x.getTrack (1)->synth.engine = 0; x.getTrack (1)->synth.wtTable = 0; x.getTrack (1)->synth.wtVel = 0.0f;
+            x.restoreState (saved);
+            const auto& s = x.getTrack (1)->synth;
+            ok &= report (s.engine.load() == 2 && s.wtTable.load() == 11 && std::abs (s.wtVel.load() - 0.5f) < 1.0e-6f && std::abs (s.wtPos.load() - 0.5f) < 1.0e-6f,
+                          "wavetable tracks: the engine, table, position and velocity amount come back with the state");
+        }();
+    }
     return ok;
 }
 
@@ -243,6 +338,19 @@ int main (int argc, char** argv)
         const bool ok = SfTests::run ([] (bool ok, const juce::String& what) { return report (ok, what); }, juce::File::getSpecialLocation (juce::File::tempDirectory));
         std::cout << (ok ? "ALL PASSED" : "FAILED") << std::endl;
         return ok ? 0 : 1;
+    }
+    if (argc > 2 && juce::String (argv[1]) == "snapshot")   // draws the synth window of a wavetable sound to a PNG (a look at the UI without opening the program)
+    {
+        Engine x; x.prepareToPlay (512, 48000.0);
+        auto* t = x.addTrack ("Snap", Track::Type::Midi);
+        t->synth.apply (SynthPresets::find (argc > 3 ? argv[3] : "WT Fold lead"));
+        SynthPanel panel (*t, [] {}, [] {});
+        panel.setBounds (0, 0, panel.getWidth(), panel.getHeight());
+        const auto image = panel.createComponentSnapshot (panel.getLocalBounds(), true, 1.0f);
+        juce::File out (argv[2]); out.deleteFile();
+        juce::FileOutputStream stream (out);
+        juce::PNGImageFormat().writeImageToStream (image, stream);
+        return 0;
     }
     const int workers = juce::jmax (1, argc > 1 ? juce::String (argv[1]).getIntValue() : 3);
     std::cout << "cores: " << juce::SystemStats::getNumCpus() << ", workers: " << workers << "\n";
@@ -534,7 +642,7 @@ int main (int argc, char** argv)
         all &= report (ms < 6000.0, "starter pack: written in " + juce::String (ms, 0) + " ms");
     }
 
-    all &= wavetableTests();
+    all &= wavetableTests (workers);
 
    #ifdef TEST_CLAP_PATH
     all &= ClapTests::run ([] (bool ok, const juce::String& what) { return report (ok, what); }, workers);   // CLAP hosting

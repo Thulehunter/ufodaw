@@ -1,6 +1,7 @@
 #include "Scripting.h"
 #include "MainComponent.h"
 #include "SynthPresets.h"
+#include "Wavetable.h"
 #include "StarterPack.h"
 #include <algorithm>
 #include <cmath>
@@ -387,7 +388,20 @@ namespace
             else if (key == "osc2Wave") choice (t->synth.osc2Wave, { "sine", "saw", "square", "triangle" }, 3);
             else if (key == "lfoShape") choice (t->synth.lfoShape, { "sine", "triangle", "square", "random" }, 3);
             else if (key == "engine")   choice (t->synth.engine, { "synth", "piano", "wavetable" }, 2);
-            else if (key == "wtTable")  choice (t->synth.wtTable, { "basic", "digital", "vowels", "comb", "organ", "pulse" }, 5);
+            else if (key == "wtTable" || key == "wavetable")   // (by number, or by name: see Wavetable::setKey)
+            {
+                if (lua_isnumber (L, -1))
+                    t->synth.wtTable = juce::jlimit (0, Wavetable::numSets - 1, (int) lua_tointeger (L, -1));
+                else if (lua_isstring (L, -1))
+                {
+                    bool found = false;
+                    for (int i = 0; i < Wavetable::numSets; ++i)
+                        if (juce::String (lua_tostring (L, -1)).equalsIgnoreCase (Wavetable::setKey (i))) { t->synth.wtTable = i; found = true; }
+                    if (! found)
+                        luaL_error (L, "there is no wavetable called '%s' (use a number 0 to %d or a name like \"basic\", \"fold\", \"choir\")", lua_tostring (L, -1), Wavetable::numSets - 1);
+                }
+                known = true;
+            }
             else if (key == "mono")     { if (lua_isboolean (L, -1)) t->synth.mono = lua_toboolean (L, -1) ? 1 : 0; else choice (t->synth.mono, { "poly", "mono" }, 1); known = true; }
             else if (key == "unison")   { t->synth.unison = juce::jlimit (1, 5, (int) lua_tointeger (L, -1)); known = true; }
             if (! known)

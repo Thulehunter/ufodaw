@@ -7,38 +7,130 @@
 
 #include "Wavetable.h"
 
-// The wave the wavetable engine reads at the moment (the table, the position, and the LFO / envelope are not included): a small picture next to the sliders.
-class WavetableView : public juce::Component, private juce::Timer
+// The table the wavetable engine reads, as a stack of waves: the first wave in front, the last at the back, and the wave at the current position in orange.
+// A strip on the right shows the position and how far the LFO, the envelope and the velocity can move it. Click or drag to set the position.
+class WavetableView : public juce::Component, public juce::SettableTooltipClient, private juce::Timer
 {
 public:
-    explicit WavetableView (const SynthParams& p) : params (p) { startTimerHz (10); }
+    WavetableView (const SynthParams& p, std::function<void()> start, std::function<void (float)> setPosition)
+        : params (p), onStart (std::move (start)), onPosition (std::move (setPosition))
+    {
+        setTooltip ("The table as a stack of waves (the first in front). Click or drag to set the position; the bar on the right shows how far the LFO, envelope and velocity move it.");
+        setMouseCursor (juce::MouseCursor::UpDownResizeCursor);
+        startTimerHz (12);
+    }
 
     void paint (juce::Graphics& g) override
     {
         auto r = getLocalBounds().toFloat();
         g.setColour (Theme::laneBg);
         g.fillRoundedRectangle (r, 3.0f);
+
         const int set = juce::jlimit (0, Wavetable::numSets - 1, params.wtTable.load());
-        const double fp = juce::jlimit (0.0f, 1.0f, params.wtPos.load()) * (Wavetable::numFrames - 1);
-        const int f0 = juce::jmin ((int) fp, Wavetable::numFrames - 2);
-        const float frac = (float) (fp - f0);
-        const float* a = Wavetable::bank().frame (set, f0, 0);
-        const float* b = Wavetable::bank().frame (set, f0 + 1, 0);
-        juce::Path path;
-        const int points = juce::jmax (2, (int) r.getWidth());
-        for (int i = 0; i < points; ++i)
+        const float pos = juce::jlimit (0.0f, 1.0f, params.wtPos.load());
+        const auto plot = plotArea();
+        const float range = plot.getHeight() - 2.0f * amplitude (plot);
+        const float base0 = plot.getBottom() - amplitude (plot);
+        auto& bank = Wavetable::bank();
+
+        // one wave as a line (filled below with the background so the waves in front hide those behind)
+        auto drawWave = [&] (double framePos, bool current)
         {
-            const float v = Wavetable::read (a, b, frac, (double) i / (points - 1));
-            const float y = r.getCentreY() - v * (r.getHeight() * 0.42f);
-            if (i == 0) path.startNewSubPath (r.getX(), y); else path.lineTo (r.getX() + (float) i * r.getWidth() / (float) (points - 1), y);
+            const int f0 = juce::jmin ((int) framePos, Wavetable::numFrames - 2);
+            const float frac = (float) (framePos - f0);
+            const float* a = bank.frame (set, f0, 0);
+            const float* b = bank.frame (set, f0 + 1, 0);
+            const float baseline = base0 - (float) (framePos / (Wavetable::numFrames - 1)) * range;
+            const int points = juce::jmax (2, (int) plot.getWidth() / 2);
+            juce::Path line;
+            for (int i = 0; i < points; ++i)
+            {
+                const float x = plot.getX() + plot.getWidth() * (float) i / (float) (points - 1);
+                const float y = baseline - Wavetable::read (a, b, frac, (double) i / (points - 1)) * amplitude (plot);
+                if (i == 0) line.startNewSubPath (x, y); else line.lineTo (x, y);
+            }
+            juce::Path area (line);
+            area.lineTo (plot.getRight(), baseline + 3.0f);
+            area.lineTo (plot.getX(), baseline + 3.0f);
+            area.closeSubPath();
+            g.setColour (Theme::laneBg);
+            g.fillPath (area);
+            g.setColour (current ? Theme::orange : Theme::textDim.withAlpha (0.55f));
+            g.strokePath (line, juce::PathStrokeType (current ? 2.0f : 1.0f));
+        };
+
+        constexpr int slots = 16;
+        const double current = (double) pos * (Wavetable::numFrames - 1);
+        bool drawnCurrent = false;
+        for (int i = slots - 1; i >= 0; --i)
+        {
+            const double fp = (double) i * (Wavetable::numFrames - 1) / (slots - 1);
+            if (! drawnCurrent && current >= fp)
+            {
+                drawWave (current, true);
+                drawnCurrent = true;
+            }
+            drawWave (fp, false);
+        }
+        if (! drawnCurrent)
+            drawWave (current, true);
+
+        // the position strip: the range the modulation reaches (light) and the position (line)
+        const auto strip = stripArea();
+        g.setColour (Theme::gridLine);
+        g.fillRoundedRectangle (strip, 2.0f);
+        const float lfo = 0.5f * params.wtLfo.load(), env = params.wtEnv.load(), vel = 0.5f * std::abs (params.wtVel.load());
+        const float lo = juce::jlimit (0.0f, 1.0f, pos - lfo - vel + juce::jmin (0.0f, env)), hi = juce::jlimit (0.0f, 1.0f, pos + lfo + vel + juce::jmax (0.0f, env));
+        auto yOf = [&] (float p) { return base0 - p * range; };
+        if (hi - lo > 0.001f)
+        {
+            g.setColour (Theme::orange.withAlpha (0.35f));
+            g.fillRoundedRectangle (strip.getX(), yOf (hi), strip.getWidth(), yOf (lo) - yOf (hi), 2.0f);
         }
         g.setColour (Theme::orange);
-        g.strokePath (path, juce::PathStrokeType (1.5f));
+        g.fillRect (strip.getX() - 2.0f, yOf (pos) - 1.0f, strip.getWidth() + 4.0f, 2.0f);
+
+        g.setColour (Theme::textDim);
+        g.setFont (juce::FontOptions (11.0f));
+        g.drawText ("Wave " + juce::String (juce::roundToInt (pos * (Wavetable::numFrames - 1)) + 1) + " / " + juce::String (Wavetable::numFrames),
+                    getLocalBounds().reduced (6, 2), juce::Justification::topLeft);
     }
 
+    void mouseDown (const juce::MouseEvent& e) override { onStart(); setFrom (e); }
+    void mouseDrag (const juce::MouseEvent& e) override { setFrom (e); }
+
 private:
-    void timerCallback() override { repaint(); }
+    static float amplitude (juce::Rectangle<float> plot) { return plot.getHeight() * 0.15f; }
+    juce::Rectangle<float> plotArea() const { return getLocalBounds().toFloat().reduced (6.0f, 6.0f).withTrimmedRight (16.0f); }
+    juce::Rectangle<float> stripArea() const
+    {
+        const auto plot = plotArea();
+        const float pad = amplitude (plot);
+        return { getWidth() - 14.0f, plot.getY() + pad, 6.0f, plot.getHeight() - 2.0f * pad };
+    }
+
+    void setFrom (const juce::MouseEvent& e)
+    {
+        const auto strip = stripArea();
+        const float p = juce::jlimit (0.0f, 1.0f, (strip.getBottom() - (float) e.y) / strip.getHeight());
+        onPosition (p);
+        repaint();
+    }
+
+    void timerCallback() override
+    {
+        const float sig = (float) params.wtTable.load() * 1000.0f + params.wtPos.load() * 100.0f + params.wtLfo.load() * 10.0f + params.wtEnv.load() * 3.0f + params.wtVel.load() * 7.0f;
+        if (sig != lastSignature)
+        {
+            lastSignature = sig;
+            repaint();
+        }
+    }
+
     const SynthParams& params;
+    std::function<void()> onStart;
+    std::function<void (float)> onPosition;
+    float lastSignature = -1.0e9f;
 };
 
 // The window of the built-in synth: every setting of one track's synth, and the ready-made sounds. Changes apply at once (they are heard while a
@@ -84,8 +176,10 @@ public:
         section ("ENGINE");
         choiceCombo ("Sound engine", track.synth.engine, { "Synth", "Piano", "Wavetable" });
         section ("OSCILLATOR 1");
+        group = &synthOnly;
         waveCombo (wave1, "Wave", track.synth.waveform);
         floatSlider ("pulseWidth");
+        group = nullptr;
         intSlider ("Unison voices", track.synth.unison, 1, 5);
         floatSlider ("unisonDetune");
         floatSlider ("spread");
@@ -111,21 +205,12 @@ public:
         floatSlider ("fSustain");
         floatSlider ("fRelease", 0.0, 0.4);
         section ("PIANO (ENGINE: PIANO)");
+        group = &pianoOnly;
         floatSlider ("pianoDecay");
         floatSlider ("pianoBright");
         floatSlider ("pianoDetune");
         floatSlider ("pianoHammer");
-        section ("WAVETABLE (ENGINE: WAVETABLE)");
-        {
-            juce::StringArray names;
-            for (int i = 0; i < Wavetable::numSets; ++i)
-                names.add (Wavetable::setName (i));
-            choiceCombo ("Table", track.synth.wtTable, names);
-        }
-        floatSlider ("wtPos");
-        floatSlider ("wtLfo");
-        floatSlider ("wtEnv");
-        addRow (new juce::Label ({}, "Preview"), new WavetableView (track.synth));
+        group = nullptr;
         nextColumn();
 
         section ("AMPLIFIER");
@@ -151,8 +236,25 @@ public:
         floatSlider ("lfoCutoff");
         floatSlider ("lfoAmp");
         floatSlider ("lfoDelay");
+        nextColumn();
 
-        setSize (columnWidth * 3 + 28, 700);
+        section ("WAVETABLE (ENGINE: WAVETABLE)");
+        group = &wavetableOnly;
+        {
+            juce::StringArray names;
+            for (int i = 0; i < Wavetable::numSets; ++i)
+                names.add (Wavetable::setName (i));
+            choiceCombo ("Table", track.synth.wtTable, names);
+        }
+        floatSlider ("wtPos");
+        floatSlider ("wtLfo");
+        floatSlider ("wtEnv");
+        floatSlider ("wtVel");
+        addRow (nullptr, new WavetableView (track.synth, [this] { begin(); }, [this] (float p) { track.synth.wtPos = p; refresh(); changedFn(); }), 170, true);
+        group = nullptr;
+
+        setSize (columnWidth * 4 + 28, 700);
+        updateDimming();
         startTimerHz (4);
     }
 
@@ -176,8 +278,13 @@ public:
         myButton.setBounds (getWidth() - 190 - 130, 8, 120, 26);
         for (auto& r : rows)
         {
-            r.label->setBounds (r.x, r.y, 104, rowHeight - 4);
-            r.control->setBounds (r.x + 106, r.y, columnWidth - 116, rowHeight - 4);
+            if (r.full)
+                r.control->setBounds (r.x, r.y, columnWidth - 12, r.height - 4);
+            else
+            {
+                r.label->setBounds (r.x, r.y, 120, r.height - 4);
+                r.control->setBounds (r.x + 122, r.y, columnWidth - 132, r.height - 4);
+            }
         }
     }
 
@@ -192,6 +299,7 @@ public:
             w.box->setSelectedId (w.target->load() + 1, juce::dontSendNotification);
         if (lfoShape != nullptr)
             lfoShape->setSelectedId (track.synth.lfoShape.load() + 1, juce::dontSendNotification);
+        updateDimming();
     }
 
     const Track* getTrack() const { return &track; }
@@ -242,7 +350,7 @@ public:
         v.osc2Wave = juce::jlimit (0, 3, v.osc2Wave);
         v.lfoShape = juce::jlimit (0, 3, v.lfoShape);
         v.engine = juce::jlimit (0, 2, v.engine);
-        v.wtTable = juce::jlimit (0, 5, v.wtTable);
+        v.wtTable = juce::jlimit (0, Wavetable::numSets - 1, v.wtTable);
         v.mono = juce::jlimit (0, 1, v.mono);
         return true;
     }
@@ -250,7 +358,7 @@ public:
 private:
     static constexpr int columnWidth = 300, rowHeight = 30, top = 42;
 
-    struct Row { juce::Component* label; juce::Component* control; int x, y; };
+    struct Row { juce::Component* label; juce::Component* control; int x, y, height; bool full; };
     struct Heading { juce::String text; juce::Rectangle<int> bounds; };
     struct FloatControl { const SynthParams::FloatInfo* info; juce::Slider* slider; };
     struct IntControl { std::atomic<int>* target; juce::Slider* slider; };
@@ -266,14 +374,29 @@ private:
 
     void nextColumn() { x += columnWidth; y = top; }
 
-    void addRow (juce::Component* label, juce::Component* control)
+    // `full`: no label, the control takes the whole column width (the wave display)
+    void addRow (juce::Component* label, juce::Component* control, int height = rowHeight, bool full = false)
     {
-        ownedComponents.add (label);
-        ownedComponents.add (control);
-        addAndMakeVisible (label);
-        addAndMakeVisible (control);
-        rows.push_back ({ label, control, x, y });
-        y += rowHeight;
+        for (auto* c : { label, control })
+            if (c != nullptr)
+            {
+                ownedComponents.add (c);
+                addAndMakeVisible (c);
+                if (group != nullptr)
+                    group->push_back (c);
+            }
+        rows.push_back ({ label, control, x, y, height, full });
+        y += height;
+    }
+
+    // the controls of an engine that is not in use are shown dimmer (they still work, so a sound can be set up before switching)
+    void updateDimming()
+    {
+        const int engine = track.synth.engine.load();
+        auto apply = [] (const std::vector<juce::Component*>& list, bool used) { for (auto* c : list) c->setAlpha (used ? 1.0f : 0.4f); };
+        apply (synthOnly, engine == 0);
+        apply (pianoOnly, engine == 1);
+        apply (wavetableOnly, engine == 2);
     }
 
     void choiceCombo (const juce::String& name, std::atomic<int>& target, const juce::StringArray& items)
@@ -417,6 +540,8 @@ private:
     std::vector<FloatControl> floats;
     std::vector<IntControl> ints;
     std::vector<WaveControl> waves;
+    std::vector<juce::Component*> synthOnly, pianoOnly, wavetableOnly;
+    std::vector<juce::Component*>* group = nullptr;   // the controls added now belong to this engine
     int x = 10, y = top;
 };
 

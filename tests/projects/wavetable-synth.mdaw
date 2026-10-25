@@ -1,0 +1,22 @@
+{
+  "version": 3,
+  "bpm": 100.0,
+  "masterGain": 0.8,
+  "tracks": [
+    {
+      "name": "Fold lead", "type": "midi", "gain": 0.7, "clips": [],
+      "synth": { "engine": 2, "wtTable": 6, "wtPos": 0.3, "wtLfo": 0.4, "wtEnv": 0.3, "wtVel": 0.7, "unison": 2, "attack": 0.01, "sustain": 0.8, "release": 0.3, "cutoff": 9000 },
+      "midiClips": [ { "start": 0.0, "length": 4.0, "notes": [ { "pitch": 60, "start": 0.0, "length": 0.8, "velocity": 0.5 }, { "pitch": 64, "start": 1.0, "length": 0.8, "velocity": 0.9 }, { "pitch": 67, "start": 2.0, "length": 1.5, "velocity": 0.7 } ] } ]
+    },
+    {
+      "name": "Choir pad", "type": "midi", "gain": 0.7, "clips": [],
+      "synth": { "engine": 2, "wtTable": 8, "wtPos": 0.1, "wtLfo": 0.5, "unison": 4, "attack": 0.4, "sustain": 0.85, "release": 1.0, "cutoff": 5000 },
+      "midiClips": [ { "start": 0.0, "length": 4.0, "notes": [ { "pitch": 48, "start": 0.0, "length": 3.0, "velocity": 0.7 }, { "pitch": 55, "start": 0.0, "length": 3.0, "velocity": 0.7 }, { "pitch": 63, "start": 0.0, "length": 3.0, "velocity": 0.7 } ] } ]
+    },
+    {
+      "name": "Texture", "type": "midi", "gain": 0.7, "clips": [],
+      "synth": { "engine": 2, "wtTable": 99, "wtPos": 0.2, "attack": 0.05, "sustain": 0.8, "release": 0.3, "cutoff": 4000 },
+      "midiClips": [ { "start": 0.0, "length": 4.0, "notes": [ { "pitch": 52, "start": 0.0, "length": 2.0, "velocity": 0.8 } ] } ]
+    }
+  ]
+}

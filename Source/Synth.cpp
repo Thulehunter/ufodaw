@@ -299,7 +299,7 @@ void Synth::render (float* outL, float* outR, int numSamples, const SynthParams&
             float tableFrac = 0.0f;
             if (wavetable)
             {
-                const double position = std::clamp ((double) p.wtPos + p.wtLfo * 0.5 * lfo + p.wtEnv * v.filt.level, 0.0, 1.0);
+                const double position = std::clamp ((double) p.wtPos + p.wtLfo * 0.5 * lfo + p.wtEnv * v.filt.level + p.wtVel * (v.velocity - 0.5), 0.0, 1.0);
                 const double framePos = position * (Wavetable::numFrames - 1);
                 const int f0 = std::min ((int) framePos, Wavetable::numFrames - 2);
                 tableFrac = (float) (framePos - f0);
