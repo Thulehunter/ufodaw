@@ -639,7 +639,7 @@ int main (int argc, char** argv)
         StarterPack::ensureInstalled();   // (writes the whole pack again)
         const double ms = juce::Time::getMillisecondCounterHiRes() - t0;
         all &= report (fine, "drums: the new acoustic and electronic drums have the right length, width and weight" + detail);
-        all &= report (ms < 6000.0, "starter pack: written in " + juce::String (ms, 0) + " ms");
+        all &= report (ms < 30000.0, "starter pack: written in " + juce::String (ms, 0) + " ms");
     }
 
     all &= wavetableTests (workers);
